@@ -1,9 +1,13 @@
 /**
  * AI 路由 - /api/ai
  * POST /api/ai/parse - AI 记账解析
+ * POST /api/ai/chat - AI 问答
+ * GET /api/ai/sessions - 对话列表
+ * DELETE /api/ai/sessions/:id - 删除对话
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
+import crypto from 'node:crypto'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { chatCompletion, AiError } from '../ai/client.js'
@@ -177,5 +181,176 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       }
       throw err
     }
+  })
+
+  // ============ AI 问答 ============
+
+  const chatInputSchema = z.object({
+    message: z.string().min(1, '消息不能为空').max(1000),
+    session_id: z.string().uuid().optional(),
+  })
+
+  // POST /api/ai/chat - AI 问答
+  app.post('/api/ai/chat', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const body = chatInputSchema.parse(request.body)
+      const db = getDb()
+      const userId = request.user!.userId
+
+      // 生成或复用 session_id
+      const sessionId = body.session_id || crypto.randomUUID()
+
+      // 获取用户财务数据摘要（当月+上月）
+      const now = new Date()
+      const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      const prevDate = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+      const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`
+
+      const summaryData = db
+        .prepare(
+          `SELECT
+            substr(date, 1, 7) as month,
+            type,
+            SUM(amount) as total,
+            COUNT(*) as count
+           FROM transactions
+           WHERE user_id = ? AND status = 'confirmed' AND deleted_at IS NULL
+             AND type IN ('expense', 'income')
+             AND substr(date, 1, 7) IN (?, ?)
+           GROUP BY substr(date, 1, 7), type`,
+        )
+        .all(userId, thisMonth, prevMonth) as Array<{ month: string; type: string; total: number; count: number }>
+
+      const categorySummary = db
+        .prepare(
+          `SELECT c.name, SUM(t.amount) as total, COUNT(*) as count
+           FROM transactions t
+           JOIN categories c ON t.category_id = c.id
+           WHERE t.user_id = ? AND t.status = 'confirmed' AND t.deleted_at IS NULL
+             AND t.type = 'expense'
+             AND substr(t.date, 1, 7) = ?
+           GROUP BY t.category_id
+           ORDER BY total DESC
+           LIMIT 10`,
+        )
+        .all(userId, thisMonth) as Array<{ name: string; total: number; count: number }>
+
+      // 构建数据上下文
+      const contextLines: string[] = ['用户财务数据摘要：']
+      for (const row of summaryData) {
+        const amount = (row.total / 100).toFixed(2)
+        contextLines.push(`${row.month} ${row.type === 'expense' ? '支出' : '收入'}: ¥${amount}（${row.count}笔）`)
+      }
+      if (categorySummary.length > 0) {
+        contextLines.push(`\n本月支出分类明细：`)
+        for (const cat of categorySummary) {
+          contextLines.push(`  ${cat.name}: ¥${(cat.total / 100).toFixed(2)}（${cat.count}笔）`)
+        }
+      }
+
+      const dataContext = contextLines.join('\n')
+
+      // 获取历史对话（最近10条）
+      const history = db
+        .prepare(
+          `SELECT role, content FROM ai_conversations
+           WHERE user_id = ? AND session_id = ?
+           ORDER BY created_at ASC
+           LIMIT 20`,
+        )
+        .all(userId, sessionId) as Array<{ role: string; content: string }>
+
+      // 构建消息列表
+      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        {
+          role: 'system',
+          content: `你是一个个人财务分析助手。基于用户的交易数据回答财务相关问题。
+
+## 数据上下文
+${dataContext}
+
+## 要求
+1. 回答简洁，有数据支撑（具体金额、笔数、百分比）
+2. 涉及对比时说明变化方向和幅度
+3. 适当给出 1-2 条可操作的建议
+4. 如果数据不足以回答，诚实说明
+5. 用中文回答，金额用 ¥ 符号`,
+        },
+      ]
+
+      // 加入历史对话
+      for (const msg of history) {
+        messages.push({ role: msg.role as 'user' | 'assistant', content: msg.content })
+      }
+
+      // 加入当前消息
+      messages.push({ role: 'user', content: body.message })
+
+      // 调用 LLM
+      const aiResponse = await chatCompletion(messages, 0.7, 15000)
+
+      // 存储对话记录
+      const insertMsg = db.prepare(
+        `INSERT INTO ai_conversations (user_id, session_id, role, content) VALUES (?, ?, ?, ?)`,
+      )
+      insertMsg.run(userId, sessionId, 'user', body.message)
+      insertMsg.run(userId, sessionId, 'assistant', aiResponse)
+
+      return {
+        code: 0,
+        data: {
+          message: aiResponse,
+          session_id: sessionId,
+        },
+        message: '',
+      }
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        reply.code(400)
+        return { code: 2000, data: null, message: err.errors[0].message }
+      }
+      if (err instanceof AiError) {
+        reply.code(502)
+        return { code: 5003, data: null, message: err.message }
+      }
+      throw err
+    }
+  })
+
+  // GET /api/ai/sessions - 对话列表
+  app.get('/api/ai/sessions', async (request: FastifyRequest) => {
+    const db = getDb()
+    const userId = request.user!.userId
+
+    const sessions = db
+      .prepare(
+        `SELECT session_id, MIN(content) as first_message, MAX(created_at) as last_at, COUNT(*) as message_count
+         FROM ai_conversations
+         WHERE user_id = ? AND role = 'user'
+         GROUP BY session_id
+         ORDER BY last_at DESC
+         LIMIT 50`,
+      )
+      .all(userId)
+
+    return { code: 0, data: { items: sessions }, message: '' }
+  })
+
+  // DELETE /api/ai/sessions/:id - 删除对话
+  app.delete('/api/ai/sessions/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string }
+    const db = getDb()
+    const userId = request.user!.userId
+
+    const result = db
+      .prepare('DELETE FROM ai_conversations WHERE user_id = ? AND session_id = ?')
+      .run(userId, id)
+
+    if (result.changes === 0) {
+      reply.code(404)
+      return { code: 3002, data: null, message: '对话不存在' }
+    }
+
+    return { code: 0, data: null, message: '对话已删除' }
   })
 }
