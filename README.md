@@ -192,6 +192,46 @@ docker restart bill-app
 # 访问 设置 → 数据管理 → 导出 JSON
 ```
 
+## 🔄 更新
+
+### Docker 部署更新
+
+```bash
+cd ~/AIBILL
+git pull origin main
+docker-compose up -d --build
+```
+
+数据不会丢失（存储在宿主机 `~/.bill/` 目录，不随容器重建）。
+
+### Node 直接部署更新
+
+```bash
+cd ~/AIBILL
+git pull origin main
+cd server && npm install && npm run build
+cd ../web && npm install && npm run build
+cp -r dist ../server/public
+cd ../server
+pm2 restart bill
+```
+
+### 如果有数据库变更
+
+无需手动操作，后端启动时自动执行未应用的 migration。
+
+### 回滚到指定版本
+
+```bash
+# 建议更新前先备份
+cp ~/.bill/bill.db ~/.bill/bill_backup_$(date +%Y%m%d).db
+
+# Docker 回滚
+docker-compose down
+git checkout v1.0.0
+docker-compose up -d --build
+```
+
 ## 🔒 安全特性
 
 - JWT 认证（30 天有效期）

@@ -4,7 +4,6 @@ import api from '@/api/index'
 import ConfirmCards from '@/components/ConfirmCards.vue'
 import ManualForm from '@/components/ManualForm.vue'
 import TodayList from '@/components/TodayList.vue'
-import EmptyState from '@/components/EmptyState.vue'
 
 // 状态
 const input = ref('')

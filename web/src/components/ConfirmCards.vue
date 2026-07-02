@@ -54,25 +54,28 @@ function toggleEdit(index: number) {
 
 function updateCategory(index: number, categoryId: number) {
   const cat = categories.value.find((c: any) => c.id === categoryId)
-  if (cat) {
-    editableItems.value[index].category_id = cat.id
-    editableItems.value[index].category_name = cat.name
-    editableItems.value[index].category_icon = cat.icon
+  const item = editableItems.value[index]
+  if (cat && item) {
+    item.category_id = cat.id
+    item.category_name = cat.name
+    item.category_icon = cat.icon
   }
 }
 
 function updateAccount(index: number, accountId: number) {
   const acc = accounts.value.find((a: any) => a.id === accountId)
-  if (acc) {
-    editableItems.value[index].account_id = acc.id
-    editableItems.value[index].account_name = acc.name
+  const item = editableItems.value[index]
+  if (acc && item) {
+    item.account_id = acc.id
+    item.account_name = acc.name
   }
 }
 
 function updateAmount(index: number, value: string) {
   const cents = Math.round(parseFloat(value) * 100)
-  if (cents > 0) {
-    editableItems.value[index].amount = cents
+  const item = editableItems.value[index]
+  if (cents > 0 && item) {
+    item.amount = cents
   }
 }
 
@@ -162,7 +165,7 @@ function getTypeLabel(type: string): string {
             <div class="flex-1">
               <label class="text-xs text-gray-500">日期</label>
               <input
-                v-model="editableItems[index].date"
+                v-model="item.date"
                 type="date"
                 class="w-full px-2 py-1 border border-gray-300 rounded text-sm mt-0.5"
               />

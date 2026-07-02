@@ -85,7 +85,7 @@ const groupedTransactions = computed(() => {
   const groups: Record<string, Transaction[]> = {}
   for (const tx of transactions.value) {
     if (!groups[tx.date]) groups[tx.date] = []
-    groups[tx.date].push(tx)
+    groups[tx.date]!.push(tx)
   }
   return Object.entries(groups).sort(([a], [b]) => b.localeCompare(a))
 })
