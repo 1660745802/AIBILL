@@ -19,8 +19,14 @@ const navItems = [
   { path: '/transactions', label: '流水', icon: '📋' },
   { path: '/stats', label: '统计', icon: '📊' },
   { path: '/ai', label: 'AI', icon: '🤖' },
-  { path: '/settings', label: '我的', icon: '⚙️' },
+  { path: '/budget', label: '预算', icon: '💰' },
+  { path: '/settings', label: '设置', icon: '⚙️' },
 ]
+
+function isActive(path: string): boolean {
+  if (path === '/') return route.path === '/'
+  return route.path.startsWith(path)
+}
 </script>
 
 <template>
@@ -55,30 +61,74 @@ const navItems = [
       </div>
     </Teleport>
 
-    <RouterView v-slot="{ Component }">
-      <Transition name="fade" mode="out-in">
-        <component :is="Component" />
-      </Transition>
-    </RouterView>
+    <!-- 已登录：响应式布局 -->
+    <div v-if="auth.isAuthenticated && !route.meta.guest" class="flex min-h-screen">
+      <!-- PC 侧边栏（≥768px 显示） -->
+      <aside class="hidden md:flex md:flex-col md:w-56 lg:w-64 bg-white border-r border-gray-200 fixed inset-y-0 left-0 z-40">
+        <!-- Logo -->
+        <div class="px-5 py-5 border-b border-gray-100">
+          <h1 class="text-lg font-bold text-gray-800">💰 AI 记账</h1>
+          <p class="text-xs text-gray-400 mt-0.5">{{ auth.user?.nickname || auth.user?.username }}</p>
+        </div>
 
-    <!-- 底部导航（仅登录后显示） -->
-    <nav
-      v-if="auth.isAuthenticated && !route.meta.guest"
-      class="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-4 py-2 flex justify-around items-center z-50"
-    >
-      <RouterLink
-        v-for="item in navItems"
-        :key="item.path"
-        :to="item.path"
-        class="flex flex-col items-center py-1 px-3 rounded-lg transition-colors"
-        :class="(item.path === '/' ? route.path === '/' : route.path.startsWith(item.path)) ? 'text-blue-600' : 'text-gray-500 hover:text-gray-700'"
-      >
-        <span class="text-lg">{{ item.icon }}</span>
-        <span class="text-xs mt-0.5">{{ item.label }}</span>
-      </RouterLink>
-    </nav>
+        <!-- 导航 -->
+        <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+          <RouterLink
+            v-for="item in navItems"
+            :key="item.path"
+            :to="item.path"
+            class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors"
+            :class="isActive(item.path)
+              ? 'bg-blue-50 text-blue-700'
+              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'"
+          >
+            <span class="text-base">{{ item.icon }}</span>
+            <span>{{ item.label }}</span>
+          </RouterLink>
+        </nav>
 
-    <!-- 底部导航占位 -->
-    <div v-if="auth.isAuthenticated && !route.meta.guest" class="h-16"></div>
+        <!-- 底部 -->
+        <div class="px-3 py-3 border-t border-gray-100">
+          <div class="text-xs text-gray-400 px-3">v1.1.0</div>
+        </div>
+      </aside>
+
+      <!-- 主内容区 -->
+      <main class="flex-1 md:ml-56 lg:ml-64">
+        <div class="max-w-3xl mx-auto">
+          <RouterView v-slot="{ Component }">
+            <Transition name="fade" mode="out-in">
+              <component :is="Component" />
+            </Transition>
+          </RouterView>
+        </div>
+      </main>
+
+      <!-- 移动端底部导航（<768px 显示） -->
+      <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-2 py-1.5 flex justify-around items-center z-50">
+        <RouterLink
+          v-for="item in navItems.slice(0, 5)"
+          :key="item.path"
+          :to="item.path"
+          class="flex flex-col items-center py-1 px-2 rounded-lg transition-colors min-w-0"
+          :class="isActive(item.path) ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'"
+        >
+          <span class="text-base">{{ item.icon }}</span>
+          <span class="text-[10px] mt-0.5 truncate">{{ item.label }}</span>
+        </RouterLink>
+      </nav>
+
+      <!-- 移动端底部占位 -->
+      <div class="md:hidden h-14"></div>
+    </div>
+
+    <!-- 未登录：居中布局（登录/注册页） -->
+    <div v-else>
+      <RouterView v-slot="{ Component }">
+        <Transition name="fade" mode="out-in">
+          <component :is="Component" />
+        </Transition>
+      </RouterView>
+    </div>
   </div>
 </template>
