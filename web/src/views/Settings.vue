@@ -3,6 +3,8 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import api from '@/api/index'
+import CategoryManager from '@/components/CategoryManager.vue'
+import AccountManager from '@/components/AccountManager.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -97,6 +99,10 @@ function handleLogout() {
         </button>
       </div>
     </div>
+
+    <!-- 分类/账户管理 -->
+    <CategoryManager />
+    <AccountManager />
 
     <!-- 管理员面板入口 -->
     <div v-if="auth.isAdmin" class="bg-white px-4 py-3 mb-2">

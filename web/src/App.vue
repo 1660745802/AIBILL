@@ -34,7 +34,7 @@ const navItems = [
         :key="item.path"
         :to="item.path"
         class="flex flex-col items-center py-1 px-3 rounded-lg transition-colors"
-        :class="route.path === item.path ? 'text-blue-600' : 'text-gray-500 hover:text-gray-700'"
+        :class="(item.path === '/' ? route.path === '/' : route.path.startsWith(item.path)) ? 'text-blue-600' : 'text-gray-500 hover:text-gray-700'"
       >
         <span class="text-lg">{{ item.icon }}</span>
         <span class="text-xs mt-0.5">{{ item.label }}</span>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import api from '@/api/index'
 
 const props = defineProps<{
@@ -33,14 +33,12 @@ onMounted(async () => {
   } catch { /* ignore */ }
 })
 
-const filteredCategories = ref<any[]>([])
-import { watch } from 'vue'
+const filteredCategories = computed(() =>
+  categories.value.filter((c: any) => c.type === type.value)
+)
+
 watch(type, () => {
-  filteredCategories.value = categories.value.filter((c: any) => c.type === type.value)
   categoryId.value = null
-}, { immediate: true })
-watch(categories, () => {
-  filteredCategories.value = categories.value.filter((c: any) => c.type === type.value)
 })
 
 function handleSubmit() {
@@ -123,7 +121,7 @@ function handleSubmit() {
           class="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           <option :value="null">目标账户</option>
-          <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
+          <option v-for="acc in accounts.filter(a => a.id !== accountId)" :key="acc.id" :value="acc.id">
             {{ acc.icon }} {{ acc.name }}
           </option>
         </select>
