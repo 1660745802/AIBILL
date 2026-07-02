@@ -111,16 +111,16 @@ function isActive(path: string): boolean {
       </main>
 
       <!-- 移动端底部导航（<768px 显示） -->
-      <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-2 py-1.5 flex justify-around items-center z-50">
+      <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-1 py-1.5 flex justify-evenly items-center z-50 safe-area-bottom">
         <RouterLink
           v-for="item in mobileNavItems"
           :key="item.path"
           :to="item.path"
-          class="flex flex-col items-center py-1 px-2 rounded-lg transition-colors min-w-0"
+          class="flex flex-col items-center py-1 px-1 rounded-lg transition-colors"
           :class="isActive(item.path) ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'"
         >
-          <span class="text-base">{{ item.icon }}</span>
-          <span class="text-[10px] mt-0.5 truncate">{{ item.label }}</span>
+          <span class="text-lg leading-none">{{ item.icon }}</span>
+          <span class="text-[10px] mt-0.5">{{ item.label }}</span>
         </RouterLink>
       </nav>
 
