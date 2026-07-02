@@ -3,7 +3,7 @@
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
-import { register, login, getUserById, AppError } from '../services/auth.service.js'
+import { register, login, getUserById, changePassword, AppError } from '../services/auth.service.js'
 import { authMiddleware } from '../middleware/auth.js'
 
 const registerSchema = z.object({
@@ -72,6 +72,34 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         return { code: 1006, data: null, message: '用户不存在' }
       }
       return { code: 0, data: { user }, message: '' }
+    },
+  )
+
+  // PUT /api/auth/password - 修改密码
+  const changePasswordSchema = z.object({
+    old_password: z.string().min(1, '请输入当前密码'),
+    new_password: z.string().min(6, '新密码至少6个字符').max(50),
+  })
+
+  app.put(
+    '/api/auth/password',
+    { preHandler: authMiddleware },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const body = changePasswordSchema.parse(request.body)
+        const result = changePassword(request.user!.userId, body.old_password, body.new_password)
+        if (!result.success) {
+          reply.code(400)
+          return { code: 1007, data: null, message: result.message }
+        }
+        return { code: 0, data: null, message: '密码修改成功' }
+      } catch (err) {
+        if (err instanceof z.ZodError) {
+          reply.code(400)
+          return { code: 2000, data: null, message: err.errors[0].message }
+        }
+        throw err
+      }
     },
   )
 }

@@ -19,6 +19,50 @@ const showAdmin = ref(false)
 const newCodeMaxUses = ref(1)
 const generating = ref(false)
 
+// 修改密码
+const showPasswordForm = ref(false)
+const oldPassword = ref('')
+const newPassword = ref('')
+const confirmNewPassword = ref('')
+const passwordError = ref('')
+const passwordLoading = ref(false)
+
+async function handleChangePassword() {
+  passwordError.value = ''
+  if (!oldPassword.value || !newPassword.value) {
+    passwordError.value = '请填写所有字段'
+    return
+  }
+  if (newPassword.value.length < 6) {
+    passwordError.value = '新密码至少6个字符'
+    return
+  }
+  if (newPassword.value !== confirmNewPassword.value) {
+    passwordError.value = '两次密码不一致'
+    return
+  }
+  passwordLoading.value = true
+  try {
+    const { data } = await api.put('/auth/password', {
+      old_password: oldPassword.value,
+      new_password: newPassword.value,
+    })
+    if (data.code === 0) {
+      showPasswordForm.value = false
+      oldPassword.value = ''
+      newPassword.value = ''
+      confirmNewPassword.value = ''
+      alert('密码修改成功')
+    } else {
+      passwordError.value = data.message
+    }
+  } catch (e: any) {
+    passwordError.value = e.response?.data?.message || '修改失败'
+  } finally {
+    passwordLoading.value = false
+  }
+}
+
 onMounted(async () => {
   if (auth.isAdmin) {
     await fetchAdminData()
@@ -106,6 +150,45 @@ function exportCsv() {
           退出登录
         </button>
       </div>
+    </div>
+
+    <!-- 修改密码 -->
+    <div class="bg-white px-4 py-4 mb-2">
+      <button
+        @click="showPasswordForm = !showPasswordForm"
+        class="text-sm text-gray-700 font-medium flex items-center justify-between w-full"
+      >
+        <span>🔒 修改密码</span>
+        <span class="text-gray-400">{{ showPasswordForm ? '▲' : '▼' }}</span>
+      </button>
+      <form v-if="showPasswordForm" @submit.prevent="handleChangePassword" class="mt-3 space-y-2">
+        <input
+          v-model="oldPassword"
+          type="password"
+          class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="当前密码"
+        />
+        <input
+          v-model="newPassword"
+          type="password"
+          class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="新密码（至少6位）"
+        />
+        <input
+          v-model="confirmNewPassword"
+          type="password"
+          class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="确认新密码"
+        />
+        <div v-if="passwordError" class="text-xs text-red-500">{{ passwordError }}</div>
+        <button
+          type="submit"
+          :disabled="passwordLoading"
+          class="w-full py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50"
+        >
+          {{ passwordLoading ? '提交中...' : '确认修改' }}
+        </button>
+      </form>
     </div>
 
     <!-- 分类/账户管理 -->

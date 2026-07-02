@@ -191,6 +191,31 @@ export function ensureAdminUser(): void {
 }
 
 /**
+ * 修改密码
+ */
+export function changePassword(userId: number, oldPassword: string, newPassword: string): { success: boolean; message: string } {
+  const db = getDb()
+
+  const user = db
+    .prepare('SELECT password_hash FROM users WHERE id = ?')
+    .get(userId) as { password_hash: string } | undefined
+
+  if (!user) {
+    return { success: false, message: '用户不存在' }
+  }
+
+  const valid = bcrypt.compareSync(oldPassword, user.password_hash)
+  if (!valid) {
+    return { success: false, message: '当前密码错误' }
+  }
+
+  const newHash = bcrypt.hashSync(newPassword, 10)
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, userId)
+
+  return { success: true, message: '密码修改成功' }
+}
+
+/**
  * 应用错误类
  */
 export class AppError extends Error {
