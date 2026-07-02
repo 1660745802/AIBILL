@@ -40,6 +40,12 @@ const router = createRouter({
       meta: { auth: true },
     },
     {
+      path: '/budget',
+      name: 'Budget',
+      component: () => import('@/views/Budget.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/settings',
       name: 'Settings',
       component: () => import('@/views/Settings.vue'),
