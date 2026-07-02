@@ -20,6 +20,7 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ArcEleme
 const now = new Date()
 const year = ref(now.getFullYear())
 const month = ref(now.getMonth() + 1)
+const viewType = ref<'expense' | 'income'>('expense')
 
 const summary = ref<any>(null)
 const categoryData = ref<any[]>([])
@@ -28,6 +29,10 @@ const categoryTotal = ref(0)
 
 onMounted(() => fetchAll())
 watch([year, month], () => fetchAll())
+watch(viewType, () => {
+  fetchCategory()
+  fetchTrend()
+})
 
 async function fetchAll() {
   await Promise.all([fetchSummary(), fetchCategory(), fetchTrend()])
@@ -42,7 +47,7 @@ async function fetchSummary() {
 
 async function fetchCategory() {
   try {
-    const { data } = await api.get('/stats/by-category', { params: { year: year.value, month: month.value, type: 'expense' } })
+    const { data } = await api.get('/stats/by-category', { params: { year: year.value, month: month.value, type: viewType.value } })
     if (data.code === 0) {
       categoryData.value = data.data.items
       categoryTotal.value = data.data.total
@@ -52,7 +57,7 @@ async function fetchCategory() {
 
 async function fetchTrend() {
   try {
-    const { data } = await api.get('/stats/trend', { params: { year: year.value, month: month.value, period: 'daily', type: 'expense' } })
+    const { data } = await api.get('/stats/trend', { params: { year: year.value, month: month.value, period: 'daily', type: viewType.value } })
     if (data.code === 0) trendData.value = data.data.items
   } catch { /* ignore */ }
 }
@@ -70,10 +75,10 @@ function nextMonth() {
 const trendChartData = computed(() => ({
   labels: trendData.value.map((d) => d.date.slice(8)),
   datasets: [{
-    label: '支出',
+    label: viewType.value === 'expense' ? '支出' : '收入',
     data: trendData.value.map((d) => d.total / 100),
-    borderColor: '#ef4444',
-    backgroundColor: 'rgba(239,68,68,0.1)',
+    borderColor: viewType.value === 'expense' ? '#ef4444' : '#22c55e',
+    backgroundColor: viewType.value === 'expense' ? 'rgba(239,68,68,0.1)' : 'rgba(34,197,94,0.1)',
     fill: true,
     tension: 0.3,
     pointRadius: 2,
@@ -149,9 +154,27 @@ function formatAmount(cents: number): string {
       </div>
     </div>
 
+    <!-- 支出/收入切换 -->
+    <div class="bg-white px-4 py-2 mb-2 flex gap-4">
+      <button
+        @click="viewType = 'expense'"
+        class="pb-1 text-sm font-medium border-b-2 transition-colors"
+        :class="viewType === 'expense' ? 'text-blue-600 border-blue-600' : 'text-gray-500 border-transparent hover:text-gray-700'"
+      >
+        支出
+      </button>
+      <button
+        @click="viewType = 'income'"
+        class="pb-1 text-sm font-medium border-b-2 transition-colors"
+        :class="viewType === 'income' ? 'text-blue-600 border-blue-600' : 'text-gray-500 border-transparent hover:text-gray-700'"
+      >
+        收入
+      </button>
+    </div>
+
     <!-- 趋势图 -->
     <div class="bg-white px-4 py-4 mb-2">
-      <h3 class="text-sm font-medium text-gray-700 mb-3">支出趋势</h3>
+      <h3 class="text-sm font-medium text-gray-700 mb-3">{{ viewType === 'expense' ? '支出' : '收入' }}趋势</h3>
       <div class="h-48">
         <Line v-if="trendData.length > 0" :data="trendChartData" :options="trendChartOptions" />
         <div v-else class="flex items-center justify-center h-full text-sm text-gray-400">暂无数据</div>
@@ -160,7 +183,7 @@ function formatAmount(cents: number): string {
 
     <!-- 分类饼图 -->
     <div class="bg-white px-4 py-4 mb-2">
-      <h3 class="text-sm font-medium text-gray-700 mb-3">分类占比</h3>
+      <h3 class="text-sm font-medium text-gray-700 mb-3">{{ viewType === 'expense' ? '支出' : '收入' }}分类占比</h3>
       <div v-if="categoryData.length > 0" class="h-48">
         <Doughnut :data="pieChartData" :options="pieChartOptions" />
       </div>
@@ -169,7 +192,7 @@ function formatAmount(cents: number): string {
 
     <!-- 分类排行 -->
     <div class="bg-white px-4 py-4">
-      <h3 class="text-sm font-medium text-gray-700 mb-3">消费排行</h3>
+      <h3 class="text-sm font-medium text-gray-700 mb-3">{{ viewType === 'expense' ? '消费' : '收入' }}排行</h3>
       <div v-if="categoryData.length === 0" class="text-center py-4 text-sm text-gray-400">暂无数据</div>
       <div v-else class="space-y-2">
         <div v-for="(cat, index) in categoryData" :key="cat.id" class="flex items-center gap-3">

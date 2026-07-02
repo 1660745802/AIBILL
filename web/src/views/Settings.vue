@@ -2,12 +2,14 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useToast } from '@/composables/useToast'
 import api from '@/api/index'
 import CategoryManager from '@/components/CategoryManager.vue'
 import AccountManager from '@/components/AccountManager.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
+const toast = useToast()
 
 // 管理员数据
 const inviteCodes = ref<any[]>([])
@@ -52,7 +54,7 @@ async function handleChangePassword() {
       oldPassword.value = ''
       newPassword.value = ''
       confirmNewPassword.value = ''
-      alert('密码修改成功')
+      toast.success('密码修改成功')
     } else {
       passwordError.value = data.message
     }
@@ -88,6 +90,7 @@ async function generateCode() {
     const { data } = await api.post('/admin/invite-codes', { max_uses: newCodeMaxUses.value })
     if (data.code === 0) {
       inviteCodes.value.unshift(data.data)
+      toast.success('邀请码已生成')
     }
   } catch { /* ignore */ }
   finally { generating.value = false }
@@ -111,7 +114,7 @@ async function toggleUser(id: number, currentActive: number) {
 async function saveSettings() {
   try {
     await api.put('/admin/settings', globalSettings.value)
-    alert('设置已保存')
+    toast.success('设置已保存')
   } catch { /* ignore */ }
 }
 

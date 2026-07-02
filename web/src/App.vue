@@ -20,7 +20,15 @@ const navItems = [
   { path: '/stats', label: '统计', icon: '📊' },
   { path: '/ai', label: 'AI', icon: '🤖' },
   { path: '/budget', label: '预算', icon: '💰' },
-  { path: '/settings', label: '设置', icon: '⚙️' },
+  { path: '/settings', label: '我的', icon: '⚙️' },
+]
+
+const mobileNavItems = [
+  { path: '/', label: '首页', icon: '🏠' },
+  { path: '/transactions', label: '流水', icon: '📋' },
+  { path: '/stats', label: '统计', icon: '📊' },
+  { path: '/budget', label: '预算', icon: '💰' },
+  { path: '/settings', label: '我的', icon: '⚙️' },
 ]
 
 function isActive(path: string): boolean {
@@ -105,7 +113,7 @@ function isActive(path: string): boolean {
       <!-- 移动端底部导航（<768px 显示） -->
       <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-2 py-1.5 flex justify-around items-center z-50">
         <RouterLink
-          v-for="item in navItems.slice(0, 5)"
+          v-for="item in mobileNavItems"
           :key="item.path"
           :to="item.path"
           class="flex flex-col items-center py-1 px-2 rounded-lg transition-colors min-w-0"

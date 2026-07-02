@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import api from '@/api/index'
+import { useToast } from '@/composables/useToast'
 import ConfirmCards from '@/components/ConfirmCards.vue'
 import ManualForm from '@/components/ManualForm.vue'
 import TodayList from '@/components/TodayList.vue'
+
+const toast = useToast()
 
 // 状态
 const input = ref('')
@@ -14,6 +17,17 @@ const parsedItems = ref<any[]>([])
 const showManual = ref(false)
 const summary = ref({ expense: 0, income: 0 })
 const todayTransactions = ref<any[]>([])
+
+// 快捷短语
+const quickPhrases = ['午饭', '晚饭', '早餐', '打车', '咖啡', '地铁']
+
+function appendPhrase(phrase: string) {
+  if (input.value.trim()) {
+    input.value += `，${phrase}`
+  } else {
+    input.value = phrase
+  }
+}
 
 // 预算警告
 interface BudgetWarning {
@@ -68,10 +82,12 @@ async function handleAiParse() {
       // AI 失败，切手动
       error.value = data.message || 'AI 无法解析'
       showManual.value = true
+      toast.warning('已切换到手动模式')
     }
   } catch (e: any) {
     error.value = e.response?.data?.message || 'AI 请求失败'
     showManual.value = true
+    toast.warning('已切换到手动模式')
   } finally {
     loading.value = false
   }
@@ -100,6 +116,7 @@ async function handleConfirm(items: any[]) {
     // 重置状态
     parsedItems.value = []
     input.value = ''
+    toast.success(`已记 ${items.length} 笔`)
     fetchSummary()
     fetchToday()
     await checkBudgetWarnings()
@@ -132,6 +149,7 @@ async function handleManualSubmit(item: any) {
     await api.post('/transactions', { items: payload })
     showManual.value = false
     input.value = ''
+    toast.success('记账成功')
     fetchSummary()
     fetchToday()
     await checkBudgetWarnings()
@@ -194,8 +212,11 @@ function formatAmount(cents: number): string {
       </div>
     </div>
 
-    <!-- 本月摘要 -->
-    <div class="bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-4 mb-2 rounded-lg mx-2">
+    <!-- 本月摘要（可点击跳转统计） -->
+    <div
+      class="bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-4 mb-2 rounded-lg mx-2 cursor-pointer relative"
+      @click="$router.push('/stats')"
+    >
       <div class="grid grid-cols-3 gap-4 text-center">
         <div>
           <div class="text-xs text-blue-100">本月支出</div>
@@ -212,6 +233,7 @@ function formatAmount(cents: number): string {
           </div>
         </div>
       </div>
+      <div class="absolute bottom-2 right-3 text-xs text-white opacity-70">点击查看详情 ›</div>
     </div>
 
     <!-- AI 输入区 -->
@@ -239,6 +261,19 @@ function formatAmount(cents: number): string {
           手动
         </button>
       </form>
+
+      <!-- 快捷短语 -->
+      <div class="flex gap-2 overflow-x-auto pb-2 mt-2">
+        <button
+          v-for="phrase in quickPhrases"
+          :key="phrase"
+          type="button"
+          @click="appendPhrase(phrase)"
+          class="px-3 py-1 bg-gray-100 rounded-full text-xs text-gray-600 hover:bg-gray-200 whitespace-nowrap"
+        >
+          {{ phrase }}
+        </button>
+      </div>
 
       <div v-if="error" class="mt-2 text-sm text-red-600 bg-red-50 p-2 rounded">
         {{ error }}

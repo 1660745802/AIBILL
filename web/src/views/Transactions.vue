@@ -2,8 +2,12 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import api from '@/api/index'
 import EditTransactionModal from '@/components/EditTransactionModal.vue'
+import ConfirmModal from '@/components/ConfirmModal.vue'
 import Skeleton from '@/components/Skeleton.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import { useToast } from '@/composables/useToast'
+
+const toast = useToast()
 
 interface Transaction {
   id: number
@@ -31,6 +35,10 @@ const keyword = ref('')
 const filterType = ref('')
 const startDate = ref('')
 const endDate = ref('')
+
+// 删除确认
+const showDeleteConfirm = ref(false)
+const deleteTargetId = ref<number | null>(null)
 
 onMounted(() => fetchData())
 
@@ -65,11 +73,19 @@ function handleSearch() {
   fetchData()
 }
 
-async function handleDelete(id: number) {
-  if (!confirm('确定删除这笔交易？')) return
+function handleDelete(id: number) {
+  deleteTargetId.value = id
+  showDeleteConfirm.value = true
+}
+
+async function confirmDelete() {
+  if (deleteTargetId.value === null) return
   try {
-    await api.delete(`/transactions/${id}`)
+    await api.delete(`/transactions/${deleteTargetId.value}`)
+    showDeleteConfirm.value = false
+    deleteTargetId.value = null
     fetchData()
+    toast.success('已删除')
   } catch { /* ignore */ }
 }
 
@@ -89,6 +105,15 @@ const groupedTransactions = computed(() => {
   }
   return Object.entries(groups).sort(([a], [b]) => b.localeCompare(a))
 })
+
+// 计算每日支出小计
+function getDailyExpense(items: Transaction[]): number {
+  let total = 0
+  for (const tx of items) {
+    if (tx.type === 'expense') total += tx.amount
+  }
+  return total
+}
 
 function formatAmount(cents: number): string {
   return (cents / 100).toFixed(2)
@@ -170,7 +195,10 @@ function handleEditSaved() {
 
     <div v-else>
       <div v-for="[date, items] in groupedTransactions" :key="date" class="mb-2">
-        <div class="px-4 py-2 text-xs text-gray-500 bg-gray-50">{{ formatDate(date) }}</div>
+        <div class="px-4 py-2 text-xs bg-gray-50 flex items-center justify-between">
+          <span class="text-gray-500">{{ formatDate(date) }}</span>
+          <span class="text-red-500">-¥{{ formatAmount(getDailyExpense(items)) }}</span>
+        </div>
         <div class="bg-white">
           <div
             v-for="tx in items"
@@ -239,5 +267,16 @@ function handleEditSaved() {
     :transaction="editingTransaction"
     @close="showEditModal = false"
     @saved="handleEditSaved"
+  />
+
+  <!-- 删除确认弹窗 -->
+  <ConfirmModal
+    :show="showDeleteConfirm"
+    title="删除交易"
+    message="确定删除这笔交易？删除后可在回收站恢复。"
+    confirm-text="删除"
+    :danger="true"
+    @confirm="confirmDelete"
+    @cancel="showDeleteConfirm = false"
   />
 </template>
