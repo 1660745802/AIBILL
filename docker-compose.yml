@@ -8,7 +8,7 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - bill-data:/app/data
+      - ${BILL_DATA_DIR:-~/.bill}:/app/data
     environment:
       - PORT=3000
       - JWT_SECRET=${JWT_SECRET:-please-change-this-secret-in-production}
@@ -18,7 +18,3 @@ services:
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-gpt-4o-mini}
       - DB_PATH=/app/data/bill.db
-
-volumes:
-  bill-data:
-    driver: local
