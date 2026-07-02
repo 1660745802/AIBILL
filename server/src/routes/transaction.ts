@@ -249,6 +249,85 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     }
   })
 
+  // GET /api/transactions/trash - 查询已删除记录
+  app.get('/api/transactions/trash', async (request: FastifyRequest) => {
+    const db = getDb()
+    const userId = request.user!.userId
+    const query = request.query as { page?: string; page_size?: string }
+
+    const page = Math.max(1, parseInt(query.page || '1', 10))
+    const pageSize = Math.min(100, Math.max(1, parseInt(query.page_size || '20', 10)))
+    const offset = (page - 1) * pageSize
+
+    const countResult = db
+      .prepare(
+        `SELECT COUNT(*) as total FROM transactions WHERE user_id = ? AND deleted_at IS NOT NULL`,
+      )
+      .get(userId) as { total: number }
+
+    const items = db
+      .prepare(
+        `SELECT t.*,
+                c.name as category_name, c.icon as category_icon,
+                a.name as account_name,
+                ta.name as target_account_name
+         FROM transactions t
+         LEFT JOIN categories c ON t.category_id = c.id
+         LEFT JOIN accounts a ON t.account_id = a.id
+         LEFT JOIN accounts ta ON t.target_account_id = ta.id
+         WHERE t.user_id = ? AND t.deleted_at IS NOT NULL
+         ORDER BY t.deleted_at DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(userId, pageSize, offset)
+
+    return {
+      code: 0,
+      data: { items, total: countResult.total, page, page_size: pageSize },
+      message: '',
+    }
+  })
+
+  // POST /api/transactions/:id/restore - 恢复已删除记录
+  app.post('/api/transactions/:id/restore', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string }
+    const db = getDb()
+    const userId = request.user!.userId
+
+    const result = db
+      .prepare(
+        "UPDATE transactions SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL",
+      )
+      .run(Number(id), userId)
+
+    if (result.changes === 0) {
+      reply.code(404)
+      return { code: 3002, data: null, message: '记录不存在或未被删除' }
+    }
+
+    return { code: 0, data: null, message: '交易已恢复' }
+  })
+
+  // DELETE /api/transactions/:id/permanent - 永久删除
+  app.delete('/api/transactions/:id/permanent', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string }
+    const db = getDb()
+    const userId = request.user!.userId
+
+    const result = db
+      .prepare(
+        'DELETE FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL',
+      )
+      .run(Number(id), userId)
+
+    if (result.changes === 0) {
+      reply.code(404)
+      return { code: 3002, data: null, message: '记录不存在或未被删除' }
+    }
+
+    return { code: 0, data: null, message: '交易已永久删除' }
+  })
+
   // GET /api/transactions/:id - 单条详情
   app.get('/api/transactions/:id', async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string }

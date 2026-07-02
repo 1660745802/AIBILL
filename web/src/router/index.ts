@@ -16,6 +16,18 @@ const router = createRouter({
       meta: { guest: true },
     },
     {
+      path: '/onboarding',
+      name: 'Onboarding',
+      component: () => import('@/views/Onboarding.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/import',
+      name: 'Import',
+      component: () => import('@/views/Import.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/',
       name: 'Home',
       component: () => import('@/views/Home.vue'),
@@ -49,6 +61,12 @@ const router = createRouter({
       path: '/settings',
       name: 'Settings',
       component: () => import('@/views/Settings.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/trash',
+      name: 'Trash',
+      component: () => import('@/views/Trash.vue'),
       meta: { auth: true },
     },
     {

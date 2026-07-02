@@ -2,9 +2,11 @@
 import { onMounted } from 'vue'
 import { RouterView, useRoute, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useToast } from '@/composables/useToast'
 
 const auth = useAuthStore()
 const route = useRoute()
+const toast = useToast()
 
 onMounted(async () => {
   if (auth.token && !auth.user) {
@@ -23,6 +25,36 @@ const navItems = [
 
 <template>
   <div class="min-h-screen bg-gray-50">
+    <!-- 全局 Toast -->
+    <Teleport to="body">
+      <div class="fixed top-4 left-1/2 -translate-x-1/2 z-[9999] flex flex-col gap-2 w-[90%] max-w-sm pointer-events-none">
+        <TransitionGroup
+          enter-active-class="transition-all duration-300 ease-out"
+          leave-active-class="transition-all duration-200 ease-in"
+          enter-from-class="opacity-0 -translate-y-2 scale-95"
+          enter-to-class="opacity-100 translate-y-0 scale-100"
+          leave-from-class="opacity-100 translate-y-0 scale-100"
+          leave-to-class="opacity-0 -translate-y-1 scale-95"
+        >
+          <div
+            v-for="t in toast.toasts.value"
+            :key="t.id"
+            class="pointer-events-auto px-4 py-3 rounded-lg shadow-lg text-sm font-medium flex items-center gap-2 cursor-pointer"
+            :class="{
+              'bg-green-500 text-white': t.type === 'success',
+              'bg-red-500 text-white': t.type === 'error',
+              'bg-amber-500 text-white': t.type === 'warning',
+              'bg-gray-800 text-white': t.type === 'info',
+            }"
+            @click="toast.dismiss(t.id)"
+          >
+            <span>{{ t.type === 'success' ? '✓' : t.type === 'error' ? '✕' : t.type === 'warning' ? '⚠' : 'ℹ' }}</span>
+            <span>{{ t.message }}</span>
+          </div>
+        </TransitionGroup>
+      </div>
+    </Teleport>
+
     <RouterView />
 
     <!-- 底部导航（仅登录后显示） -->

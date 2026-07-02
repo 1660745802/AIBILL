@@ -15,6 +15,16 @@ const showManual = ref(false)
 const summary = ref({ expense: 0, income: 0 })
 const todayTransactions = ref<any[]>([])
 
+// 预算警告
+interface BudgetWarning {
+  category_name: string
+  status: 'warning' | 'exceeded'
+  percent: number
+  spent: number
+  amount: number
+}
+const budgetWarnings = ref<BudgetWarning[]>([])
+const showBudgetWarning = ref(false)
 // 本月摘要
 const balance = computed(() => summary.value.income - summary.value.expense)
 
@@ -92,6 +102,7 @@ async function handleConfirm(items: any[]) {
     input.value = ''
     fetchSummary()
     fetchToday()
+    await checkBudgetWarnings()
   } catch (e: any) {
     error.value = e.response?.data?.message || '保存失败'
   } finally {
@@ -123,9 +134,34 @@ async function handleManualSubmit(item: any) {
     input.value = ''
     fetchSummary()
     fetchToday()
+    await checkBudgetWarnings()
   } catch (e: any) {
     error.value = e.response?.data?.message || '保存失败'
   }
+}
+
+async function checkBudgetWarnings() {
+  try {
+    const { data } = await api.get('/budgets')
+    if (data.code === 0) {
+      const warnings: BudgetWarning[] = []
+      for (const b of data.data.items) {
+        if (b.status === 'warning' || b.status === 'exceeded') {
+          warnings.push({
+            category_name: b.category_name,
+            status: b.status,
+            percent: b.percent,
+            spent: b.spent,
+            amount: b.amount,
+          })
+        }
+      }
+      if (warnings.length > 0) {
+        budgetWarnings.value = warnings
+        showBudgetWarning.value = true
+      }
+    }
+  } catch { /* ignore */ }
 }
 
 function formatAmount(cents: number): string {
@@ -135,6 +171,29 @@ function formatAmount(cents: number): string {
 
 <template>
   <div class="pb-4">
+    <!-- 预算超支提醒 -->
+    <div v-if="showBudgetWarning && budgetWarnings.length > 0" class="mb-2">
+      <div
+        v-for="(w, idx) in budgetWarnings"
+        :key="idx"
+        class="px-4 py-2.5 text-sm flex items-center justify-between"
+        :class="w.status === 'exceeded' ? 'bg-red-50 text-red-700' : 'bg-yellow-50 text-yellow-700'"
+      >
+        <span v-if="w.status === 'warning'">
+          ⚠️ 本月{{ w.category_name }}预算已用{{ w.percent }}%，接近上限
+        </span>
+        <span v-else>
+          🚨 本月{{ w.category_name }}已超支，超出¥{{ formatAmount(w.spent - w.amount) }}
+        </span>
+        <button
+          @click="budgetWarnings.splice(idx, 1); if (budgetWarnings.length === 0) showBudgetWarning = false"
+          class="ml-2 text-current opacity-60 hover:opacity-100"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+
     <!-- 本月摘要 -->
     <div class="bg-white px-4 py-4 mb-2">
       <div class="grid grid-cols-3 gap-4 text-center">

@@ -75,6 +75,14 @@ function handleLogout() {
   auth.logout()
   router.push('/login')
 }
+
+function exportJson() {
+  window.open('/api/export/json')
+}
+
+function exportCsv() {
+  window.open('/api/export/csv')
+}
 </script>
 
 <template>
@@ -103,6 +111,37 @@ function handleLogout() {
     <!-- 分类/账户管理 -->
     <CategoryManager />
     <AccountManager />
+
+    <!-- 数据管理 -->
+    <div class="bg-white px-4 py-4 mb-2">
+      <h3 class="text-sm font-medium text-gray-700 mb-3">📂 数据管理</h3>
+      <div class="space-y-2">
+        <button
+          @click="exportJson"
+          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3"
+        >
+          📦 导出 JSON（全量备份）
+        </button>
+        <button
+          @click="exportCsv"
+          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3"
+        >
+          📄 导出 CSV（流水）
+        </button>
+        <button
+          @click="router.push('/import')"
+          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3"
+        >
+          📥 导入账单
+        </button>
+        <button
+          @click="router.push('/trash')"
+          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3"
+        >
+          🗑️ 回收站
+        </button>
+      </div>
+    </div>
 
     <!-- 管理员面板入口 -->
     <div v-if="auth.isAdmin" class="bg-white px-4 py-3 mb-2">

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
 import api from '@/api/index'
+import EditTransactionModal from '@/components/EditTransactionModal.vue'
 
 interface Transaction {
   id: number
@@ -8,6 +9,9 @@ interface Transaction {
   amount: number
   description: string
   date: string
+  category_id: number | null
+  account_id: number | null
+  target_account_id: number | null
   category_name: string
   category_icon: string
   account_name: string
@@ -93,6 +97,21 @@ function formatDate(dateStr: string): string {
   const weekDays = ['日', '一', '二', '三', '四', '五', '六']
   return `${d.getMonth() + 1}月${d.getDate()}日 周${weekDays[d.getDay()]}`
 }
+
+// 编辑弹窗
+const showEditModal = ref(false)
+const editingTransaction = ref<Transaction | null>(null)
+
+function handleRowClick(tx: Transaction) {
+  editingTransaction.value = tx
+  showEditModal.value = true
+}
+
+function handleEditSaved() {
+  showEditModal.value = false
+  editingTransaction.value = null
+  fetchData()
+}
 </script>
 
 <template>
@@ -152,7 +171,8 @@ function formatDate(dateStr: string): string {
           <div
             v-for="tx in items"
             :key="tx.id"
-            class="flex items-center justify-between px-4 py-3 border-b border-gray-50 last:border-0"
+            @click="handleRowClick(tx)"
+            class="flex items-center justify-between px-4 py-3 border-b border-gray-50 last:border-0 cursor-pointer hover:bg-gray-50"
           >
             <div class="flex items-center gap-2">
               <span class="text-base">{{ tx.category_icon || '📦' }}</span>
@@ -178,7 +198,7 @@ function formatDate(dateStr: string): string {
                 {{ tx.type === 'income' ? '+' : '-' }}¥{{ formatAmount(tx.amount) }}
               </span>
               <button
-                @click="handleDelete(tx.id)"
+                @click.stop="handleDelete(tx.id)"
                 class="text-xs text-gray-300 hover:text-red-500"
               >
                 ✕
@@ -208,4 +228,12 @@ function formatDate(dateStr: string): string {
       </div>
     </div>
   </div>
+
+  <!-- 编辑弹窗 -->
+  <EditTransactionModal
+    :show="showEditModal"
+    :transaction="editingTransaction"
+    @close="showEditModal = false"
+    @saved="handleEditSaved"
+  />
 </template>

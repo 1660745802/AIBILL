@@ -33,7 +33,7 @@ async function handleRegister() {
   loading.value = true
   try {
     await auth.register(username.value, password.value, inviteCode.value, nickname.value || undefined)
-    router.push('/')
+    router.push('/onboarding')
   } catch (e: any) {
     error.value = e.message || '注册失败'
   } finally {
