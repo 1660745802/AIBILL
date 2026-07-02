@@ -96,10 +96,8 @@ function isActive(path: string): boolean {
       <!-- 主内容区 -->
       <main class="flex-1 md:ml-56 lg:ml-64">
         <div class="max-w-3xl mx-auto">
-          <RouterView v-slot="{ Component }">
-            <Transition name="fade" mode="out-in">
-              <component :is="Component" />
-            </Transition>
+          <RouterView v-slot="{ Component, route: viewRoute }">
+            <component :is="Component" :key="viewRoute.path" />
           </RouterView>
         </div>
       </main>
@@ -124,10 +122,8 @@ function isActive(path: string): boolean {
 
     <!-- 未登录：居中布局（登录/注册页） -->
     <div v-else>
-      <RouterView v-slot="{ Component }">
-        <Transition name="fade" mode="out-in">
-          <component :is="Component" />
-        </Transition>
+      <RouterView v-slot="{ Component, route: viewRoute }">
+        <component :is="Component" :key="viewRoute.path" />
       </RouterView>
     </div>
   </div>
