@@ -147,9 +147,9 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
 ('currency', 'CNY');
 `
 
-/** 为新用户生成默认支出分类 */
-export function getDefaultExpenseCategories(userId: number): string {
-  const categories = [
+/** 为新用户生成默认支出分类（参数化插入） */
+export function insertDefaultExpenseCategories(db: any, userId: number): void {
+  const categories: [string, string, number][] = [
     ['餐饮', '🍜', 1],
     ['交通', '🚗', 2],
     ['购物', '🛒', 3],
@@ -163,15 +163,17 @@ export function getDefaultExpenseCategories(userId: number): string {
     ['人情', '🎁', 11],
     ['其他', '📦', 99],
   ]
-  const values = categories
-    .map(([name, icon, order]) => `(${userId}, '${name}', 'expense', '${icon}', ${order})`)
-    .join(',\n    ')
-  return `INSERT INTO categories (user_id, name, type, icon, sort_order) VALUES\n    ${values};`
+  const stmt = db.prepare(
+    'INSERT INTO categories (user_id, name, type, icon, sort_order) VALUES (?, ?, ?, ?, ?)',
+  )
+  for (const [name, icon, order] of categories) {
+    stmt.run(userId, name, 'expense', icon, order)
+  }
 }
 
-/** 为新用户生成默认收入分类 */
-export function getDefaultIncomeCategories(userId: number): string {
-  const categories = [
+/** 为新用户生成默认收入分类（参数化插入） */
+export function insertDefaultIncomeCategories(db: any, userId: number): void {
+  const categories: [string, string, number][] = [
     ['工资', '💰', 1],
     ['奖金', '🎉', 2],
     ['理财', '📈', 3],
@@ -180,22 +182,26 @@ export function getDefaultIncomeCategories(userId: number): string {
     ['退款', '↩️', 6],
     ['其他', '📦', 99],
   ]
-  const values = categories
-    .map(([name, icon, order]) => `(${userId}, '${name}', 'income', '${icon}', ${order})`)
-    .join(',\n    ')
-  return `INSERT INTO categories (user_id, name, type, icon, sort_order) VALUES\n    ${values};`
+  const stmt = db.prepare(
+    'INSERT INTO categories (user_id, name, type, icon, sort_order) VALUES (?, ?, ?, ?, ?)',
+  )
+  for (const [name, icon, order] of categories) {
+    stmt.run(userId, name, 'income', icon, order)
+  }
 }
 
-/** 为新用户生成默认账户 */
-export function getDefaultAccounts(userId: number): string {
-  const accounts = [
+/** 为新用户生成默认账户（参数化插入） */
+export function insertDefaultAccounts(db: any, userId: number): void {
+  const accounts: [string, string, string, number][] = [
     ['微信', 'wechat', '💚', 1],
     ['支付宝', 'alipay', '🔵', 2],
     ['银行卡', 'bank', '💳', 3],
     ['现金', 'cash', '💵', 4],
   ]
-  const values = accounts
-    .map(([name, type, icon, order]) => `(${userId}, '${name}', '${type}', '${icon}', ${order})`)
-    .join(',\n    ')
-  return `INSERT INTO accounts (user_id, name, type, icon, sort_order) VALUES\n    ${values};`
+  const stmt = db.prepare(
+    'INSERT INTO accounts (user_id, name, type, icon, sort_order) VALUES (?, ?, ?, ?, ?)',
+  )
+  for (const [name, type, icon, order] of accounts) {
+    stmt.run(userId, name, type, icon, order)
+  }
 }

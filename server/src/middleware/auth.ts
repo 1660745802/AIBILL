@@ -38,6 +38,7 @@ export async function authMiddleware(
     request.user = payload
   } catch {
     reply.code(401).send({ code: 1002, data: null, message: '令牌无效或已过期' })
+    return
   }
 }
 
@@ -50,5 +51,6 @@ export async function adminMiddleware(
 ): Promise<void> {
   if (!request.user || request.user.role !== 'admin') {
     reply.code(403).send({ code: 1003, data: null, message: '权限不足，需要管理员角色' })
+    return
   }
 }

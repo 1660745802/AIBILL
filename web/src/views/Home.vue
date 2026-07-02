@@ -8,6 +8,7 @@ import TodayList from '@/components/TodayList.vue'
 // 状态
 const input = ref('')
 const loading = ref(false)
+const confirming = ref(false)
 const error = ref('')
 const parsedItems = ref<any[]>([])
 const showManual = ref(false)
@@ -24,22 +25,9 @@ onMounted(() => {
 
 async function fetchSummary() {
   try {
-    const now = new Date()
-    const year = now.getFullYear()
-    const month = String(now.getMonth() + 1).padStart(2, '0')
-    const startDate = `${year}-${month}-01`
-    const endDate = `${year}-${month}-${String(new Date(year, now.getMonth() + 1, 0).getDate()).padStart(2, '0')}`
-
-    const { data } = await api.get('/transactions', {
-      params: { start_date: startDate, end_date: endDate, page_size: 500 },
-    })
+    const { data } = await api.get('/stats/summary')
     if (data.code === 0) {
-      let exp = 0, inc = 0
-      for (const tx of data.data.items) {
-        if (tx.type === 'expense') exp += tx.amount
-        else if (tx.type === 'income') inc += tx.amount
-      }
-      summary.value = { expense: exp, income: inc }
+      summary.value = { expense: data.data.expense, income: data.data.income }
     }
   } catch { /* ignore */ }
 }
@@ -80,6 +68,8 @@ async function handleAiParse() {
 }
 
 async function handleConfirm(items: any[]) {
+  if (confirming.value) return
+  confirming.value = true
   try {
     const payload = items.map((item) => ({
       client_id: crypto.randomUUID(),
@@ -104,6 +94,8 @@ async function handleConfirm(items: any[]) {
     fetchToday()
   } catch (e: any) {
     error.value = e.response?.data?.message || '保存失败'
+  } finally {
+    confirming.value = false
   }
 }
 

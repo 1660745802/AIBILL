@@ -99,6 +99,36 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
             item.category_id = null
           }
 
+          // 校验 category_id 归属当前用户
+          if (item.category_id) {
+            const cat = db
+              .prepare('SELECT id FROM categories WHERE id = ? AND user_id = ? AND is_active = 1')
+              .get(item.category_id, userId)
+            if (!cat) {
+              throw new ValidationError(`分类 ID ${item.category_id} 不存在或不属于当前用户`)
+            }
+          }
+
+          // 校验 account_id 归属当前用户
+          if (item.account_id) {
+            const acc = db
+              .prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ? AND is_active = 1')
+              .get(item.account_id, userId)
+            if (!acc) {
+              throw new ValidationError(`账户 ID ${item.account_id} 不存在或不属于当前用户`)
+            }
+          }
+
+          // 校验 target_account_id 归属当前用户
+          if (item.target_account_id) {
+            const tacc = db
+              .prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ? AND is_active = 1')
+              .get(item.target_account_id, userId)
+            if (!tacc) {
+              throw new ValidationError(`目标账户 ID ${item.target_account_id} 不存在或不属于当前用户`)
+            }
+          }
+
           const result = insertStmt.run(
             userId,
             item.client_id || null,

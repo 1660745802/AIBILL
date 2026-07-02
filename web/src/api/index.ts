@@ -27,8 +27,12 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
+      // 清理 token 并跳转（同步操作）
       localStorage.removeItem('token')
-      window.location.href = '/login'
+      const currentPath = window.location.pathname
+      if (currentPath !== '/login' && currentPath !== '/register') {
+        window.location.replace('/login')
+      }
     }
     return Promise.reject(error)
   },

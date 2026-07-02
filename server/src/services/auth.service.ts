@@ -6,9 +6,9 @@ import jwt from 'jsonwebtoken'
 import { getDb } from '../db/index.js'
 import { config } from '../config.js'
 import {
-  getDefaultExpenseCategories,
-  getDefaultIncomeCategories,
-  getDefaultAccounts,
+  insertDefaultExpenseCategories,
+  insertDefaultIncomeCategories,
+  insertDefaultAccounts,
 } from '../db/schema.js'
 import type { JwtPayload } from '../middleware/auth.js'
 
@@ -94,11 +94,11 @@ export function register(input: RegisterInput): { token: string; user: UserInfo 
     const userId = Number(userResult.lastInsertRowid)
 
     // 生成默认分类
-    db.exec(getDefaultExpenseCategories(userId))
-    db.exec(getDefaultIncomeCategories(userId))
+    insertDefaultExpenseCategories(db, userId)
+    insertDefaultIncomeCategories(db, userId)
 
     // 生成默认账户
-    db.exec(getDefaultAccounts(userId))
+    insertDefaultAccounts(db, userId)
 
     // 邀请码计数 +1
     db.prepare('UPDATE invite_codes SET used_count = used_count + 1 WHERE id = ?').run(
@@ -183,9 +183,9 @@ export function ensureAdminUser(): void {
   const adminId = Number(result.lastInsertRowid)
 
   // 为管理员也生成默认分类和账户
-  db.exec(getDefaultExpenseCategories(adminId))
-  db.exec(getDefaultIncomeCategories(adminId))
-  db.exec(getDefaultAccounts(adminId))
+  insertDefaultExpenseCategories(db, adminId)
+  insertDefaultIncomeCategories(db, adminId)
+  insertDefaultAccounts(db, adminId)
 
   console.log(`[Auth] Admin user "${config.adminUsername}" created`)
 }

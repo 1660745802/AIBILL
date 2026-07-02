@@ -12,6 +12,14 @@ async function start(): Promise<void> {
   initDb()
   console.log('[App] Database initialized')
 
+  // 安全警告
+  if (config.jwtSecret === 'your-random-secret-at-least-32-chars') {
+    console.warn('[⚠️  Security] JWT_SECRET 使用默认值，生产环境请务必设置自定义密钥！')
+  }
+  if (config.adminPassword === 'changeme123') {
+    console.warn('[⚠️  Security] ADMIN_PASSWORD 使用默认值，请尽快修改！')
+  }
+
   // 确保管理员账户存在
   ensureAdminUser()
 
