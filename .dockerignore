@@ -1,0 +1,11 @@
+node_modules
+dist
+data
+.env
+*.db
+.git
+.gitignore
+docs
+*.md
+server/node_modules
+web/node_modules
