@@ -15,6 +15,7 @@ onMounted(async () => {
 const navItems = [
   { path: '/', label: '首页', icon: '🏠' },
   { path: '/transactions', label: '流水', icon: '📋' },
+  { path: '/stats', label: '统计', icon: '📊' },
   { path: '/settings', label: '我的', icon: '⚙️' },
 ]
 </script>

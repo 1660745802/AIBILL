@@ -5,6 +5,7 @@ import { accountRoutes } from './account.js'
 import { transactionRoutes } from './transaction.js'
 import { aiRoutes } from './ai.js'
 import { adminRoutes, userSettingsRoutes } from './admin.js'
+import { statsRoutes } from './stats.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.get('/health', async () => {
@@ -21,4 +22,5 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(aiRoutes)
   await app.register(adminRoutes)
   await app.register(userSettingsRoutes)
+  await app.register(statsRoutes)
 }
