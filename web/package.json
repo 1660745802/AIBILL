@@ -1,0 +1,28 @@
+{
+  "name": "bill-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.18.1",
+    "pinia": "3.0.3",
+    "vue": "3.5.17",
+    "vue-router": "4.5.1"
+  },
+  "devDependencies": {
+    "@headlessui/vue": "1.7.23",
+    "@heroicons/vue": "2.2.0",
+    "@tailwindcss/vite": "4.1.11",
+    "@vitejs/plugin-vue": "6.0.0",
+    "autoprefixer": "10.4.21",
+    "tailwindcss": "4.1.11",
+    "typescript": "5.8.3",
+    "vite": "^7.3.6",
+    "vue-tsc": "2.2.12"
+  }
+}
