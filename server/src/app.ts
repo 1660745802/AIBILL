@@ -4,6 +4,9 @@ import { config } from './config.js'
 import { registerRoutes } from './routes/index.js'
 import { initDb, closeDb } from './db/index.js'
 import { ensureAdminUser } from './services/auth.service.js'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import fs from 'node:fs'
 
 const app = Fastify({ logger: true })
 
@@ -25,6 +28,26 @@ async function start(): Promise<void> {
 
   await app.register(cors)
   await registerRoutes(app)
+
+  // 生产模式：服务前端静态文件
+  const __dirname = path.dirname(fileURLToPath(import.meta.url))
+  const publicDir = path.join(__dirname, '..', 'public')
+  if (fs.existsSync(publicDir)) {
+    const fastifyStatic = await import('@fastify/static')
+    await app.register(fastifyStatic.default, {
+      root: publicDir,
+      prefix: '/',
+      wildcard: false,
+    })
+    // SPA fallback: 非 API 路由返回 index.html
+    app.setNotFoundHandler(async (request, reply) => {
+      if (request.url.startsWith('/api/')) {
+        reply.code(404).send({ code: 4004, data: null, message: '接口不存在' })
+      } else {
+        return reply.sendFile('index.html')
+      }
+    })
+  }
 
   // 优雅关闭
   const shutdown = async () => {
