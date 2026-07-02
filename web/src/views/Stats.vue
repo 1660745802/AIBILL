@@ -124,7 +124,7 @@ function formatAmount(cents: number): string {
     </div>
 
     <!-- 收支摘要 -->
-    <div v-if="summary" class="bg-white px-4 py-4 mb-2">
+    <div v-if="summary" class="bg-white px-4 py-4 mb-2 rounded-xl shadow-sm mx-2">
       <div class="grid grid-cols-3 gap-4 text-center">
         <div>
           <div class="text-xs text-gray-500">支出</div>

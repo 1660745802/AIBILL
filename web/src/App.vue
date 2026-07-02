@@ -55,7 +55,11 @@ const navItems = [
       </div>
     </Teleport>
 
-    <RouterView />
+    <RouterView v-slot="{ Component }">
+      <Transition name="fade" mode="out-in">
+        <component :is="Component" />
+      </Transition>
+    </RouterView>
 
     <!-- 底部导航（仅登录后显示） -->
     <nav

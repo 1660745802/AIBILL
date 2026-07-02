@@ -2,6 +2,8 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import api from '@/api/index'
 import EditTransactionModal from '@/components/EditTransactionModal.vue'
+import Skeleton from '@/components/Skeleton.vue'
+import EmptyState from '@/components/EmptyState.vue'
 
 interface Transaction {
   id: number
@@ -158,10 +160,12 @@ function handleEditSaved() {
     </div>
 
     <!-- 列表 -->
-    <div v-if="loading" class="text-center py-8 text-gray-400 text-sm">加载中...</div>
+    <div v-if="loading" class="bg-white">
+      <Skeleton :lines="5" />
+    </div>
 
-    <div v-else-if="transactions.length === 0" class="text-center py-8 text-gray-400 text-sm">
-      暂无交易记录
+    <div v-else-if="transactions.length === 0" class="bg-white">
+      <EmptyState icon="📄" title="暂无交易记录" />
     </div>
 
     <div v-else>

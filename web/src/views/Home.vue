@@ -4,6 +4,7 @@ import api from '@/api/index'
 import ConfirmCards from '@/components/ConfirmCards.vue'
 import ManualForm from '@/components/ManualForm.vue'
 import TodayList from '@/components/TodayList.vue'
+import EmptyState from '@/components/EmptyState.vue'
 
 // 状态
 const input = ref('')
@@ -195,19 +196,19 @@ function formatAmount(cents: number): string {
     </div>
 
     <!-- 本月摘要 -->
-    <div class="bg-white px-4 py-4 mb-2">
+    <div class="bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-4 mb-2 rounded-lg mx-2">
       <div class="grid grid-cols-3 gap-4 text-center">
         <div>
-          <div class="text-xs text-gray-500">本月支出</div>
-          <div class="text-lg font-semibold text-red-500">¥{{ formatAmount(summary.expense) }}</div>
+          <div class="text-xs text-blue-100">本月支出</div>
+          <div class="text-lg font-semibold text-white">¥{{ formatAmount(summary.expense) }}</div>
         </div>
         <div>
-          <div class="text-xs text-gray-500">本月收入</div>
-          <div class="text-lg font-semibold text-green-500">¥{{ formatAmount(summary.income) }}</div>
+          <div class="text-xs text-blue-100">本月收入</div>
+          <div class="text-lg font-semibold text-white">¥{{ formatAmount(summary.income) }}</div>
         </div>
         <div>
-          <div class="text-xs text-gray-500">结余</div>
-          <div class="text-lg font-semibold" :class="balance >= 0 ? 'text-gray-700' : 'text-red-500'">
+          <div class="text-xs text-blue-100">结余</div>
+          <div class="text-lg font-semibold text-white">
             ¥{{ formatAmount(balance) }}
           </div>
         </div>
@@ -220,7 +221,7 @@ function formatAmount(cents: number): string {
         <input
           v-model="input"
           type="text"
-          class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+          class="flex-1 px-3 py-2 border border-gray-300 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
           placeholder="说点什么就能记账... 如：午饭32，打车15"
           :disabled="loading"
         />

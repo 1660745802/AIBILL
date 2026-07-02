@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import EmptyState from '@/components/EmptyState.vue'
+
 defineProps<{
   transactions: any[]
 }>()
@@ -16,9 +18,12 @@ function formatAmount(cents: number): string {
   <div class="bg-white px-4 py-4">
     <h3 class="text-sm font-medium text-gray-700 mb-3">今日流水</h3>
 
-    <div v-if="transactions.length === 0" class="text-center py-8 text-gray-400 text-sm">
-      今天还没有记账
-    </div>
+    <EmptyState
+      v-if="transactions.length === 0"
+      icon="📝"
+      title="今天还没有记账"
+      description="在上方输入就能快速记账"
+    />
 
     <div v-else class="space-y-2">
       <div

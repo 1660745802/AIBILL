@@ -34,11 +34,11 @@ async function handleLogin() {
   <div class="min-h-screen flex items-center justify-center bg-gray-50 px-4">
     <div class="w-full max-w-sm">
       <div class="text-center mb-8">
-        <h1 class="text-2xl font-bold text-gray-900">AI 记账</h1>
+        <h1 class="text-2xl font-bold text-gray-900">💰 AI 记账</h1>
         <p class="mt-2 text-sm text-gray-500">说句话就能记账</p>
       </div>
 
-      <form @submit.prevent="handleLogin" class="bg-white shadow-sm rounded-lg p-6 space-y-4">
+      <form @submit.prevent="handleLogin" class="bg-white shadow-md rounded-xl p-6 space-y-4">
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">用户名</label>
           <input
