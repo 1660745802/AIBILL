@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import api from '@/api/index'
 import { useToast } from '@/composables/useToast'
+import { generateUUID } from '@/utils/uuid'
 import ConfirmCards from '@/components/ConfirmCards.vue'
 import ManualForm from '@/components/ManualForm.vue'
 import TodayList from '@/components/TodayList.vue'
@@ -98,7 +99,7 @@ async function handleConfirm(items: any[]) {
   confirming.value = true
   try {
     const payload = items.map((item) => ({
-      client_id: crypto.randomUUID(),
+      client_id: generateUUID(),
       client_type: 'web',
       source: 'ai',
       source_detail: input.value,
@@ -134,7 +135,7 @@ function handleCancel() {
 async function handleManualSubmit(item: any) {
   try {
     const payload = [{
-      client_id: crypto.randomUUID(),
+      client_id: generateUUID(),
       client_type: 'web',
       source: 'manual',
       type: item.type,
