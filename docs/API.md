@@ -451,9 +451,20 @@ type 枚举：`cash | wechat | alipay | bank | credit | other`
 ### PUT /accounts/:id
 
 ```json
-// Request
-{ "name": "招行卡", "icon": "🏦", "initial_balance": 1000000 }
+// Request（只传需要修改的字段）
+{
+  "name": "招行卡",
+  "icon": "🏦",
+  "current_balance": 500000   // 设置目标余额（分），后端自动反算，显示即为此值
+}
 ```
+
+| 字段 | 说明 |
+|------|------|
+| current_balance | **推荐**。设置目标余额，后端反算 initial_balance，使显示余额 = 你设的值。后续新账单在此基础上增减 |
+| initial_balance | 兼容保留。直接设底层初始值（不推荐，设了之后流水还会叠加） |
+
+两个字段二选一传，优先 `current_balance`。
 
 ### DELETE /accounts/:id
 
