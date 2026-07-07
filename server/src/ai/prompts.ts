@@ -23,9 +23,12 @@ export function buildParsePrompt(ctx: PromptContext): string {
 5. 推断账户（没有明确说则为空字符串）
 6. 支持一次输入多条记录，每条单独一个对象
 7. transfer 类型不需要分类，category 为空字符串
-8. 支持银行短信、支付通知等结构化文本，提取其中的金额、商户、账户信息
-9. 银行扣款+充值类（如"微信零钱充值"）应识别为 transfer（银行卡→微信）
-10. "人民币X.XX"、"￥X.XX"、"X.XX元" 都是金额表达
+8. 支持银行短信、支付通知、账单截图文字等各种格式，智能提取金额、商户、账户
+9. 银行扣款+充值类（如"微信零钱充值"、"支付宝充值"）应识别为 transfer
+10. "人民币X.XX"、"￥X.XX"、"X.XX元"、"¥X.XX" 都是金额表达
+11. 如果文本中包含多笔交易信息，逐一提取为多条记录
+12. 忽略无关信息（验证码、广告、问候语等），只提取有金额的交易
+13. 商户名/描述尽量简短（去掉"有限公司"、"股份"等后缀）
 
 可用分类（支出）：${ctx.expenseCategories.join('、')}
 可用分类（收入）：${ctx.incomeCategories.join('、')}
@@ -64,6 +67,14 @@ export function buildParsePrompt(ctx: PromptContext): string {
 用户输入："微信支付收款到账50.00元"
 输出：
 [{"type":"income","amount":50,"category":"其他","description":"微信收款","date":"${ctx.today}","account":"微信"}]
+
+用户输入："今天花了不少：早上星巴克38，中午和同事吃饭AA了85，下午打车去客户那里32，晚上超市买了点东西67"
+输出：
+[{"type":"expense","amount":38,"category":"餐饮","description":"星巴克","date":"${ctx.today}","account":""},{"type":"expense","amount":85,"category":"餐饮","description":"午饭AA","date":"${ctx.today}","account":""},{"type":"expense","amount":32,"category":"交通","description":"打车","date":"${ctx.today}","account":""},{"type":"expense","amount":67,"category":"日用","description":"超市购物","date":"${ctx.today}","account":""}]
+
+用户输入："【建设银行】您尾号8834的储蓄卡07月06日15:23向微信支付消费支出（网上交易）人民币198.00元，余额2,156.78元"
+输出：
+[{"type":"expense","amount":198,"category":"购物","description":"微信支付消费","date":"${getDayBefore(ctx.today, 1)}","account":"银行卡"}]
 
 ## 输出要求
 只输出 JSON 数组，不要 markdown 代码块，不要任何其他文字。
