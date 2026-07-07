@@ -22,6 +22,7 @@ const updateAccountSchema = z.object({
   type: z.enum(['cash', 'wechat', 'alipay', 'bank', 'credit', 'other']).optional(),
   icon: z.string().max(10).optional(),
   initial_balance: z.number().int().optional(),
+  current_balance: z.number().int().optional(), // 用户设置目标余额，后端反算 initial_balance
   sort_order: z.number().int().min(0).optional(),
   is_active: z.number().int().min(0).max(1).optional(),
 })
@@ -110,9 +111,29 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
       if (body.name !== undefined) { updates.push('name = ?'); params.push(body.name) }
       if (body.type !== undefined) { updates.push('type = ?'); params.push(body.type) }
       if (body.icon !== undefined) { updates.push('icon = ?'); params.push(body.icon) }
-      if (body.initial_balance !== undefined) { updates.push('initial_balance = ?'); params.push(body.initial_balance) }
       if (body.sort_order !== undefined) { updates.push('sort_order = ?'); params.push(body.sort_order) }
       if (body.is_active !== undefined) { updates.push('is_active = ?'); params.push(body.is_active) }
+
+      // 处理余额设置：用户传 current_balance（目标余额），反算 initial_balance
+      if (body.current_balance !== undefined) {
+        // 计算当前流水对该账户的净影响
+        const flowResult = db.prepare(`
+          SELECT
+            COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = ? AND type = 'income' AND account_id = ? AND status = 'confirmed' AND deleted_at IS NULL), 0)
+            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = ? AND type = 'expense' AND account_id = ? AND status = 'confirmed' AND deleted_at IS NULL), 0)
+            + COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = ? AND type = 'transfer' AND target_account_id = ? AND status = 'confirmed' AND deleted_at IS NULL), 0)
+            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = ? AND type = 'transfer' AND account_id = ? AND status = 'confirmed' AND deleted_at IS NULL), 0)
+          AS net_flow
+        `).get(userId, Number(id), userId, Number(id), userId, Number(id), userId, Number(id)) as { net_flow: number }
+
+        // initial_balance = 目标余额 - 流水净影响
+        const newInitialBalance = body.current_balance - flowResult.net_flow
+        updates.push('initial_balance = ?')
+        params.push(newInitialBalance)
+      } else if (body.initial_balance !== undefined) {
+        updates.push('initial_balance = ?')
+        params.push(body.initial_balance)
+      }
 
       if (updates.length === 0) {
         reply.code(400)

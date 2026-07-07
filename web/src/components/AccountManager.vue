@@ -59,7 +59,7 @@ function startEdit(acc: any) {
   editingId.value = acc.id
   editName.value = acc.name
   editIcon.value = acc.icon
-  editBalance.value = (acc.initial_balance / 100).toString()
+  editBalance.value = ((acc.current_balance ?? acc.initial_balance) / 100).toString()
 }
 
 async function saveEdit() {
@@ -69,7 +69,7 @@ async function saveEdit() {
     await api.put(`/accounts/${editingId.value}`, {
       name: editName.value.trim(),
       icon: editIcon.value,
-      initial_balance: balance,
+      current_balance: balance,
     })
     editingId.value = null
     await fetchAccounts()
@@ -151,7 +151,7 @@ function formatBalance(cents: number): string {
             <input v-model="editIcon" class="w-10 px-1 py-1 border border-gray-300 rounded text-center text-sm" maxlength="4" />
           </div>
           <div class="flex gap-2">
-            <input v-model="editBalance" type="number" step="0.01" class="flex-1 px-2 py-1 border border-gray-300 rounded text-sm" placeholder="初始余额（元）" />
+            <input v-model="editBalance" type="number" step="0.01" class="flex-1 px-2 py-1 border border-gray-300 rounded text-sm" placeholder="当前余额（元）" />
             <button @click="saveEdit" class="px-3 py-1 bg-blue-600 text-white text-xs rounded">保存</button>
             <button @click="editingId = null" class="px-3 py-1 text-gray-500 text-xs border border-gray-300 rounded">取消</button>
           </div>
