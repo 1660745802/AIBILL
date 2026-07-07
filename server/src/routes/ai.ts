@@ -69,7 +69,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           { role: 'user', content: body.input },
         ],
         0.1,
-        10000,
+        30000,
       )
 
       // 解析响应
