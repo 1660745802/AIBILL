@@ -37,7 +37,7 @@ async function sendMessage() {
     const { data } = await api.post('/ai/chat', {
       message: userMessage,
       session_id: sessionId.value || undefined,
-    })
+    }, { timeout: 30000 })
 
     if (data.code === 0) {
       sessionId.value = data.data.session_id

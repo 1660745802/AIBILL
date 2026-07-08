@@ -100,7 +100,7 @@ async function trialParse() {
   trialError.value = ''
   trialParsed.value = null
   try {
-    const { data } = await api.post('/ai/parse', { input: trialInput.value })
+    const { data } = await api.post('/ai/parse', { input: trialInput.value }, { timeout: 90000 })
     if (data.code === 0 && data.data?.items?.length) {
       trialParsed.value = data.data.items
     } else {

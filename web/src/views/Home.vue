@@ -76,7 +76,7 @@ async function handleAiParse() {
   parsedItems.value = []
 
   try {
-    const { data } = await api.post('/ai/parse', { input: input.value })
+    const { data } = await api.post('/ai/parse', { input: input.value }, { timeout: 90000 })
     if (data.code === 0 && data.data.items.length > 0) {
       parsedItems.value = data.data.items
     } else {
