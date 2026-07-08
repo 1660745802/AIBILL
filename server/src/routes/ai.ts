@@ -62,14 +62,17 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         accounts: accounts.map((a) => a.name),
       })
 
+      // 预清理输入文本（去除通知标题噪音）
+      const cleanedInput = cleanInput(body.input)
+
       // 调用 LLM
       const aiResponse = await chatCompletion(
         [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: body.input },
+          { role: 'user', content: cleanedInput },
         ],
         0.1,
-        30000,
+        60000,
       )
 
       // 解析响应
@@ -353,4 +356,27 @@ ${dataContext}
 
     return { code: 0, data: null, message: '对话已删除' }
   })
+}
+
+
+/**
+ * 预清理输入文本，去除通知标题噪音
+ */
+function cleanInput(input: string): string {
+  let text = input.trim()
+
+  // 去除通知标题前缀（如 "[3条]动账通知"、"[招商银行]"）
+  text = text.replace(/^\[?\d+条\]?\s*/g, '')
+  text = text.replace(/^[\[【].*?[\]】]\s*/g, '')
+
+  // 去除重复的标题（如 "动账通知 动账通知"）
+  text = text.replace(/^(.{2,10})\s+\1\s*/g, '$1 ')
+
+  // 去除开头的通知类关键词
+  text = text.replace(/^(动账通知|交易提醒|消费提醒|收支通知)\s*/g, '')
+
+  // 去除多余空白
+  text = text.replace(/\s+/g, ' ').trim()
+
+  return text || input.trim()
 }
