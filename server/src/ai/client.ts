@@ -83,13 +83,14 @@ export async function chatCompletion(
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => '')
+      console.error(`[AI] API error: status=${response.status}, body=${errorText.slice(0, 500)}`)
       if (response.status === 401) {
         throw new AiError('AI_KEY_INVALID', 'AI API Key 无效')
       }
       if (response.status === 429) {
         throw new AiError('AI_RATE_LIMIT', 'AI 请求频率超限，请稍后再试')
       }
-      throw new AiError('AI_API_ERROR', `AI 接口错误 (${response.status}): ${errorText}`)
+      throw new AiError('AI_API_ERROR', `AI 接口错误 (${response.status}): ${errorText.slice(0, 200)}`)
     }
 
     const data = (await response.json()) as ChatCompletionResponse
