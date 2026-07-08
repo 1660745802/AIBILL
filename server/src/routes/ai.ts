@@ -16,7 +16,7 @@ import { extractJsonArray, validateParsedItems, ParseError } from '../ai/parser.
 import { matchCategory } from '../ai/category-matcher.js'
 
 const parseInputSchema = z.object({
-  input: z.string().min(1, '输入不能为空').max(500, '输入过长'),
+  input: z.string().min(1, '输入不能为空').max(3000, '输入过长'),
 })
 
 interface CategoryRow {
@@ -189,7 +189,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
   // ============ AI 问答 ============
 
   const chatInputSchema = z.object({
-    message: z.string().min(1, '消息不能为空').max(1000),
+    message: z.string().min(1, '消息不能为空').max(2000),
     session_id: z.string().uuid().optional(),
   })
 
