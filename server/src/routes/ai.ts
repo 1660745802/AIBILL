@@ -55,15 +55,17 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       // 构建 prompt
       const today = new Date().toISOString().slice(0, 10)
+
+      // 预清理输入文本（去除通知标题噪音）
+      const cleanedInput = cleanInput(body.input)
+
+      // 根据输入长度选择快速/完整 prompt
       const systemPrompt = buildParsePrompt({
         today,
         expenseCategories: expenseCategories.map((c) => c.name),
         incomeCategories: incomeCategories.map((c) => c.name),
         accounts: accounts.map((a) => a.name),
-      })
-
-      // 预清理输入文本（去除通知标题噪音）
-      const cleanedInput = cleanInput(body.input)
+      }, cleanedInput.length)
 
       // 调用 LLM
       const aiResponse = await chatCompletion(

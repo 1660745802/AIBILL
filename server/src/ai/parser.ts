@@ -60,12 +60,30 @@ export function validateParsedItems(items: ParsedTransaction[], today: string): 
   for (const item of items) {
     // type 必须合法
     if (!['expense', 'income', 'transfer'].includes(item.type)) {
-      continue // 跳过无效条目
+      continue
     }
 
     // amount 必须有且大于 0
-    const amount = Number(item.amount)
+    let amount = Number(item.amount)
+    if (!amount || isNaN(amount)) {
+      // 尝试从字符串中提取数字（如 "¥32.00" 或 "32元"）
+      if (typeof item.amount === 'string') {
+        const numMatch = (item.amount as string).match(/[\d.]+/)
+        amount = numMatch ? Number(numMatch[0]) : 0
+      }
+    }
     if (!amount || amount <= 0) {
+      continue
+    }
+
+    // 边界保护：金额异常大（>1000万）可能是误提取
+    if (amount > 10000000) {
+      continue
+    }
+
+    // 描述不能是纯噪音（地址、按钮文字等）
+    const desc = (item.description || '').trim()
+    if (isNoiseDescription(desc)) {
       continue
     }
 
@@ -73,7 +91,7 @@ export function validateParsedItems(items: ParsedTransaction[], today: string): 
       type: item.type,
       amount,
       category: item.category || '',
-      description: item.description || '',
+      description: desc.slice(0, 20),
       date: isValidDate(item.date) ? item.date : today,
       account: item.account || '',
       target_account: item.target_account || undefined,
@@ -81,6 +99,20 @@ export function validateParsedItems(items: ParsedTransaction[], today: string): 
   }
 
   return validated
+}
+
+/**
+ * 判断描述是否为噪音文本
+ */
+function isNoiseDescription(desc: string): boolean {
+  if (!desc) return false
+  const noisePatterns = [
+    /^(去支付|确认|取消|返回|确定|确认领取)$/,
+    /满\d+减\d+/,
+    /满\d+可用/,
+    /^\d+元起/,
+  ]
+  return noisePatterns.some((p) => p.test(desc))
 }
 
 /**
