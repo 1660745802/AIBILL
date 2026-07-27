@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
 import api from '@/api/index'
+import TagInput from '@/components/TagInput.vue'
 
 const props = defineProps<{
   initialDescription?: string
@@ -18,6 +19,7 @@ const date = ref(new Date().toISOString().slice(0, 10))
 const categoryId = ref<number | null>(null)
 const accountId = ref<number | null>(null)
 const targetAccountId = ref<number | null>(null)
+const tags = ref<string[]>([])
 
 const categories = ref<any[]>([])
 const accounts = ref<any[]>([])
@@ -53,6 +55,7 @@ function handleSubmit() {
     target_account_id: type.value === 'transfer' ? targetAccountId.value : null,
     description: description.value,
     date: date.value,
+    tags: tags.value.length > 0 ? tags.value : undefined,
   })
 }
 </script>
@@ -141,6 +144,9 @@ function handleSubmit() {
         type="date"
         class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
       />
+
+      <!-- 标签 -->
+      <TagInput v-model="tags" />
 
       <!-- 提交 -->
       <button

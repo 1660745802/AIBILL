@@ -176,10 +176,22 @@
 ### GET /transactions
 
 ```
-GET /transactions?page=1&page_size=20&start_date=2026-07-01&end_date=2026-07-31&type=expense&category_id=1&account_id=1&keyword=午饭
+GET /transactions?page=1&page_size=20&start_date=2026-07-01&end_date=2026-07-31&type=expense&category_id=1&account_id=1&keyword=午饭&tag=旅行
 ```
 
 所有参数可选。
+
+| 参数 | 说明 |
+|------|------|
+| page | 页码，从 1 开始 |
+| page_size | 每页条数，默认 20，最大 100 |
+| start_date | 起始日期 YYYY-MM-DD |
+| end_date | 结束日期 YYYY-MM-DD |
+| type | 类型筛选：expense / income / transfer |
+| category_id | 分类 ID 筛选 |
+| account_id | 账户 ID 筛选（含来源和目标） |
+| keyword | 描述关键词模糊搜索 |
+| tag | 标签筛选（精确匹配标签名） |
 
 ```json
 // Response 200
@@ -269,6 +281,19 @@ GET /transactions?page=1&page_size=20&start_date=2026-07-01&end_date=2026-07-31&
 ```json
 // Response 200
 { "code": 0, "data": null, "message": "已永久删除" }
+```
+
+### GET /transactions/tags
+
+获取当前用户所有已使用的标签（去重）。
+
+```json
+// Response 200
+{
+  "code": 0,
+  "data": { "items": ["旅行", "报销", "项目A"] },
+  "message": ""
+}
 ```
 
 ---

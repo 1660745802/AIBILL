@@ -145,6 +145,7 @@ async function handleManualSubmit(item: any) {
       target_account_id: item.target_account_id || undefined,
       description: item.description,
       date: item.date,
+      tags: item.tags || undefined,
     }]
 
     await api.post('/transactions', { items: payload })

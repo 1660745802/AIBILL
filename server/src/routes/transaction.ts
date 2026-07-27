@@ -184,6 +184,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       category_id?: string
       account_id?: string
       keyword?: string
+      tag?: string
     }
 
     const page = Math.max(1, parseInt(query.page || '1', 10))
@@ -217,6 +218,11 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       whereClauses.push('t.description LIKE ?')
       params.push(`%${query.keyword}%`)
     }
+    if (query.tag) {
+      // tags 字段是 JSON 数组字符串，用 LIKE 模糊匹配
+      whereClauses.push('t.tags LIKE ?')
+      params.push(`%"${query.tag}"%`)
+    }
 
     const whereStr = whereClauses.join(' AND ')
 
@@ -247,6 +253,33 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       data: { items, total: countResult.total, page, page_size: pageSize },
       message: '',
     }
+  })
+
+  // GET /api/transactions/tags - 获取用户所有标签
+  app.get('/api/transactions/tags', async (request: FastifyRequest) => {
+    const db = getDb()
+    const userId = request.user!.userId
+
+    // 从所有交易的 tags 字段中提取去重标签
+    const rows = db
+      .prepare(
+        `SELECT DISTINCT tags FROM transactions
+         WHERE user_id = ? AND tags != '[]' AND tags IS NOT NULL
+           AND status = 'confirmed' AND deleted_at IS NULL`,
+      )
+      .all(userId) as Array<{ tags: string }>
+
+    const tagSet = new Set<string>()
+    for (const row of rows) {
+      try {
+        const arr = JSON.parse(row.tags)
+        if (Array.isArray(arr)) {
+          arr.forEach((t: string) => { if (t) tagSet.add(t) })
+        }
+      } catch { /* ignore */ }
+    }
+
+    return { code: 0, data: { items: Array.from(tagSet).sort() }, message: '' }
   })
 
   // GET /api/transactions/trash - 查询已删除记录

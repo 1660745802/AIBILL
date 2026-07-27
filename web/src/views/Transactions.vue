@@ -33,16 +33,36 @@ const pageSize = 20
 // 筛选
 const keyword = ref('')
 const filterType = ref('')
+const filterCategoryId = ref('')
+const filterTag = ref('')
 const startDate = ref('')
 const endDate = ref('')
+
+// 分类和标签列表
+const categories = ref<any[]>([])
+const allTags = ref<string[]>([])
 
 // 删除确认
 const showDeleteConfirm = ref(false)
 const deleteTargetId = ref<number | null>(null)
 
-onMounted(() => fetchData())
+onMounted(() => {
+  fetchData()
+  fetchFilters()
+})
 
-watch([filterType, startDate, endDate], () => {
+async function fetchFilters() {
+  try {
+    const [catRes, tagRes] = await Promise.all([
+      api.get('/categories'),
+      api.get('/transactions/tags'),
+    ])
+    if (catRes.data.code === 0) categories.value = catRes.data.data.items
+    if (tagRes.data.code === 0) allTags.value = tagRes.data.data.items
+  } catch { /* ignore */ }
+}
+
+watch([filterType, filterCategoryId, filterTag, startDate, endDate], () => {
   page.value = 1
   fetchData()
 })
@@ -56,6 +76,8 @@ async function fetchData() {
     }
     if (keyword.value) params.keyword = keyword.value
     if (filterType.value) params.type = filterType.value
+    if (filterCategoryId.value) params.category_id = filterCategoryId.value
+    if (filterTag.value) params.tag = filterTag.value
     if (startDate.value) params.start_date = startDate.value
     if (endDate.value) params.end_date = endDate.value
 
@@ -170,6 +192,27 @@ function handleEditSaved() {
           <option value="income">收入</option>
           <option value="transfer">转账</option>
         </select>
+        <select
+          v-model="filterCategoryId"
+          class="px-2 py-1 border border-gray-300 rounded text-xs focus:outline-none max-w-24"
+        >
+          <option value="">全部分类</option>
+          <option v-for="cat in categories" :key="cat.id" :value="cat.id">
+            {{ cat.icon }} {{ cat.name }}
+          </option>
+        </select>
+        <select
+          v-if="allTags.length > 0"
+          v-model="filterTag"
+          class="px-2 py-1 border border-gray-300 rounded text-xs focus:outline-none max-w-24"
+        >
+          <option value="">全部标签</option>
+          <option v-for="tag in allTags" :key="tag" :value="tag">
+            #{{ tag }}
+          </option>
+        </select>
+      </div>
+      <div class="flex gap-2">
         <input
           v-model="startDate"
           type="date"
