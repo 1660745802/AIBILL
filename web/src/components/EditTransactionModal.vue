@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 import api from '@/api/index'
+import TagInput from '@/components/TagInput.vue'
 
 interface Transaction {
   id: number
@@ -11,6 +12,7 @@ interface Transaction {
   category_id: number | null
   account_id: number | null
   target_account_id: number | null
+  tags?: string
 }
 
 const props = defineProps<{
@@ -30,6 +32,7 @@ const date = ref('')
 const categoryId = ref<number | null>(null)
 const accountId = ref<number | null>(null)
 const targetAccountId = ref<number | null>(null)
+const tags = ref<string[]>([])
 const saving = ref(false)
 const error = ref('')
 
@@ -57,6 +60,10 @@ watch(() => props.transaction, (tx) => {
     accountId.value = tx.account_id
     targetAccountId.value = tx.target_account_id
     error.value = ''
+    // 解析 tags（JSON 字符串 → 数组）
+    try {
+      tags.value = tx.tags ? JSON.parse(tx.tags) : []
+    } catch { tags.value = [] }
   }
 }, { immediate: true })
 
@@ -81,6 +88,7 @@ async function handleSave() {
       amount: amountCents,
       description: description.value,
       date: date.value,
+      tags: tags.value,
     }
 
     if (type.value === 'transfer') {
@@ -210,6 +218,14 @@ async function handleSave() {
             type="date"
             class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mt-0.5"
           />
+        </div>
+
+        <!-- 标签 -->
+        <div>
+          <label class="text-xs text-gray-500">标签</label>
+          <div class="mt-0.5">
+            <TagInput v-model="tags" />
+          </div>
         </div>
 
         <!-- 错误提示 -->

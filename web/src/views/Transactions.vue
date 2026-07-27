@@ -22,6 +22,7 @@ interface Transaction {
   category_icon: string
   account_name: string
   target_account_name?: string
+  tags?: string
 }
 
 const transactions = ref<Transaction[]>([])
@@ -141,6 +142,13 @@ function formatAmount(cents: number): string {
   return (cents / 100).toFixed(2)
 }
 
+function parseTags(tags: string | string[] | null | undefined): string[] {
+  if (!tags) return []
+  if (Array.isArray(tags)) return tags
+  try { const arr = JSON.parse(tags); return Array.isArray(arr) ? arr : [] }
+  catch { return [] }
+}
+
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr)
   const weekDays = ['日', '一', '二', '三', '四', '五', '六']
@@ -258,6 +266,9 @@ function handleEditSaved() {
                 <div class="text-xs text-gray-400">
                   {{ tx.account_name || '' }}
                   <span v-if="tx.type === 'transfer' && tx.target_account_name">→ {{ tx.target_account_name }}</span>
+                  <span v-if="parseTags(tx.tags).length > 0" class="ml-1">
+                    <span v-for="tag in parseTags(tx.tags)" :key="tag" class="text-blue-400">#{{ tag }} </span>
+                  </span>
                 </div>
               </div>
             </div>
