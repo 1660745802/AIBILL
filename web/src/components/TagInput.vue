@@ -47,6 +47,10 @@ function handleInput() {
     .filter((t) => t.includes(inputText.value) && !props.modelValue.includes(t))
     .slice(0, 5)
 }
+
+function hideSuggestions() {
+  window.setTimeout(() => { showSuggestions.value = false }, 150)
+}
 </script>
 
 <template>
@@ -72,7 +76,7 @@ function handleInput() {
       @keydown="handleKeydown"
       @input="handleInput"
       @focus="handleInput"
-      @blur="setTimeout(() => showSuggestions = false, 150)"
+      @blur="hideSuggestions"
     />
 
     <!-- 建议列表 -->
