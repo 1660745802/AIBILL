@@ -3,6 +3,8 @@
 # --- 前端构建 ---
 FROM node:20-alpine AS web-builder
 WORKDIR /app/web
+# 使用淘宝镜像加速
+RUN npm config set registry https://registry.npmmirror.com
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
@@ -12,22 +14,26 @@ RUN npm run build
 FROM node:20-alpine AS server-builder
 WORKDIR /app/server
 
-# better-sqlite3 需要编译环境
-RUN apk add --no-cache python3 make g++
+# Alpine 换源加速 + 安装编译依赖
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
+    apk add --no-cache python3 make g++
+
+# 使用淘宝镜像，跳过 prebuild 下载（直接本地编译更可控）
+RUN npm config set registry https://registry.npmmirror.com
 
 COPY server/package.json server/package-lock.json ./
-RUN npm ci
+RUN npm ci --build-from-source
 COPY server/ ./
 RUN npm run build
 
-# 单独安装生产依赖（用于最终镜像，避免携带 devDependencies）
-RUN rm -rf node_modules && npm ci --omit=dev
+# 单独安装生产依赖
+RUN rm -rf node_modules && npm ci --omit=dev --build-from-source
 
 # --- 运行镜像 ---
 FROM node:20-alpine
 WORKDIR /app
 
-# 直接复制已编译好的 node_modules（包含 native addon）
+# 直接复制已编译好的 node_modules
 COPY --from=server-builder /app/server/node_modules ./node_modules
 COPY --from=server-builder /app/server/package.json ./
 
