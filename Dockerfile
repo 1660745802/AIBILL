@@ -1,39 +1,30 @@
-# 多阶段构建
+# 多阶段构建 - 使用 Debian slim（better-sqlite3 prebuilt 直接可用）
 
 # --- 前端构建 ---
 FROM node:20-alpine AS web-builder
 WORKDIR /app/web
-# 使用淘宝镜像加速
 RUN npm config set registry https://registry.npmmirror.com
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-# --- 后端构建（含 native addon 编译） ---
-FROM node:20-alpine AS server-builder
+# --- 后端构建 ---
+FROM node:20-slim AS server-builder
 WORKDIR /app/server
-
-# Alpine 换源加速 + 安装编译依赖
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
-    apk add --no-cache python3 make g++
-
-# 使用淘宝镜像，跳过 prebuild 下载（直接本地编译更可控）
 RUN npm config set registry https://registry.npmmirror.com
-
 COPY server/package.json server/package-lock.json ./
-RUN npm ci --build-from-source
+RUN npm ci
 COPY server/ ./
-RUN npm run build
-
+RUN npx tsc
 # 单独安装生产依赖
-RUN rm -rf node_modules && npm ci --omit=dev --build-from-source
+RUN rm -rf node_modules && npm ci --omit=dev
 
 # --- 运行镜像 ---
-FROM node:20-alpine
+FROM node:20-slim
 WORKDIR /app
 
-# 直接复制已编译好的 node_modules
+# 直接复制已下载好的 node_modules（含 prebuilt native addon）
 COPY --from=server-builder /app/server/node_modules ./node_modules
 COPY --from=server-builder /app/server/package.json ./
 
