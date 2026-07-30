@@ -50,7 +50,7 @@ onMounted(async () => {
       selectedAccountIds.value = accounts.value.map(a => a.id)
       // 默认选第一个
       if (accounts.value.length > 0) {
-        defaultAccountId.value = accounts.value[0].id
+        defaultAccountId.value = accounts.value[0]!.id
       }
     }
   } catch { /* ignore */ }

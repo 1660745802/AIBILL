@@ -1,9 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import api from '@/api/index'
-import { useToast } from '@/composables/useToast'
-
-const toast = useToast()
 
 type AnalysisType = 'overview' | 'spending' | 'forecast'
 
