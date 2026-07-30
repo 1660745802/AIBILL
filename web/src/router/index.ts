@@ -29,7 +29,13 @@ const router = createRouter({
     },
     {
       path: '/',
-      name: 'Home',
+      name: 'Dashboard',
+      component: () => import('@/views/Dashboard.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/quick',
+      name: 'QuickEntry',
       component: () => import('@/views/Home.vue'),
       meta: { auth: true },
     },
@@ -67,6 +73,24 @@ const router = createRouter({
       path: '/trash',
       name: 'Trash',
       component: () => import('@/views/Trash.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/memories',
+      name: 'Memories',
+      component: () => import('@/views/Memories.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/subscriptions',
+      name: 'Subscriptions',
+      component: () => import('@/views/Subscriptions.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/analysis',
+      name: 'Analysis',
+      component: () => import('@/views/Analysis.vue'),
       meta: { auth: true },
     },
     {

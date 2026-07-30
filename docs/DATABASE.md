@@ -499,3 +499,150 @@ LEFT JOIN categories c ON b.category_id = c.id AND b.category_id != 0
 WHERE b.user_id = ? AND b.year = 2026 AND (b.month = 7 OR b.month = 0)
 ORDER BY b.category_id;
 ```
+
+---
+
+## P2 新增表
+
+### 10. ai_parse_logs - AI 解析日志
+
+记录每次 AI 记账解析的输入输出，用于质量监控和 prompt 优化。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | INTEGER PRIMARY KEY | 自增主键 |
+| user_id | INTEGER NOT NULL | 用户 ID |
+| raw_input | TEXT NOT NULL | 原始输入 |
+| cleaned_input | TEXT | 清洗后输入 |
+| ai_response | TEXT | AI 原始返回文本 |
+| parsed_items | TEXT | 解析结果 JSON |
+| final_items | TEXT | 用户最终提交 JSON |
+| status | TEXT NOT NULL | success/empty/error/timeout |
+| error_message | TEXT | 错误信息 |
+| duration_ms | INTEGER | 耗时（毫秒） |
+| user_modified | INTEGER DEFAULT 0 | 用户是否修改了 AI 结果 |
+| modification_detail | TEXT | 修改详情 JSON |
+| created_at | TEXT NOT NULL | 记录时间 |
+
+```sql
+CREATE TABLE ai_parse_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    raw_input TEXT NOT NULL,
+    cleaned_input TEXT,
+    ai_response TEXT,
+    parsed_items TEXT,
+    final_items TEXT,
+    status TEXT NOT NULL CHECK(status IN ('success', 'empty', 'error', 'timeout')),
+    error_message TEXT,
+    duration_ms INTEGER,
+    user_modified INTEGER DEFAULT 0,
+    modification_detail TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_ai_parse_logs_user ON ai_parse_logs(user_id);
+CREATE INDEX idx_ai_parse_logs_status ON ai_parse_logs(status);
+CREATE INDEX idx_ai_parse_logs_created ON ai_parse_logs(created_at);
+```
+
+### 11. ai_memories - AI 全局记忆
+
+存储用户偏好和习惯，AI 解析/问答时自动注入 prompt 提升准确率。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | INTEGER PRIMARY KEY | 自增主键 |
+| user_id | INTEGER NOT NULL | 用户 ID |
+| content | TEXT NOT NULL | 记忆内容 |
+| category | TEXT DEFAULT 'preference' | 分类: preference/habit/rule/context |
+| source | TEXT DEFAULT 'manual' | 来源: manual/ai_suggested |
+| source_detail | TEXT | 来源详情 |
+| is_active | INTEGER DEFAULT 1 | 是否启用 |
+| created_at | TEXT NOT NULL | 创建时间 |
+| updated_at | TEXT NOT NULL | 更新时间 |
+
+```sql
+CREATE TABLE ai_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    content TEXT NOT NULL,
+    category TEXT DEFAULT 'preference' CHECK(category IN ('preference', 'habit', 'rule', 'context')),
+    source TEXT DEFAULT 'manual' CHECK(source IN ('manual', 'ai_suggested')),
+    source_detail TEXT,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_ai_memories_user ON ai_memories(user_id, is_active);
+```
+
+### 12. subscriptions - 订阅管理
+
+追踪周期性订阅支出（视频会员、云服务、App 等）。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | INTEGER PRIMARY KEY | 自增主键 |
+| user_id | INTEGER NOT NULL | 用户 ID |
+| name | TEXT NOT NULL | 订阅名称 |
+| amount | INTEGER NOT NULL | 金额（分） |
+| cycle | TEXT NOT NULL | 周期: monthly/quarterly/yearly |
+| category_id | INTEGER | 关联分类 |
+| account_id | INTEGER | 关联账户 |
+| start_date | TEXT NOT NULL | 起始日期 |
+| next_payment_date | TEXT | 下次扣费日 |
+| reminder_days | INTEGER DEFAULT 3 | 提前提醒天数 |
+| auto_record | INTEGER DEFAULT 0 | 到期自动记账 |
+| status | TEXT DEFAULT 'active' | active/cancelled |
+| note | TEXT | 备注 |
+| created_at | TEXT NOT NULL | 创建时间 |
+| updated_at | TEXT NOT NULL | 更新时间 |
+
+```sql
+CREATE TABLE subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    amount INTEGER NOT NULL CHECK(amount > 0),
+    cycle TEXT NOT NULL CHECK(cycle IN ('monthly', 'quarterly', 'yearly')),
+    category_id INTEGER REFERENCES categories(id),
+    account_id INTEGER REFERENCES accounts(id),
+    start_date TEXT NOT NULL,
+    next_payment_date TEXT,
+    reminder_days INTEGER DEFAULT 3,
+    auto_record INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'active' CHECK(status IN ('active', 'cancelled')),
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_subscriptions_user ON subscriptions(user_id, status);
+CREATE INDEX idx_subscriptions_next ON subscriptions(user_id, next_payment_date);
+```
+
+---
+
+## P2 性能优化索引
+
+针对统计/预算/流水列表高频查询新增的 partial index：
+
+```sql
+-- 统计查询覆盖索引
+CREATE INDEX idx_transactions_stats
+  ON transactions(user_id, type, date)
+  WHERE status = 'confirmed' AND deleted_at IS NULL;
+
+-- 分类统计索引
+CREATE INDEX idx_transactions_category_stats
+  ON transactions(user_id, category_id, date)
+  WHERE status = 'confirmed' AND deleted_at IS NULL AND type = 'expense';
+
+-- 流水列表排序优化
+CREATE INDEX idx_transactions_list
+  ON transactions(user_id, date DESC, created_at DESC)
+  WHERE status = 'confirmed' AND deleted_at IS NULL;
+
+-- AI 对话查询优化
+CREATE INDEX idx_ai_conversations_session_user
+  ON ai_conversations(user_id, session_id, created_at);
+```

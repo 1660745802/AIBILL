@@ -136,6 +136,92 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 `
 
+/** Migration 002: AI Parse Logs */
+export const migration002 = `
+CREATE TABLE IF NOT EXISTS ai_parse_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    raw_input TEXT NOT NULL,
+    cleaned_input TEXT,
+    ai_response TEXT,
+    parsed_items TEXT,
+    final_items TEXT,
+    status TEXT NOT NULL CHECK(status IN ('success', 'empty', 'error', 'timeout')),
+    error_message TEXT,
+    duration_ms INTEGER,
+    user_modified INTEGER DEFAULT 0,
+    modification_detail TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_parse_logs_user ON ai_parse_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_parse_logs_status ON ai_parse_logs(status);
+CREATE INDEX IF NOT EXISTS idx_ai_parse_logs_created ON ai_parse_logs(created_at);
+`
+
+/** Migration 003: 统计查询性能优化索引 */
+export const migration003 = `
+-- 核心复合索引：覆盖统计/预算/趋势等高频查询
+-- 查询模式: WHERE user_id=? AND type=? AND status='confirmed' AND deleted_at IS NULL AND date BETWEEN ? AND ?
+CREATE INDEX IF NOT EXISTS idx_transactions_stats
+  ON transactions(user_id, type, date)
+  WHERE status = 'confirmed' AND deleted_at IS NULL;
+
+-- 分类统计索引：by-category 查询 GROUP BY category_id
+CREATE INDEX IF NOT EXISTS idx_transactions_category_stats
+  ON transactions(user_id, category_id, date)
+  WHERE status = 'confirmed' AND deleted_at IS NULL AND type = 'expense';
+
+-- 交易列表排序优化：ORDER BY date DESC, created_at DESC
+CREATE INDEX IF NOT EXISTS idx_transactions_list
+  ON transactions(user_id, date DESC, created_at DESC)
+  WHERE status = 'confirmed' AND deleted_at IS NULL;
+
+-- AI 对话查询优化
+CREATE INDEX IF NOT EXISTS idx_ai_conversations_session_user
+  ON ai_conversations(user_id, session_id, created_at);
+`
+
+/** Migration 004: AI 记忆表 */
+export const migration004 = `
+-- AI 全局记忆表
+CREATE TABLE IF NOT EXISTS ai_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    content TEXT NOT NULL,
+    category TEXT DEFAULT 'preference' CHECK(category IN ('preference', 'habit', 'rule', 'context')),
+    source TEXT DEFAULT 'manual' CHECK(source IN ('manual', 'ai_suggested')),
+    source_detail TEXT,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_memories_user_active ON ai_memories(user_id, is_active);
+`
+
+/** Migration 005: 订阅管理表 */
+export const migration005 = `
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    amount INTEGER NOT NULL CHECK(amount > 0),
+    cycle TEXT NOT NULL CHECK(cycle IN ('monthly', 'quarterly', 'yearly')),
+    category_id INTEGER REFERENCES categories(id),
+    account_id INTEGER REFERENCES accounts(id),
+    start_date TEXT NOT NULL,
+    next_payment_date TEXT,
+    reminder_days INTEGER DEFAULT 3,
+    auto_record INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'active' CHECK(status IN ('active', 'cancelled')),
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_next ON subscriptions(user_id, next_payment_date);
+`
+
 /** 默认全局设置数据 */
 export const seedSettings = `
 INSERT OR IGNORE INTO settings (key, value) VALUES

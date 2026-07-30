@@ -141,6 +141,179 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return { code: 0, data: settings, message: '' }
   })
 
+  // GET /api/admin/ai-parse-stats - AI 解析质量统计
+  app.get('/api/admin/ai-parse-stats', async (request: FastifyRequest) => {
+    const db = getDb()
+    const { days } = request.query as { days?: string }
+    const rangeDays = Math.min(Math.max(Number(days) || 30, 1), 365)
+    const sinceDate = new Date(Date.now() - rangeDays * 86400000).toISOString().slice(0, 19).replace('T', ' ')
+
+    // 总量 + 成功率 + 平均时长
+    const overview = db
+      .prepare(
+        `SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+          ROUND(AVG(duration_ms)) as avg_duration_ms
+         FROM ai_parse_logs
+         WHERE created_at >= ?`,
+      )
+      .get(sinceDate) as { total: number; success_count: number; avg_duration_ms: number | null }
+
+    const successRate = overview.total > 0
+      ? Math.round((overview.success_count / overview.total) * 10000) / 100
+      : 0
+
+    // 按状态分组
+    const byStatus = db
+      .prepare(
+        `SELECT status, COUNT(*) as count
+         FROM ai_parse_logs
+         WHERE created_at >= ?
+         GROUP BY status`,
+      )
+      .all(sinceDate) as Array<{ status: string; count: number }>
+
+    // 最近失败记录
+    const recentFailures = db
+      .prepare(
+        `SELECT id, user_id, raw_input, status, error_message, duration_ms, created_at
+         FROM ai_parse_logs
+         WHERE created_at >= ? AND status IN ('error', 'timeout')
+         ORDER BY created_at DESC
+         LIMIT 20`,
+      )
+      .all(sinceDate)
+
+    // 修改率统计（用户修改 AI 结果的比例）
+    const modificationStats = db
+      .prepare(
+        `SELECT
+          COUNT(*) as total_with_feedback,
+          SUM(CASE WHEN user_modified = 1 THEN 1 ELSE 0 END) as modified_count
+         FROM ai_parse_logs
+         WHERE created_at >= ? AND final_items IS NOT NULL`,
+      )
+      .get(sinceDate) as { total_with_feedback: number; modified_count: number }
+
+    const modificationRate = modificationStats.total_with_feedback > 0
+      ? Math.round((modificationStats.modified_count / modificationStats.total_with_feedback) * 10000) / 100
+      : 0
+
+    return {
+      code: 0,
+      data: {
+        range_days: rangeDays,
+        overview: {
+          total: overview.total,
+          success_count: overview.success_count,
+          success_rate: successRate,
+          avg_duration_ms: overview.avg_duration_ms || 0,
+        },
+        by_status: byStatus,
+        recent_failures: recentFailures,
+        modification: {
+          total_with_feedback: modificationStats.total_with_feedback,
+          modified_count: modificationStats.modified_count,
+          modification_rate: modificationRate,
+        },
+      },
+      message: '',
+    }
+  })
+
+  // GET /api/admin/ai-parse-logs - AI 解析日志列表（全部详细信息）
+  app.get('/api/admin/ai-parse-logs', async (request: FastifyRequest) => {
+    const db = getDb()
+    const { page, page_size, status, user_id, days } = request.query as {
+      page?: string
+      page_size?: string
+      status?: string
+      user_id?: string
+      days?: string
+    }
+
+    const pageNum = Math.max(Number(page) || 1, 1)
+    const size = Math.min(Math.max(Number(page_size) || 20, 1), 100)
+    const offset = (pageNum - 1) * size
+
+    // 构建过滤条件
+    const conditions: string[] = []
+    const params: any[] = []
+
+    if (days) {
+      const rangeDays = Math.min(Math.max(Number(days), 1), 365)
+      const sinceDate = new Date(Date.now() - rangeDays * 86400000).toISOString().slice(0, 19).replace('T', ' ')
+      conditions.push('l.created_at >= ?')
+      params.push(sinceDate)
+    }
+
+    if (status && ['success', 'empty', 'error', 'timeout'].includes(status)) {
+      conditions.push('l.status = ?')
+      params.push(status)
+    }
+
+    if (user_id) {
+      conditions.push('l.user_id = ?')
+      params.push(Number(user_id))
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+    // 总数
+    const countRow = db
+      .prepare(`SELECT COUNT(*) as total FROM ai_parse_logs l ${whereClause}`)
+      .get(...params) as { total: number }
+
+    // 分页查询，关联用户名
+    const logs = db
+      .prepare(
+        `SELECT l.*, u.username
+         FROM ai_parse_logs l
+         LEFT JOIN users u ON l.user_id = u.id
+         ${whereClause}
+         ORDER BY l.created_at DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(...params, size, offset)
+
+    return {
+      code: 0,
+      data: {
+        items: logs,
+        pagination: {
+          page: pageNum,
+          page_size: size,
+          total: countRow.total,
+          total_pages: Math.ceil(countRow.total / size),
+        },
+      },
+      message: '',
+    }
+  })
+
+  // GET /api/admin/ai-parse-logs/:id - 单条解析日志详情
+  app.get('/api/admin/ai-parse-logs/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string }
+    const db = getDb()
+
+    const log = db
+      .prepare(
+        `SELECT l.*, u.username
+         FROM ai_parse_logs l
+         LEFT JOIN users u ON l.user_id = u.id
+         WHERE l.id = ?`,
+      )
+      .get(Number(id))
+
+    if (!log) {
+      reply.code(404)
+      return { code: 3002, data: null, message: '记录不存在' }
+    }
+
+    return { code: 0, data: log, message: '' }
+  })
+
   // PUT /api/admin/settings - 修改全局设置
   app.put('/api/admin/settings', async (request: FastifyRequest, reply: FastifyReply) => {
     try {

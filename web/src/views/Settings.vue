@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
@@ -16,6 +16,14 @@ const inviteCodes = ref<any[]>([])
 const users = ref<any[]>([])
 const globalSettings = ref<Record<string, string>>({})
 const showAdmin = ref(false)
+
+// AI 解析质量数据
+const parseStats = ref<any>(null)
+const parseLogs = ref<any[]>([])
+const parseLogsPagination = ref({ page: 1, page_size: 20, total: 0, total_pages: 0 })
+const parseLogsFilter = ref({ status: '', days: '30' })
+const showParseDetail = ref<any>(null)
+const loadingParseLogs = ref(false)
 
 // 邀请码生成
 const newCodeMaxUses = ref(1)
@@ -81,6 +89,8 @@ async function fetchAdminData() {
     if (codesRes.data.code === 0) inviteCodes.value = codesRes.data.data.items
     if (usersRes.data.code === 0) users.value = usersRes.data.data.items
     if (settingsRes.data.code === 0) globalSettings.value = settingsRes.data.data
+    await fetchParseStats()
+    await fetchParseLogs()
   } catch { /* ignore */ }
 }
 
@@ -116,6 +126,56 @@ async function saveSettings() {
     await api.put('/admin/settings', globalSettings.value)
     toast.success('设置已保存')
   } catch { /* ignore */ }
+}
+
+async function fetchParseStats() {
+  try {
+    const { data } = await api.get('/admin/ai-parse-stats', {
+      params: { days: parseLogsFilter.value.days },
+    })
+    if (data.code === 0) parseStats.value = data.data
+  } catch { /* ignore */ }
+}
+
+async function fetchParseLogs(page = 1) {
+  loadingParseLogs.value = true
+  try {
+    const params: any = {
+      page,
+      page_size: parseLogsPagination.value.page_size,
+      days: parseLogsFilter.value.days,
+    }
+    if (parseLogsFilter.value.status) params.status = parseLogsFilter.value.status
+    const { data } = await api.get('/admin/ai-parse-logs', { params })
+    if (data.code === 0) {
+      parseLogs.value = data.data.items
+      parseLogsPagination.value = data.data.pagination
+    }
+  } catch { /* ignore */ }
+  finally { loadingParseLogs.value = false }
+}
+
+function viewParseDetail(log: any) {
+  showParseDetail.value = log
+}
+
+function closeParseDetail() {
+  showParseDetail.value = null
+}
+
+function formatDuration(ms: number | null): string {
+  if (!ms) return '-'
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
+}
+
+function statusLabel(status: string): string {
+  const map: Record<string, string> = { success: '✅ 成功', empty: '⚠️ 空结果', error: '❌ 错误', timeout: '⏱️ 超时' }
+  return map[status] || status
+}
+
+function statusColor(status: string): string {
+  const map: Record<string, string> = { success: 'text-green-600', empty: 'text-yellow-600', error: 'text-red-600', timeout: 'text-orange-600' }
+  return map[status] || 'text-gray-600'
 }
 
 function handleLogout() {
@@ -345,6 +405,225 @@ function exportCsv() {
           >
             保存设置
           </button>
+        </div>
+      </div>
+
+      <!-- AI 解析质量监控 -->
+      <div class="bg-white px-4 py-4">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-sm font-medium text-gray-700">🔍 AI 解析质量</h3>
+          <select
+            v-model="parseLogsFilter.days"
+            @change="fetchParseStats(); fetchParseLogs(1)"
+            class="px-2 py-1 border border-gray-200 rounded-lg text-xs text-gray-600 bg-gray-50"
+          >
+            <option value="7">近 7 天</option>
+            <option value="30">近 30 天</option>
+            <option value="90">近 90 天</option>
+            <option value="365">近一年</option>
+          </select>
+        </div>
+
+        <!-- 指标卡片 -->
+        <div v-if="parseStats" class="grid grid-cols-4 gap-2 mb-4">
+          <div class="relative overflow-hidden rounded-xl bg-gradient-to-br from-blue-50 to-blue-100 p-3 text-center">
+            <div class="text-xl font-bold text-blue-700">{{ parseStats.overview.total }}</div>
+            <div class="text-[10px] text-blue-500 mt-0.5">总调用</div>
+          </div>
+          <div class="relative overflow-hidden rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100 p-3 text-center">
+            <div class="text-xl font-bold text-emerald-700">{{ parseStats.overview.success_rate }}%</div>
+            <div class="text-[10px] text-emerald-500 mt-0.5">成功率</div>
+          </div>
+          <div class="relative overflow-hidden rounded-xl bg-gradient-to-br from-violet-50 to-violet-100 p-3 text-center">
+            <div class="text-xl font-bold text-violet-700">{{ formatDuration(parseStats.overview.avg_duration_ms) }}</div>
+            <div class="text-[10px] text-violet-500 mt-0.5">平均耗时</div>
+          </div>
+          <div class="relative overflow-hidden rounded-xl bg-gradient-to-br from-amber-50 to-amber-100 p-3 text-center">
+            <div class="text-xl font-bold text-amber-700">{{ parseStats.modification.modification_rate }}%</div>
+            <div class="text-[10px] text-amber-500 mt-0.5">修正率</div>
+          </div>
+        </div>
+
+        <!-- 状态筛选标签 -->
+        <div class="flex gap-1.5 mb-3 overflow-x-auto pb-1">
+          <button
+            @click="parseLogsFilter.status = ''; fetchParseLogs(1)"
+            class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
+            :class="parseLogsFilter.status === '' ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+          >
+            全部
+          </button>
+          <button
+            @click="parseLogsFilter.status = 'success'; fetchParseLogs(1)"
+            class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
+            :class="parseLogsFilter.status === 'success' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'"
+          >
+            ✓ 成功
+          </button>
+          <button
+            @click="parseLogsFilter.status = 'empty'; fetchParseLogs(1)"
+            class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
+            :class="parseLogsFilter.status === 'empty' ? 'bg-yellow-500 text-white' : 'bg-yellow-50 text-yellow-700 hover:bg-yellow-100'"
+          >
+            ○ 空结果
+          </button>
+          <button
+            @click="parseLogsFilter.status = 'error'; fetchParseLogs(1)"
+            class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
+            :class="parseLogsFilter.status === 'error' ? 'bg-red-600 text-white' : 'bg-red-50 text-red-700 hover:bg-red-100'"
+          >
+            ✕ 错误
+          </button>
+          <button
+            @click="parseLogsFilter.status = 'timeout'; fetchParseLogs(1)"
+            class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
+            :class="parseLogsFilter.status === 'timeout' ? 'bg-orange-600 text-white' : 'bg-orange-50 text-orange-700 hover:bg-orange-100'"
+          >
+            ⏱ 超时
+          </button>
+        </div>
+
+        <!-- 日志列表 -->
+        <div class="space-y-2 max-h-96 overflow-y-auto">
+          <div v-if="loadingParseLogs" class="flex items-center justify-center py-8">
+            <div class="w-5 h-5 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin"></div>
+            <span class="ml-2 text-xs text-gray-400">加载中...</span>
+          </div>
+          <div v-else-if="parseLogs.length === 0" class="text-center py-8 text-xs text-gray-400">
+            暂无解析记录
+          </div>
+          <div
+            v-for="log in parseLogs"
+            :key="log.id"
+            @click="viewParseDetail(log)"
+            class="group border border-gray-100 rounded-xl p-3 cursor-pointer hover:border-blue-200 hover:shadow-sm transition-all"
+          >
+            <div class="flex items-start justify-between gap-2">
+              <div class="flex-1 min-w-0">
+                <div class="text-sm text-gray-800 truncate leading-snug">{{ log.raw_input }}</div>
+                <div class="flex items-center gap-2 mt-1.5">
+                  <span
+                    class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
+                    :class="{
+                      'bg-emerald-50 text-emerald-700': log.status === 'success',
+                      'bg-yellow-50 text-yellow-700': log.status === 'empty',
+                      'bg-red-50 text-red-700': log.status === 'error',
+                      'bg-orange-50 text-orange-700': log.status === 'timeout',
+                    }"
+                  >{{ statusLabel(log.status) }}</span>
+                  <span class="text-[10px] text-gray-400">{{ log.username }}</span>
+                  <span class="text-[10px] text-gray-400">{{ formatDuration(log.duration_ms) }}</span>
+                  <span v-if="log.user_modified" class="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 text-[10px] font-medium">已修正</span>
+                </div>
+              </div>
+              <div class="text-[10px] text-gray-300 group-hover:text-blue-400 shrink-0 pt-0.5">
+                {{ log.created_at?.slice(5, 16) }} ›
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 分页 -->
+        <div v-if="parseLogsPagination.total_pages > 1" class="flex items-center justify-between mt-4 pt-3 border-t border-gray-100">
+          <span class="text-[10px] text-gray-400">共 {{ parseLogsPagination.total }} 条</span>
+          <div class="flex items-center gap-1">
+            <button
+              :disabled="parseLogsPagination.page <= 1"
+              @click="fetchParseLogs(parseLogsPagination.page - 1)"
+              class="w-7 h-7 flex items-center justify-center rounded-lg text-xs border border-gray-200 disabled:opacity-30 hover:bg-gray-50"
+            >‹</button>
+            <span class="px-2 text-xs text-gray-600">{{ parseLogsPagination.page }} / {{ parseLogsPagination.total_pages }}</span>
+            <button
+              :disabled="parseLogsPagination.page >= parseLogsPagination.total_pages"
+              @click="fetchParseLogs(parseLogsPagination.page + 1)"
+              class="w-7 h-7 flex items-center justify-center rounded-lg text-xs border border-gray-200 disabled:opacity-30 hover:bg-gray-50"
+            >›</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 解析日志详情弹窗 -->
+    <div
+      v-if="showParseDetail"
+      class="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center"
+      @click.self="closeParseDetail"
+    >
+      <div class="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[90vh] overflow-hidden flex flex-col animate-[slideUp_0.2s_ease]">
+        <!-- 头部 -->
+        <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0">
+          <div>
+            <h3 class="text-base font-semibold text-gray-800">解析详情</h3>
+            <span class="text-[10px] text-gray-400">#{{ showParseDetail.id }} · {{ showParseDetail.created_at?.slice(0, 19) }}</span>
+          </div>
+          <button @click="closeParseDetail" class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors">✕</button>
+        </div>
+
+        <!-- 内容区域 -->
+        <div class="overflow-y-auto flex-1 px-5 py-4 space-y-4">
+          <!-- 状态摘要 -->
+          <div class="flex items-center gap-3 p-3 rounded-xl bg-gray-50">
+            <span
+              class="w-10 h-10 rounded-full flex items-center justify-center text-lg"
+              :class="{
+                'bg-emerald-100': showParseDetail.status === 'success',
+                'bg-yellow-100': showParseDetail.status === 'empty',
+                'bg-red-100': showParseDetail.status === 'error',
+                'bg-orange-100': showParseDetail.status === 'timeout',
+              }"
+            >
+              {{ showParseDetail.status === 'success' ? '✓' : showParseDetail.status === 'empty' ? '○' : showParseDetail.status === 'timeout' ? '⏱' : '✕' }}
+            </span>
+            <div class="flex-1">
+              <div class="text-sm font-medium" :class="statusColor(showParseDetail.status)">{{ statusLabel(showParseDetail.status) }}</div>
+              <div class="text-[11px] text-gray-500 mt-0.5">
+                用户 {{ showParseDetail.username }} · 耗时 {{ formatDuration(showParseDetail.duration_ms) }}
+                <span v-if="showParseDetail.user_modified" class="ml-1 text-amber-600 font-medium">· 已修正</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 原始输入 -->
+          <div>
+            <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">用户输入</div>
+            <div class="bg-gray-50 border border-gray-100 p-3 rounded-xl text-sm text-gray-800 leading-relaxed">{{ showParseDetail.raw_input }}</div>
+          </div>
+
+          <!-- 清洗后 -->
+          <div v-if="showParseDetail.cleaned_input && showParseDetail.cleaned_input !== showParseDetail.raw_input">
+            <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">清洗后</div>
+            <div class="bg-blue-50 border border-blue-100 p-3 rounded-xl text-sm text-gray-800 leading-relaxed">{{ showParseDetail.cleaned_input }}</div>
+          </div>
+
+          <!-- AI 原始返回 -->
+          <div v-if="showParseDetail.ai_response">
+            <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">AI 返回</div>
+            <div class="bg-gray-50 border border-gray-100 p-3 rounded-xl font-mono text-[11px] text-gray-700 max-h-36 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">{{ showParseDetail.ai_response }}</div>
+          </div>
+
+          <!-- 解析结果 -->
+          <div v-if="showParseDetail.parsed_items">
+            <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">解析结果</div>
+            <div class="bg-emerald-50 border border-emerald-100 p-3 rounded-xl font-mono text-[11px] text-gray-700 max-h-36 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">{{ showParseDetail.parsed_items }}</div>
+          </div>
+
+          <!-- 用户最终提交 -->
+          <div v-if="showParseDetail.final_items">
+            <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">最终提交</div>
+            <div class="bg-amber-50 border border-amber-100 p-3 rounded-xl font-mono text-[11px] text-gray-700 max-h-36 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">{{ showParseDetail.final_items }}</div>
+          </div>
+
+          <!-- 修正详情 -->
+          <div v-if="showParseDetail.modification_detail">
+            <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">修正详情</div>
+            <div class="bg-yellow-50 border border-yellow-100 p-3 rounded-xl font-mono text-[11px] text-gray-700 whitespace-pre-wrap break-all leading-relaxed">{{ showParseDetail.modification_detail }}</div>
+          </div>
+
+          <!-- 错误信息 -->
+          <div v-if="showParseDetail.error_message">
+            <div class="text-[11px] font-medium text-red-500 uppercase tracking-wide mb-1.5">错误信息</div>
+            <div class="bg-red-50 border border-red-100 p-3 rounded-xl text-sm text-red-700 leading-relaxed">{{ showParseDetail.error_message }}</div>
+          </div>
         </div>
       </div>
     </div>

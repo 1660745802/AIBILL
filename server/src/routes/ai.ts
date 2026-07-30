@@ -1,6 +1,7 @@
 /**
  * AI 路由 - /api/ai
  * POST /api/ai/parse - AI 记账解析
+ * POST /api/ai/parse-feedback - 解析结果反馈
  * POST /api/ai/chat - AI 问答
  * GET /api/ai/sessions - 对话列表
  * DELETE /api/ai/sessions/:id - 删除对话
@@ -17,6 +18,12 @@ import { matchCategory } from '../ai/category-matcher.js'
 
 const parseInputSchema = z.object({
   input: z.string().min(1, '输入不能为空').max(3000, '输入过长'),
+})
+
+const parseFeedbackSchema = z.object({
+  parse_log_id: z.number().int().positive(),
+  final_items: z.array(z.any()),
+  modified: z.boolean(),
 })
 
 interface CategoryRow {
@@ -36,6 +43,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/ai/parse - AI 记账解析
   app.post('/api/ai/parse', async (request: FastifyRequest, reply: FastifyReply) => {
+    const startTime = Date.now()
+
     try {
       const body = parseInputSchema.parse(request.body)
       const db = getDb()
@@ -67,10 +76,23 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         accounts: accounts.map((a) => a.name),
       }, cleanedInput.length)
 
+      // 注入用户偏好记忆
+      let finalSystemPrompt = systemPrompt
+      const memories = db
+        .prepare(
+          'SELECT content FROM ai_memories WHERE user_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 20',
+        )
+        .all(userId) as Array<{ content: string }>
+
+      if (memories.length > 0) {
+        const memoryLines = memories.map((m) => `- ${m.content}`).join('\n')
+        finalSystemPrompt += `\n\n## 用户偏好记忆\n${memoryLines}\n\n参考以上偏好进行解析，但用户明确指定的信息优先。`
+      }
+
       // 调用 LLM
       const aiResponse = await chatCompletion(
         [
-          { role: 'system', content: systemPrompt },
+          { role: 'system', content: finalSystemPrompt },
           { role: 'user', content: cleanedInput },
         ],
         0.1,
@@ -82,6 +104,19 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       const validItems = validateParsedItems(rawItems, today)
 
       if (validItems.length === 0) {
+        // Log empty result
+        const durationMs = Date.now() - startTime
+        const logId = insertParseLog(db, {
+          userId,
+          rawInput: body.input,
+          cleanedInput,
+          aiResponse,
+          parsedItems: null,
+          status: 'empty',
+          errorMessage: null,
+          durationMs,
+        })
+
         reply.code(200)
         return {
           code: 5001,
@@ -89,6 +124,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           message: 'AI 无法解析，请尝试手动记账',
           fallback: 'manual',
           raw_input: body.input,
+          parse_log_id: logId,
         }
       }
 
@@ -153,9 +189,22 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         }
       })
 
+      // Log success
+      const durationMs = Date.now() - startTime
+      const logId = insertParseLog(db, {
+        userId,
+        rawInput: body.input,
+        cleanedInput,
+        aiResponse,
+        parsedItems: JSON.stringify(result),
+        status: 'success',
+        errorMessage: null,
+        durationMs,
+      })
+
       return {
         code: 0,
-        data: { items: result, raw_input: body.input },
+        data: { items: result, raw_input: body.input, parse_log_id: logId },
         message: '',
       }
     } catch (err) {
@@ -164,6 +213,24 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         return { code: 2000, data: null, message: err.errors[0].message }
       }
       if (err instanceof AiError) {
+        // Log AI error
+        const durationMs = Date.now() - startTime
+        const db = getDb()
+        const userId = request.user!.userId
+        const rawInput = (request.body as any)?.input || ''
+        const status = err.type === 'AI_TIMEOUT' ? 'timeout' : 'error'
+
+        insertParseLog(db, {
+          userId,
+          rawInput,
+          cleanedInput: null,
+          aiResponse: null,
+          parsedItems: null,
+          status,
+          errorMessage: `${err.type}: ${err.message}`,
+          durationMs,
+        })
+
         const statusCode = err.type === 'AI_TIMEOUT' ? 504 : 502
         reply.code(statusCode)
         return {
@@ -171,18 +238,89 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           data: null,
           message: err.message,
           fallback: 'manual',
-          raw_input: (request.body as any)?.input || '',
+          raw_input: rawInput,
         }
       }
       if (err instanceof ParseError) {
+        // Log parse error
+        const durationMs = Date.now() - startTime
+        const db = getDb()
+        const userId = request.user!.userId
+        const rawInput = (request.body as any)?.input || ''
+
+        insertParseLog(db, {
+          userId,
+          rawInput,
+          cleanedInput: null,
+          aiResponse: null,
+          parsedItems: null,
+          status: 'error',
+          errorMessage: `ParseError: ${err.message}`,
+          durationMs,
+        })
+
         reply.code(200)
         return {
           code: 5002,
           data: null,
           message: 'AI 返回格式异常，请尝试手动记账',
           fallback: 'manual',
-          raw_input: (request.body as any)?.input || '',
+          raw_input: rawInput,
         }
+      }
+      throw err
+    }
+  })
+
+  // POST /api/ai/parse-feedback - 解析结果反馈
+  app.post('/api/ai/parse-feedback', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const body = parseFeedbackSchema.parse(request.body)
+      const db = getDb()
+      const userId = request.user!.userId
+
+      // 验证 log 记录归属当前用户
+      const logRow = db
+        .prepare('SELECT id, parsed_items FROM ai_parse_logs WHERE id = ? AND user_id = ?')
+        .get(body.parse_log_id, userId) as { id: number; parsed_items: string | null } | undefined
+
+      if (!logRow) {
+        reply.code(404)
+        return { code: 3002, data: null, message: '解析记录不存在' }
+      }
+
+      // 计算修改详情
+      let modificationDetail: string | null = null
+      if (body.modified && logRow.parsed_items) {
+        try {
+          const original = JSON.parse(logRow.parsed_items)
+          modificationDetail = JSON.stringify({
+            original_count: Array.isArray(original) ? original.length : 0,
+            final_count: body.final_items.length,
+            changed: true,
+          })
+        } catch {
+          modificationDetail = JSON.stringify({ changed: true })
+        }
+      }
+
+      db.prepare(
+        `UPDATE ai_parse_logs
+         SET final_items = ?, user_modified = ?, modification_detail = ?
+         WHERE id = ? AND user_id = ?`,
+      ).run(
+        JSON.stringify(body.final_items),
+        body.modified ? 1 : 0,
+        modificationDetail,
+        body.parse_log_id,
+        userId,
+      )
+
+      return { code: 0, data: null, message: '反馈已记录' }
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        reply.code(400)
+        return { code: 2000, data: null, message: err.errors[0].message }
       }
       throw err
     }
@@ -255,6 +393,19 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       const dataContext = contextLines.join('\n')
 
+      // 查询用户偏好记忆
+      const memories = db
+        .prepare(
+          'SELECT content FROM ai_memories WHERE user_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 20',
+        )
+        .all(userId) as Array<{ content: string }>
+
+      let memoryContext = ''
+      if (memories.length > 0) {
+        const memoryLines = memories.map((m) => `- ${m.content}`).join('\n')
+        memoryContext = `\n\n## 用户偏好记忆\n${memoryLines}`
+      }
+
       // 获取历史对话（最近10条）
       const history = db
         .prepare(
@@ -272,7 +423,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           content: `你是一个个人财务分析助手。基于用户的交易数据回答财务相关问题。
 
 ## 数据上下文
-${dataContext}
+${dataContext}${memoryContext}
 
 ## 要求
 1. 回答简洁，有数据支撑（具体金额、笔数、百分比）
@@ -301,11 +452,22 @@ ${dataContext}
       insertMsg.run(userId, sessionId, 'user', body.message)
       insertMsg.run(userId, sessionId, 'assistant', aiResponse)
 
+      // 检测用户消息是否包含偏好关键词
+      const preferenceKeywords = /一般|通常|总是|每次|习惯|默认|都是|喜欢/
+      let memorySuggestion: string | undefined
+      if (preferenceKeywords.test(body.message)) {
+        // 提取偏好语句（取用户消息前100字作为偏好摘要）
+        memorySuggestion = body.message.length > 100
+          ? body.message.slice(0, 100)
+          : body.message
+      }
+
       return {
         code: 0,
         data: {
           message: aiResponse,
           session_id: sessionId,
+          ...(memorySuggestion ? { memory_suggestion: memorySuggestion } : {}),
         },
         message: '',
       }
@@ -360,6 +522,38 @@ ${dataContext}
   })
 }
 
+
+/**
+ * 插入 AI 解析日志
+ */
+function insertParseLog(
+  db: ReturnType<typeof getDb>,
+  params: {
+    userId: number
+    rawInput: string
+    cleanedInput: string | null
+    aiResponse: string | null
+    parsedItems: string | null
+    status: 'success' | 'empty' | 'error' | 'timeout'
+    errorMessage: string | null
+    durationMs: number
+  },
+): number {
+  const result = db.prepare(
+    `INSERT INTO ai_parse_logs (user_id, raw_input, cleaned_input, ai_response, parsed_items, status, error_message, duration_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    params.userId,
+    params.rawInput,
+    params.cleanedInput,
+    params.aiResponse,
+    params.parsedItems,
+    params.status,
+    params.errorMessage,
+    params.durationMs,
+  )
+  return Number(result.lastInsertRowid)
+}
 
 /**
  * 预清理输入文本，去除通知标题噪音

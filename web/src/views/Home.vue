@@ -15,6 +15,8 @@ const loading = ref(false)
 const confirming = ref(false)
 const error = ref('')
 const parsedItems = ref<any[]>([])
+const originalParsedItems = ref<any[]>([]) // AI 原始解析结果（用于对比修正）
+const parseLogId = ref<number | null>(null) // 解析日志 ID
 const showManual = ref(false)
 const summary = ref({ expense: 0, income: 0 })
 const todayTransactions = ref<any[]>([])
@@ -74,11 +76,15 @@ async function handleAiParse() {
   error.value = ''
   loading.value = true
   parsedItems.value = []
+  parseLogId.value = null
+  originalParsedItems.value = []
 
   try {
     const { data } = await api.post('/ai/parse', { input: input.value }, { timeout: 90000 })
     if (data.code === 0 && data.data.items.length > 0) {
       parsedItems.value = data.data.items
+      originalParsedItems.value = JSON.parse(JSON.stringify(data.data.items))
+      parseLogId.value = data.data.parse_log_id || null
     } else {
       // AI 失败，切手动
       error.value = data.message || 'AI 无法解析'
@@ -114,8 +120,21 @@ async function handleConfirm(items: any[]) {
     }))
 
     await api.post('/transactions', { items: payload })
+
+    // 发送 AI 解析反馈（异步，不阻塞主流程）
+    if (parseLogId.value) {
+      const modified = JSON.stringify(items) !== JSON.stringify(originalParsedItems.value)
+      api.post('/ai/parse-feedback', {
+        parse_log_id: parseLogId.value,
+        final_items: items,
+        modified,
+      }).catch(() => { /* 反馈失败不影响用户 */ })
+    }
+
     // 重置状态
     parsedItems.value = []
+    originalParsedItems.value = []
+    parseLogId.value = null
     input.value = ''
     toast.success(`已记 ${items.length} 笔`)
     fetchSummary()
@@ -130,6 +149,8 @@ async function handleConfirm(items: any[]) {
 
 function handleCancel() {
   parsedItems.value = []
+  originalParsedItems.value = []
+  parseLogId.value = null
 }
 
 async function handleManualSubmit(item: any) {

@@ -14,14 +14,19 @@
 |------|------|
 | 🤖 AI 快速记账 | 自然语言输入 → AI 解析 → 确认卡片 → 入账 |
 | ✏️ 手动记账 | AI 的 fallback，传统表单模式 |
-| 📊 统计分析 | 趋势折线图、分类饼图、消费排行、环比变化 |
+| 📊 Dashboard | 财务仪表盘：净资产、趋势图、分类饼图、预算进度、异常提醒 |
+| 📈 统计分析 | 趋势折线图、分类饼图、消费排行、环比变化 |
+| 🧠 AI 财务分析 | 三维度分析（全面/消费/预测），AI 生成专业报告 |
 | 💬 AI 问答 | 基于个人财务数据回答问题（"这个月餐饮花了多少？"） |
+| 💭 AI 记忆 | AI 记住你的消费习惯和偏好，解析越来越准 |
 | 💰 预算管理 | 月度总预算 + 分类预算，超支实时提醒 |
+| 🔁 订阅管理 | 追踪周期性支出，到期提醒，月/年费统计 |
 | 📥 账单导入 | 支持微信 / 支付宝 CSV 账单一键导入 |
 | 📤 数据导出 | JSON 全量备份 + CSV 流水导出（Excel 兼容） |
 | 👥 多用户 | 邀请码注册，数据完全隔离，管理员不可见他人数据 |
 | 📱 响应式 | 手机底部 Tab + PC 侧边栏，PWA 可添加桌面 |
 | 🗑️ 回收站 | 软删除可恢复，30 天后自动清理 |
+| 🔍 AI 质量监控 | 管理员面板查看解析成功率、耗时、用户修正率 |
 
 ## 🖼️ 界面预览
 
@@ -115,33 +120,40 @@ npm run dev
 ```
 bill/
 ├── server/                 # 后端
-│   └── src/
-│       ├── routes/         # 10 个路由模块
-│       │   ├── auth.ts     # 注册/登录/改密码
-│       │   ├── transaction.ts  # 交易 CRUD + 回收站
-│       │   ├── ai.ts       # AI 记账解析 + 问答 + 会话
-│       │   ├── stats.ts    # 统计（摘要/分类/趋势）
-│       │   ├── budget.ts   # 预算管理
-│       │   ├── category.ts # 分类管理
-│       │   ├── account.ts  # 账户管理
-│       │   ├── import.ts   # CSV 导入
-│       │   ├── export.ts   # 数据导出
-│       │   └── admin.ts    # 管理员 + 用户设置
-│       ├── ai/             # AI 模块
-│       ├── db/             # 数据库 Schema + Migration
-│       └── middleware/     # JWT 认证中间件
+│   ├── src/
+│   │   ├── routes/         # 12 个路由模块
+│   │   │   ├── auth.ts     # 注册/登录/改密码
+│   │   │   ├── transaction.ts  # 交易 CRUD + 回收站
+│   │   │   ├── ai.ts       # AI 记账解析 + 问答 + 会话
+│   │   │   ├── stats.ts    # 统计 + Dashboard + AI 分析
+│   │   │   ├── budget.ts   # 预算管理
+│   │   │   ├── category.ts # 分类管理
+│   │   │   ├── account.ts  # 账户管理
+│   │   │   ├── memory.ts   # AI 记忆管理
+│   │   │   ├── subscription.ts # 订阅管理
+│   │   │   ├── import.ts   # CSV 导入
+│   │   │   ├── export.ts   # 数据导出
+│   │   │   └── admin.ts    # 管理员 + 用户设置
+│   │   ├── ai/             # AI 模块
+│   │   ├── db/             # 数据库 Schema + Migration
+│   │   └── middleware/     # JWT 认证中间件
+│   └── tests/              # 自动化测试（95 个用例）
 ├── web/                    # 前端
 │   └── src/
-│       ├── views/          # 10 个页面
-│       │   ├── Home.vue    # 首页（AI 记账 + 确认卡片）
-│       │   ├── Transactions.vue  # 流水列表
-│       │   ├── Stats.vue   # 统计图表
-│       │   ├── AiChat.vue  # AI 问答对话
-│       │   ├── Budget.vue  # 预算管理
-│       │   ├── Import.vue  # 账单导入
-│       │   ├── Settings.vue # 设置 + 管理员
+│       ├── views/          # 14 个页面
+│       │   ├── Dashboard.vue    # 财务仪表盘（首页）
+│       │   ├── Home.vue         # AI 快速记账
+│       │   ├── Transactions.vue # 流水列表
+│       │   ├── Stats.vue        # 统计图表
+│       │   ├── Analysis.vue     # AI 财务分析
+│       │   ├── AiChat.vue       # AI 问答对话
+│       │   ├── Memories.vue     # AI 记忆管理
+│       │   ├── Budget.vue       # 预算管理
+│       │   ├── Subscriptions.vue # 订阅管理
+│       │   ├── Import.vue       # 账单导入
+│       │   ├── Settings.vue     # 设置 + 管理员
 │       │   ├── Onboarding.vue   # 首次引导
-│       │   └── Trash.vue   # 回收站
+│       │   └── Trash.vue        # 回收站
 │       ├── components/     # 7 个组件
 │       └── composables/    # useToast
 ├── docs/                   # 设计文档（PRD/DB/开发/测试/贡献规范）
@@ -159,11 +171,17 @@ bill/
 | 交易 | GET /trash, POST restore, DELETE permanent | 回收站 |
 | AI | POST /api/ai/parse | 自然语言 → 结构化记账数据 |
 | AI | POST /api/ai/chat | 智能问答 |
+| AI | POST /api/ai/parse-feedback | 解析质量反馈 |
 | 统计 | GET /api/stats/summary, by-category, trend | 收支分析 |
+| 统计 | GET /api/stats/dashboard | 仪表盘聚合数据 |
+| 统计 | POST /api/stats/analysis | AI 财务分析（全面/消费/预测） |
 | 预算 | GET/POST/PUT/DELETE /api/budgets | 预算管理 |
+| 记忆 | GET/POST/PUT/DELETE /api/memories | AI 记忆管理 |
+| 订阅 | GET/POST/PUT/DELETE /api/subscriptions | 订阅管理 |
+| 订阅 | POST cancel, renew | 取消/恢复订阅 |
 | 导入 | POST /api/import/csv | 微信/支付宝 CSV |
 | 导出 | GET /api/export/json, csv | 数据备份 |
-| 管理 | /api/admin/* | 邀请码 + 用户 + 全局设置 |
+| 管理 | /api/admin/* | 邀请码 + 用户 + 全局设置 + AI 质量监控 |
 
 ## ⚙️ 环境变量
 

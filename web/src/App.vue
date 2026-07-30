@@ -15,25 +15,29 @@ onMounted(async () => {
 })
 
 const navItems = [
-  { path: '/', label: '首页', icon: '🏠' },
+  { path: '/', label: '看板', icon: '📊' },
+  { path: '/quick', label: '记账', icon: '➕' },
   { path: '/transactions', label: '流水', icon: '📋' },
-  { path: '/stats', label: '统计', icon: '📊' },
+  { path: '/stats', label: '统计', icon: '📈' },
+  { path: '/analysis', label: '分析', icon: '🧠' },
   { path: '/ai', label: 'AI', icon: '🤖' },
+  { path: '/memories', label: '记忆', icon: '💭' },
   { path: '/budget', label: '预算', icon: '💰' },
+  { path: '/subscriptions', label: '订阅', icon: '🔁' },
   { path: '/settings', label: '我的', icon: '⚙️' },
 ]
 
 const mobileNavItems = [
-  { path: '/', label: '首页', icon: '🏠' },
+  { path: '/', label: '看板', icon: '📊' },
+  { path: '/quick', label: '记账', icon: '➕' },
   { path: '/transactions', label: '流水', icon: '📋' },
-  { path: '/stats', label: '统计', icon: '📊' },
   { path: '/budget', label: '预算', icon: '💰' },
   { path: '/settings', label: '我的', icon: '⚙️' },
 ]
 
 function isActive(path: string): boolean {
   if (path === '/') return route.path === '/'
-  return route.path.startsWith(path)
+  return route.path === path || route.path.startsWith(path + '/')
 }
 </script>
 

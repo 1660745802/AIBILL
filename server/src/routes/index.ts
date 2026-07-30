@@ -9,6 +9,8 @@ import { statsRoutes } from './stats.js'
 import { budgetRoutes } from './budget.js'
 import { importRoutes } from './import.js'
 import { exportRoutes } from './export.js'
+import { memoryRoutes } from './memory.js'
+import { subscriptionRoutes } from './subscription.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.get('/health', async () => {
@@ -29,4 +31,6 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(budgetRoutes)
   await app.register(importRoutes)
   await app.register(exportRoutes)
+  await app.register(memoryRoutes)
+  await app.register(subscriptionRoutes)
 }
