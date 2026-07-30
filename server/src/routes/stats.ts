@@ -453,6 +453,29 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       )
       .all(userId)
 
+    // === 8. 订阅到期提醒 ===
+    const todayStr = new Date().toISOString().slice(0, 10)
+    const in7days = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)
+    const upcomingSubs = db
+      .prepare(
+        `SELECT name, amount, next_payment_date FROM subscriptions
+         WHERE user_id = ? AND status = 'active'
+           AND next_payment_date IS NOT NULL
+           AND next_payment_date BETWEEN ? AND ?
+         ORDER BY next_payment_date ASC
+         LIMIT 5`,
+      )
+      .all(userId, todayStr, in7days) as Array<{ name: string; amount: number; next_payment_date: string }>
+
+    for (const sub of upcomingSubs) {
+      const daysLeft = Math.ceil((new Date(sub.next_payment_date).getTime() - Date.now()) / 86400000)
+      const dayText = daysLeft <= 0 ? '今天' : daysLeft === 1 ? '明天' : `${daysLeft}天后`
+      alerts.push({
+        type: 'subscription_due',
+        message: `${sub.name} ${dayText}扣费 ¥${(sub.amount / 100).toFixed(2)}`,
+      })
+    }
+
     return {
       code: 0,
       data: {

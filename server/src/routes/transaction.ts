@@ -157,7 +157,55 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
 
       insertAll()
 
-      return { code: 0, data: { created, duplicates }, message: '' }
+      // 检查预算是否超支（仅支出类交易触发）
+      const hasExpense = created.some((t: any) => t.type === 'expense')
+      let budget_warnings: Array<{ category_name: string; percent: number; status: string }> = []
+
+      if (hasExpense) {
+        const now = new Date()
+        const year = now.getFullYear()
+        const month = now.getMonth() + 1
+        const startDate = `${year}-${String(month).padStart(2, '0')}-01`
+        const lastDay = new Date(year, month, 0).getDate()
+        const endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+
+        const budgets = db
+          .prepare(
+            `SELECT b.category_id, b.amount, c.name as category_name
+             FROM budgets b
+             LEFT JOIN categories c ON b.category_id = c.id AND b.category_id != 0
+             WHERE b.user_id = ? AND b.year = ? AND (b.month = ? OR b.month = 0)`,
+          )
+          .all(userId, year, month) as Array<{ category_id: number; amount: number; category_name: string | null }>
+
+        if (budgets.length > 0) {
+          const spentRows = db
+            .prepare(
+              `SELECT category_id, SUM(amount) as total FROM transactions
+               WHERE user_id = ? AND type = 'expense' AND status = 'confirmed' AND deleted_at IS NULL
+                 AND date BETWEEN ? AND ?
+               GROUP BY category_id`,
+            )
+            .all(userId, startDate, endDate) as Array<{ category_id: number; total: number }>
+
+          const totalSpent = spentRows.reduce((s, r) => s + r.total, 0)
+          const spentMap = new Map(spentRows.map((r) => [r.category_id, r.total]))
+
+          for (const b of budgets) {
+            const spent = b.category_id === 0 ? totalSpent : (spentMap.get(b.category_id) || 0)
+            const percent = b.amount > 0 ? Math.round((spent / b.amount) * 100) : 0
+            if (percent >= 80) {
+              budget_warnings.push({
+                category_name: b.category_id === 0 ? '总预算' : (b.category_name || '分类预算'),
+                percent,
+                status: percent >= 100 ? 'exceeded' : 'warning',
+              })
+            }
+          }
+        }
+      }
+
+      return { code: 0, data: { created, duplicates, budget_warnings }, message: '' }
     } catch (err) {
       if (err instanceof z.ZodError) {
         reply.code(400)

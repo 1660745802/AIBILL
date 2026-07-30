@@ -22,12 +22,6 @@ const router = createRouter({
       meta: { auth: true },
     },
     {
-      path: '/import',
-      name: 'Import',
-      component: () => import('@/views/Import.vue'),
-      meta: { auth: true },
-    },
-    {
       path: '/',
       name: 'Dashboard',
       component: () => import('@/views/Dashboard.vue'),
@@ -40,15 +34,9 @@ const router = createRouter({
       meta: { auth: true },
     },
     {
-      path: '/transactions',
-      name: 'Transactions',
-      component: () => import('@/views/Transactions.vue'),
-      meta: { auth: true },
-    },
-    {
-      path: '/stats',
-      name: 'Stats',
-      component: () => import('@/views/Stats.vue'),
+      path: '/ledger',
+      name: 'Ledger',
+      component: () => import('@/views/Ledger.vue'),
       meta: { auth: true },
     },
     {
@@ -64,6 +52,18 @@ const router = createRouter({
       meta: { auth: true },
     },
     {
+      path: '/subscriptions',
+      name: 'Subscriptions',
+      component: () => import('@/views/Subscriptions.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/import',
+      name: 'Import',
+      component: () => import('@/views/Import.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/settings',
       name: 'Settings',
       component: () => import('@/views/Settings.vue'),
@@ -75,24 +75,11 @@ const router = createRouter({
       component: () => import('@/views/Trash.vue'),
       meta: { auth: true },
     },
-    {
-      path: '/memories',
-      name: 'Memories',
-      component: () => import('@/views/Memories.vue'),
-      meta: { auth: true },
-    },
-    {
-      path: '/subscriptions',
-      name: 'Subscriptions',
-      component: () => import('@/views/Subscriptions.vue'),
-      meta: { auth: true },
-    },
-    {
-      path: '/analysis',
-      name: 'Analysis',
-      component: () => import('@/views/Analysis.vue'),
-      meta: { auth: true },
-    },
+    // 兼容旧 URL 重定向
+    { path: '/transactions', redirect: '/ledger' },
+    { path: '/stats', redirect: '/ledger' },
+    { path: '/analysis', redirect: '/ledger' },
+    { path: '/memories', redirect: '/settings' },
     {
       path: '/:pathMatch(.*)*',
       name: 'NotFound',

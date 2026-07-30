@@ -80,6 +80,10 @@ const refreshing = ref(false)
 const data = ref<DashboardData | null>(null)
 const dismissedAlerts = ref<Set<number>>(new Set())
 
+// AI 洞察
+const aiInsight = ref('')
+const aiInsightLoading = ref(false)
+
 // Pull-to-refresh state
 const pullStartY = ref(0)
 const pullDistance = ref(0)
@@ -109,6 +113,20 @@ async function fetchDashboard() {
 async function refresh() {
   refreshing.value = true
   await fetchDashboard()
+}
+
+async function fetchAiInsight() {
+  if (aiInsightLoading.value) return
+  aiInsightLoading.value = true
+  try {
+    const { data: res } = await api.post('/stats/analysis', { type: 'overview' }, { timeout: 30000 })
+    if (res.code === 0 && res.data?.analysis) {
+      // 取第一段作为一句话洞察
+      const lines = res.data.analysis.split('\n').filter((l: string) => l.trim())
+      aiInsight.value = lines.slice(0, 3).join('\n')
+    }
+  } catch { /* ignore */ }
+  finally { aiInsightLoading.value = false }
 }
 
 function onTouchStart(e: TouchEvent) {
@@ -456,6 +474,63 @@ const visibleAlerts = computed(() => {
           </div>
         </div>
         <div v-else class="text-center py-4 text-sm text-gray-400">暂无交易记录</div>
+      </div>
+
+      <!-- Quick Actions -->
+      <div class="grid grid-cols-3 gap-3">
+        <router-link
+          to="/quick"
+          class="flex flex-col items-center py-4 bg-white rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow"
+        >
+          <span class="text-2xl mb-1">✏️</span>
+          <span class="text-xs text-gray-700 font-medium">记一笔</span>
+        </router-link>
+        <router-link
+          to="/ledger"
+          class="flex flex-col items-center py-4 bg-white rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow"
+        >
+          <span class="text-2xl mb-1">📒</span>
+          <span class="text-xs text-gray-700 font-medium">看流水</span>
+        </router-link>
+        <router-link
+          to="/ai"
+          class="flex flex-col items-center py-4 bg-white rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow"
+        >
+          <span class="text-2xl mb-1">🤖</span>
+          <span class="text-xs text-gray-700 font-medium">问问 AI</span>
+        </router-link>
+      </div>
+
+      <!-- AI 洞察 -->
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+        <div class="h-1 bg-gradient-to-r from-purple-400 to-blue-400"></div>
+        <div class="p-4">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-medium text-gray-700">🧠 AI 洞察</h3>
+            <button
+              v-if="!aiInsight"
+              @click="fetchAiInsight"
+              :disabled="aiInsightLoading"
+              class="text-xs px-2.5 py-1 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 disabled:opacity-50"
+            >
+              {{ aiInsightLoading ? '分析中...' : '生成' }}
+            </button>
+            <button
+              v-else
+              @click="fetchAiInsight"
+              :disabled="aiInsightLoading"
+              class="text-xs text-gray-400 hover:text-blue-500"
+            >
+              {{ aiInsightLoading ? '...' : '刷新' }}
+            </button>
+          </div>
+          <div v-if="aiInsight" class="text-sm text-gray-600 leading-relaxed whitespace-pre-line">{{ aiInsight }}</div>
+          <div v-else-if="aiInsightLoading" class="flex items-center gap-2 py-2">
+            <span class="w-4 h-4 border-2 border-purple-200 border-t-purple-500 rounded-full animate-spin"></span>
+            <span class="text-xs text-gray-400">AI 正在分析你的财务数据...</span>
+          </div>
+          <div v-else class="text-xs text-gray-400 py-1">点击"生成"获取 AI 财务洞察</div>
+        </div>
       </div>
     </div>
   </div>

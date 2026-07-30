@@ -15,23 +15,16 @@ onMounted(async () => {
 })
 
 const navItems = [
-  { path: '/', label: '看板', icon: '📊' },
+  { path: '/', label: '首页', icon: '📊' },
   { path: '/quick', label: '记账', icon: '➕' },
-  { path: '/transactions', label: '流水', icon: '📋' },
-  { path: '/stats', label: '统计', icon: '📈' },
-  { path: '/analysis', label: '分析', icon: '🧠' },
-  { path: '/ai', label: 'AI', icon: '🤖' },
-  { path: '/memories', label: '记忆', icon: '💭' },
-  { path: '/budget', label: '预算', icon: '💰' },
-  { path: '/subscriptions', label: '订阅', icon: '🔁' },
+  { path: '/ledger', label: '账本', icon: '📒' },
   { path: '/settings', label: '我的', icon: '⚙️' },
 ]
 
 const mobileNavItems = [
-  { path: '/', label: '看板', icon: '📊' },
+  { path: '/', label: '首页', icon: '📊' },
   { path: '/quick', label: '记账', icon: '➕' },
-  { path: '/transactions', label: '流水', icon: '📋' },
-  { path: '/budget', label: '预算', icon: '💰' },
+  { path: '/ledger', label: '账本', icon: '📒' },
   { path: '/settings', label: '我的', icon: '⚙️' },
 ]
 

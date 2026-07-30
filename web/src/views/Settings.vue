@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted } from 'vue'
+import { RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import api from '@/api/index'
@@ -28,6 +28,60 @@ const loadingParseLogs = ref(false)
 // 邀请码生成
 const newCodeMaxUses = ref(1)
 const generating = ref(false)
+
+// AI 记忆
+interface Memory {
+  id: string
+  content: string
+  category: string
+  source: string
+  is_active: number
+  created_at: string
+}
+const showMemories = ref(false)
+const memories = ref<Memory[]>([])
+const newMemory = ref('')
+const memoriesCount = computed(() => memories.value.length)
+
+async function fetchMemories() {
+  try {
+    const { data } = await api.get('/memories')
+    if (data.code === 0) memories.value = data.data.items
+  } catch { /* ignore */ }
+}
+
+async function addMemory() {
+  if (!newMemory.value.trim()) return
+  try {
+    const { data } = await api.post('/memories', {
+      content: newMemory.value.trim(),
+      category: 'preference',
+    })
+    if (data.code === 0) {
+      memories.value.unshift(data.data)
+      newMemory.value = ''
+      toast.success('记忆已添加')
+    }
+  } catch { /* ignore */ }
+}
+
+async function toggleMemory(m: Memory) {
+  const newVal = m.is_active ? 0 : 1
+  try {
+    const { data } = await api.put(`/memories/${m.id}`, { is_active: newVal })
+    if (data.code === 0) m.is_active = newVal
+  } catch { /* ignore */ }
+}
+
+async function deleteMemory(id: string) {
+  try {
+    const { data } = await api.delete(`/memories/${id}`)
+    if (data.code === 0) {
+      memories.value = memories.value.filter((m) => m.id !== id)
+      toast.success('已删除')
+    }
+  } catch { /* ignore */ }
+}
 
 // 修改密码
 const showPasswordForm = ref(false)
@@ -74,6 +128,7 @@ async function handleChangePassword() {
 }
 
 onMounted(async () => {
+  fetchMemories()
   if (auth.isAdmin) {
     await fetchAdminData()
   }
@@ -215,6 +270,24 @@ function exportCsv() {
       </div>
     </div>
 
+    <!-- 功能入口 -->
+    <div class="bg-white px-4 py-4 mb-2">
+      <div class="grid grid-cols-3 gap-3">
+        <RouterLink to="/budget" class="flex flex-col items-center py-3 rounded-xl bg-amber-50 hover:bg-amber-100 transition-colors">
+          <span class="text-2xl mb-1">💰</span>
+          <span class="text-xs text-gray-700">预算</span>
+        </RouterLink>
+        <RouterLink to="/subscriptions" class="flex flex-col items-center py-3 rounded-xl bg-blue-50 hover:bg-blue-100 transition-colors">
+          <span class="text-2xl mb-1">🔁</span>
+          <span class="text-xs text-gray-700">订阅</span>
+        </RouterLink>
+        <RouterLink to="/ai" class="flex flex-col items-center py-3 rounded-xl bg-purple-50 hover:bg-purple-100 transition-colors">
+          <span class="text-2xl mb-1">🤖</span>
+          <span class="text-xs text-gray-700">AI 问答</span>
+        </RouterLink>
+      </div>
+    </div>
+
     <!-- 修改密码 -->
     <div class="bg-white px-4 py-4 mb-2">
       <button
@@ -257,6 +330,33 @@ function exportCsv() {
     <!-- 分类/账户管理 -->
     <CategoryManager />
     <AccountManager />
+
+    <!-- AI 记忆 -->
+    <div class="bg-white px-4 py-4 mb-2">
+      <button @click="showMemories = !showMemories" class="w-full text-left text-sm font-medium text-gray-700 flex items-center justify-between">
+        <span>💭 AI 记忆</span>
+        <span class="flex items-center gap-2">
+          <span v-if="memoriesCount > 0" class="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full">{{ memoriesCount }} 条</span>
+          <span class="text-gray-400">{{ showMemories ? '▲' : '▼' }}</span>
+        </span>
+      </button>
+      <div v-if="showMemories" class="mt-3 space-y-2">
+        <!-- Memory list -->
+        <div v-for="m in memories" :key="m.id" class="flex items-start justify-between p-2 bg-gray-50 rounded-lg">
+          <div class="flex-1 text-xs text-gray-700">{{ m.content }}</div>
+          <div class="flex items-center gap-1 ml-2 shrink-0">
+            <button @click="toggleMemory(m)" class="text-xs" :class="m.is_active ? 'text-green-500' : 'text-gray-300'">{{ m.is_active ? '✓' : '○' }}</button>
+            <button @click="deleteMemory(m.id)" class="text-xs text-red-400 hover:text-red-600">✕</button>
+          </div>
+        </div>
+        <div v-if="memories.length === 0" class="text-xs text-gray-400 text-center py-3">AI 还没有记住任何偏好</div>
+        <!-- Add memory -->
+        <div class="flex gap-2">
+          <input v-model="newMemory" type="text" placeholder="手动添加记忆..." class="flex-1 px-2 py-1.5 border border-gray-200 rounded-lg text-xs" />
+          <button @click="addMemory" :disabled="!newMemory.trim()" class="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg disabled:opacity-50">添加</button>
+        </div>
+      </div>
+    </div>
 
     <!-- 数据管理 -->
     <div class="bg-white px-4 py-4 mb-2">

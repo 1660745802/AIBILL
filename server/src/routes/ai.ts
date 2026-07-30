@@ -294,6 +294,44 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       if (body.modified && logRow.parsed_items) {
         try {
           const original = JSON.parse(logRow.parsed_items)
+          const final = body.final_items
+
+          // 自动从修正中学习：如果用户修改了分类，生成记忆
+          if (Array.isArray(original) && Array.isArray(final)) {
+            for (let i = 0; i < Math.min(original.length, final.length); i++) {
+              const orig = original[i]
+              const fin = final[i]
+              if (!orig || !fin) continue
+
+              // 分类被修正
+              if (orig.category_name && fin.category_name && orig.category_name !== fin.category_name && fin.description) {
+                const memContent = `"${fin.description}"应该归类为"${fin.category_name}"`
+                // 避免重复记忆
+                const existing = db
+                  .prepare('SELECT id FROM ai_memories WHERE user_id = ? AND content = ?')
+                  .get(userId, memContent)
+                if (!existing) {
+                  db.prepare(
+                    `INSERT INTO ai_memories (user_id, content, category, source, source_detail) VALUES (?, ?, 'habit', 'ai_suggested', '解析修正自动学习')`,
+                  ).run(userId, memContent)
+                }
+              }
+
+              // 账户被修正
+              if (orig.account_name && fin.account_name && orig.account_name !== fin.account_name && fin.description) {
+                const memContent = `"${fin.description}"一般用"${fin.account_name}"支付`
+                const existing = db
+                  .prepare('SELECT id FROM ai_memories WHERE user_id = ? AND content = ?')
+                  .get(userId, memContent)
+                if (!existing) {
+                  db.prepare(
+                    `INSERT INTO ai_memories (user_id, content, category, source, source_detail) VALUES (?, ?, 'habit', 'ai_suggested', '解析修正自动学习')`,
+                  ).run(userId, memContent)
+                }
+              }
+            }
+          }
+
           modificationDetail = JSON.stringify({
             original_count: Array.isArray(original) ? original.length : 0,
             final_count: body.final_items.length,
