@@ -273,10 +273,17 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // === 2. 净资产 ===
+    // === 2. 净资产（实际余额 = 初始余额 + 收入 - 支出 + 转入 - 转出）===
     const accounts = db
       .prepare(
         `SELECT
-          a.id, a.name, a.icon, a.initial_balance AS balance
+          a.id, a.name, a.icon,
+          a.initial_balance
+            + COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'income' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
+            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'expense' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
+            + COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'transfer' AND target_account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
+            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'transfer' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
+          AS balance
         FROM accounts a
         WHERE a.user_id = ? AND a.is_active = 1
         ORDER BY a.sort_order ASC, a.id ASC`,
@@ -547,10 +554,21 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
         .all(userId, thisStart, thisEnd) as Array<{ name: string; icon: string; total: number }>
 
       // 净资产
-      const accounts = db
-        .prepare('SELECT initial_balance FROM accounts WHERE user_id = ? AND is_active = 1')
-        .all(userId) as Array<{ initial_balance: number }>
-      const netWorth = accounts.reduce((sum, a) => sum + a.initial_balance, 0)
+      // 净资产（实际余额）
+      const netWorthRow = db
+        .prepare(
+          `SELECT COALESCE(SUM(
+            a.initial_balance
+            + COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'income' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
+            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'expense' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
+            + COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'transfer' AND target_account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
+            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'transfer' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
+          ), 0) AS total
+          FROM accounts a
+          WHERE a.user_id = ? AND a.is_active = 1`,
+        )
+        .get(userId) as { total: number }
+      const netWorth = netWorthRow.total
 
       // 订阅月支出
       const subRow = db
