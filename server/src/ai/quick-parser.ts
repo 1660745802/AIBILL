@@ -1,23 +1,25 @@
 /**
- * 快捷本地解析器
- * 对极简输入直接正则匹配，不走 AI，毫秒级响应
+ * 快捷本地解析器（保守策略）
  *
- * 覆盖模式：
- * - "午饭32" / "咖啡 18" / "打车15.5"
- * - "午饭32微信" / "打车15支付宝"
- * - "午饭32，咖啡18，地铁4"（逗号分隔多笔）
- * - "发工资12000" / "收到红包200"
+ * 设计原则：宁可多走一次 AI，也不要分错类给用户。
+ * 只在"极高置信度"时才走本地，否则一律交给 AI。
  *
- * 不覆盖（交给 AI）：
- * - 包含日期（"昨天午饭32"）
- * - 包含转账（"微信转支付宝500"）
- * - 长文本（>40字）
- * - 无法识别金额
+ * 高置信模式（覆盖日常 60% 的记账输入）：
+ * - 精确匹配用户的分类名 + 金额："餐饮32"、"交通15"
+ * - 精确匹配同义词表 + 金额："午饭32"、"打车15"、"咖啡18"
+ * - 以上 + 账户名："午饭32微信"
+ * - 逗号分隔多笔（每笔都能高置信匹配）
+ *
+ * 低置信（交给 AI）：
+ * - 描述词不在同义词表里："肯德基45"、"小米商城299"
+ * - 有日期/时间信息
+ * - 有转账/还款关键词
+ * - 长文本
  */
 
 interface QuickParsedItem {
   type: 'expense' | 'income'
-  amount: number // 元
+  amount: number
   description: string
   category: string
   account: string
@@ -31,60 +33,72 @@ interface QuickParseContext {
   accounts: string[]
 }
 
-// 收入关键词
-const INCOME_KEYWORDS = ['工资', '薪资', '收入', '奖金', '红包', '退款', '报销', '到账', '兼职', '理财收益', '利息']
+// 高置信同义词：key 是用户可能输入的词，value 是分类名
+// 只收录"一定不会错"的映射
+const HIGH_CONFIDENCE_MAP: Record<string, { category: string; type: 'expense' | 'income' }> = {
+  // 餐饮（最高频）
+  早餐: { category: '餐饮', type: 'expense' },
+  早饭: { category: '餐饮', type: 'expense' },
+  午餐: { category: '餐饮', type: 'expense' },
+  午饭: { category: '餐饮', type: 'expense' },
+  晚餐: { category: '餐饮', type: 'expense' },
+  晚饭: { category: '餐饮', type: 'expense' },
+  夜宵: { category: '餐饮', type: 'expense' },
+  外卖: { category: '餐饮', type: 'expense' },
+  奶茶: { category: '餐饮', type: 'expense' },
+  咖啡: { category: '餐饮', type: 'expense' },
+  饮料: { category: '餐饮', type: 'expense' },
+  水果: { category: '餐饮', type: 'expense' },
+  零食: { category: '餐饮', type: 'expense' },
+  食堂: { category: '餐饮', type: 'expense' },
+  // 交通
+  打车: { category: '交通', type: 'expense' },
+  地铁: { category: '交通', type: 'expense' },
+  公交: { category: '交通', type: 'expense' },
+  加油: { category: '交通', type: 'expense' },
+  停车: { category: '交通', type: 'expense' },
+  // 通讯
+  话费: { category: '通讯', type: 'expense' },
+  // 收入
+  工资: { category: '工资', type: 'income' },
+  薪资: { category: '工资', type: 'income' },
+  奖金: { category: '奖金', type: 'income' },
+  红包: { category: '红包', type: 'income' },
+  退款: { category: '退款', type: 'income' },
+}
 
-// 描述→分类映射（高频场景覆盖）
-const DESC_TO_CATEGORY: Array<[RegExp, string]> = [
-  [/早餐|早饭|早点/, '餐饮'],
-  [/午餐|午饭|午饭/, '餐饮'],
-  [/晚餐|晚饭|夜宵|宵夜/, '餐饮'],
-  [/外卖|堂食|食堂|饭|菜/, '餐饮'],
-  [/奶茶|咖啡|茶|饮料|果汁|水/, '餐饮'],
-  [/零食|水果|面包|蛋糕/, '餐饮'],
-  [/打车|出租|滴滴|快车|专车|顺风车/, '交通'],
-  [/地铁|公交|公交卡|骑行|共享单车/, '交通'],
-  [/加油|停车|过路费|高速/, '交通'],
-  [/火车|机票|飞机|高铁|动车/, '交通'],
-  [/超市|商场|网购|淘宝|京东|拼多多/, '购物'],
-  [/衣服|裤子|鞋|包|服装/, '服饰'],
-  [/话费|流量|宽带|网费/, '通讯'],
-  [/房租|水电|物业|暖气/, '住房'],
-  [/电影|游戏|视频|音乐|KTV|唱歌/, '娱乐'],
-  [/药|医院|挂号|看病|体检/, '医疗'],
-  [/书|课|培训|学费/, '教育'],
-  [/日用品|纸巾|洗衣液|牙膏/, '日用'],
-  [/红包|礼物|份子|请客|聚餐/, '人情'],
-]
-
-// 账户关键词
-const ACCOUNT_KEYWORDS: Array<[RegExp, string]> = [
-  [/微信|wx/, '微信'],
-  [/支付宝|zfb|alipay/, '支付宝'],
-  [/现金/, '现金'],
-  [/银行卡|银行|刷卡/, '银行卡'],
-]
+// 账户关键词（只匹配尾部出现的）
+const ACCOUNT_SUFFIXES: Record<string, string> = {
+  微信: '微信',
+  支付宝: '支付宝',
+  现金: '现金',
+  银行卡: '银行卡',
+}
 
 /**
- * 尝试快捷解析。如果能解析返回结果，否则返回 null（交给 AI）
+ * 尝试快捷解析。
+ * 返回结果 = 高置信匹配成功
+ * 返回 null = 交给 AI
  */
 export function quickParse(input: string, ctx: QuickParseContext): QuickParsedItem[] | null {
   const trimmed = input.trim()
 
-  // 不处理的情况
-  if (trimmed.length > 40) return null
-  if (/转|转账|充值/.test(trimmed)) return null
-  if (/昨天|前天|今天|明天|上周|本周|[0-9]+月[0-9]+[日号]/.test(trimmed)) return null
-  if (/[\n]/.test(trimmed)) return null // 多行文本交给 AI
+  // 基本排除规则
+  if (trimmed.length > 30) return null
+  if (trimmed.length < 2) return null
+  if (/转|转账|充值|还/.test(trimmed)) return null
+  if (/昨天|前天|今天|明天|上周|本周|下周|[0-9]+月[0-9]+[日号]/.test(trimmed)) return null
+  if (/\n/.test(trimmed)) return null
 
   // 按逗号/顿号拆分多笔
   const segments = trimmed.split(/[，,、;；]+/).map((s) => s.trim()).filter(Boolean)
+  if (segments.length > 5) return null // 太多条交给 AI
 
   const results: QuickParsedItem[] = []
 
   for (const seg of segments) {
     const parsed = parseSingle(seg, ctx)
-    if (!parsed) return null // 有一条解析失败就全部交给 AI
+    if (!parsed) return null // 有一条不确定就全部交给 AI
     results.push(parsed)
   }
 
@@ -92,88 +106,85 @@ export function quickParse(input: string, ctx: QuickParseContext): QuickParsedIt
 }
 
 /**
- * 解析单条输入
- * 模式: [描述][金额][账户?]
+ * 解析单条。只在高置信时返回结果。
  */
 function parseSingle(input: string, ctx: QuickParseContext): QuickParsedItem | null {
-  // 提取金额 — 匹配浮点数或整数
-  const amountMatch = input.match(/(\d+\.?\d*)(?:元|块|¥)?/)
+  // 提取金额（必须有数字）
+  const amountMatch = input.match(/(\d+\.?\d*)/)
   if (!amountMatch) return null
 
   const amount = parseFloat(amountMatch[1]!)
-  if (!amount || amount <= 0 || amount > 1000000) return null
+  if (!amount || amount <= 0 || amount > 500000) return null
 
-  // 提取描述 — 金额前面的部分
+  // 去掉金额部分，剩下的是描述 + 可能的账户
   const amountIndex = input.indexOf(amountMatch[0]!)
-  let description = input.slice(0, amountIndex).trim()
-  const afterAmount = input.slice(amountIndex + amountMatch[0]!.length).trim()
+  const beforeAmount = input.slice(0, amountIndex).replace(/[¥￥元块钱\s]/g, '').trim()
+  const afterAmount = input.slice(amountIndex + amountMatch[0]!.length).replace(/[¥￥元块钱\s]/g, '').trim()
 
-  // 清理描述中的符号
-  description = description.replace(/[¥￥元块钱]$/g, '').trim()
+  // 描述在金额前面
+  let description = beforeAmount
+  let trailing = afterAmount
 
-  if (!description) {
-    // 尝试从金额后面取描述
-    description = afterAmount.replace(/[¥￥元块钱]/g, '').trim()
+  // 如果描述为空，尝试金额后面
+  if (!description && trailing) {
+    description = trailing
+    trailing = ''
   }
 
-  if (!description) return null // 没有描述，无法判断
-  if (description.length > 15) return null // 描述太长，可能是复杂文本
+  if (!description) return null
+  if (description.length > 8) return null // 描述太长不确定
 
-  // 判断收入/支出
-  const isIncome = INCOME_KEYWORDS.some((kw) => description.includes(kw))
-  const type: 'expense' | 'income' = isIncome ? 'income' : 'expense'
-
-  // 匹配分类
-  let category = ''
-  if (isIncome) {
-    // 收入分类匹配
-    if (/工资|薪资/.test(description)) category = '工资'
-    else if (/奖金|年终/.test(description)) category = '奖金'
-    else if (/红包/.test(description)) category = '红包'
-    else if (/退款|报销|退货/.test(description)) category = '退款'
-    else if (/理财|利息|收益/.test(description)) category = '理财'
-    else if (/兼职/.test(description)) category = '兼职'
-    else category = '其他'
-  } else {
-    for (const [pattern, cat] of DESC_TO_CATEGORY) {
-      if (pattern.test(description)) {
-        category = cat
-        break
-      }
-    }
-    if (!category) category = '其他'
-  }
-
-  // 验证分类存在于用户分类列表
-  const availableCategories = type === 'expense' ? ctx.expenseCategories : ctx.incomeCategories
-  if (!availableCategories.includes(category)) {
-    category = availableCategories.includes('其他') ? '其他' : (availableCategories[0] || '其他')
-  }
-
-  // 匹配账户（从剩余文本中提取）
+  // 尝试从尾部提取账户
   let account = ''
-  const fullText = description + afterAmount
-  for (const [pattern, accName] of ACCOUNT_KEYWORDS) {
-    if (pattern.test(fullText)) {
-      // 验证用户有这个账户
+  const fullTrailing = trailing || ''
+  for (const [keyword, accName] of Object.entries(ACCOUNT_SUFFIXES)) {
+    if (fullTrailing === keyword || description.endsWith(keyword)) {
       if (ctx.accounts.includes(accName)) {
         account = accName
+        // 从描述中去掉账户名
+        if (description.endsWith(keyword)) {
+          description = description.slice(0, -keyword.length)
+        }
       }
       break
     }
   }
 
-  // 如果描述里包含账户名，从描述中去掉
-  if (account && description.includes(account)) {
-    description = description.replace(account, '').trim()
+  if (!description) return null
+
+  // 核心判断：描述必须在高置信映射表或用户分类名中
+  const allCategories = [...ctx.expenseCategories, ...ctx.incomeCategories]
+
+  // 1. 精确匹配用户分类名（用户自己建的分类名就是最高置信）
+  if (allCategories.includes(description)) {
+    const isIncome = ctx.incomeCategories.includes(description)
+    return {
+      type: isIncome ? 'income' : 'expense',
+      amount,
+      description,
+      category: description,
+      account,
+      date: ctx.today,
+    }
   }
 
-  return {
-    type,
-    amount,
-    description: description.slice(0, 10),
-    category,
-    account,
-    date: ctx.today,
+  // 2. 高置信同义词表匹配
+  const mapped = HIGH_CONFIDENCE_MAP[description]
+  if (mapped) {
+    // 验证分类存在于用户列表
+    const available = mapped.type === 'expense' ? ctx.expenseCategories : ctx.incomeCategories
+    if (available.includes(mapped.category)) {
+      return {
+        type: mapped.type,
+        amount,
+        description,
+        category: mapped.category,
+        account,
+        date: ctx.today,
+      }
+    }
   }
+
+  // 没有高置信匹配 → 返回 null，交给 AI
+  return null
 }
