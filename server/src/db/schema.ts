@@ -222,6 +222,21 @@ CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, stat
 CREATE INDEX IF NOT EXISTS idx_subscriptions_next ON subscriptions(user_id, next_payment_date);
 `
 
+/** Migration 006: 应用日志表 */
+export const migration006 = `
+CREATE TABLE IF NOT EXISTS app_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    level TEXT NOT NULL CHECK(level IN ('info', 'warn', 'error')),
+    module TEXT NOT NULL,
+    message TEXT NOT NULL,
+    data TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_app_logs_level ON app_logs(level);
+CREATE INDEX IF NOT EXISTS idx_app_logs_module ON app_logs(module);
+CREATE INDEX IF NOT EXISTS idx_app_logs_created ON app_logs(created_at);
+`
+
 /** 默认全局设置数据 */
 export const seedSettings = `
 INSERT OR IGNORE INTO settings (key, value) VALUES

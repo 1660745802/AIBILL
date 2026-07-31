@@ -4,6 +4,7 @@ import { config } from './config.js'
 import { registerRoutes } from './routes/index.js'
 import { initDb, closeDb } from './db/index.js'
 import { ensureAdminUser } from './services/auth.service.js'
+import { startScheduler, stopScheduler } from './services/scheduler.js'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
@@ -51,6 +52,7 @@ async function start(): Promise<void> {
 
   // 优雅关闭
   const shutdown = async () => {
+    stopScheduler()
     await app.close()
     closeDb()
     process.exit(0)
@@ -61,6 +63,7 @@ async function start(): Promise<void> {
   try {
     await app.listen({ port: config.port, host: '0.0.0.0' })
     console.log(`[App] Server listening on port ${config.port}`)
+    startScheduler()
   } catch (err) {
     app.log.error(err)
     closeDb()

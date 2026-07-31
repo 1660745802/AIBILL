@@ -15,6 +15,7 @@ import { chatCompletion, AiError } from '../ai/client.js'
 import { buildParsePrompt } from '../ai/prompts.js'
 import { extractJsonArray, validateParsedItems, ParseError } from '../ai/parser.js'
 import { matchCategory } from '../ai/category-matcher.js'
+import { quickParse } from '../ai/quick-parser.js'
 
 const parseInputSchema = z.object({
   input: z.string().min(1, '输入不能为空').max(3000, '输入过长'),
@@ -67,6 +68,69 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       // 预清理输入文本（去除通知标题噪音）
       const cleanedInput = cleanInput(body.input)
+
+      // === 快捷解析：简单输入直接正则匹配，毫秒级响应 ===
+      const quickResult = quickParse(cleanedInput, {
+        today,
+        expenseCategories: expenseCategories.map((c) => c.name),
+        incomeCategories: incomeCategories.map((c) => c.name),
+        accounts: accounts.map((a) => a.name),
+      })
+
+      if (quickResult) {
+        // 快捷解析成功，匹配分类 ID + 账户 ID
+        const result = quickResult.map((item) => {
+          const type = item.type === 'expense' ? 'expense' : 'income'
+          const matched = matchCategory(
+            item.category,
+            categories.map((c) => ({ id: c.id, name: c.name, type: c.type as 'expense' | 'income' })),
+            type,
+          )
+          const catRow = categories.find((c) => c.id === matched.id)
+
+          let accountId: number | null = null
+          let accountName = ''
+          if (item.account) {
+            const matchedAcc = accounts.find((a) => a.name === item.account)
+            if (matchedAcc) { accountId = matchedAcc.id; accountName = matchedAcc.name }
+          }
+
+          return {
+            type: item.type,
+            amount: Math.round(item.amount * 100),
+            category_id: matched.id,
+            category_name: matched.name,
+            category_icon: catRow?.icon || '📦',
+            description: item.description,
+            date: item.date,
+            account_id: accountId,
+            account_name: accountName,
+            target_account_id: null,
+            target_account_name: '',
+          }
+        })
+
+        // 记录日志（快捷解析也记录，方便对比质量）
+        const durationMs = Date.now() - startTime
+        const logId = insertParseLog(db, {
+          userId,
+          rawInput: body.input,
+          cleanedInput,
+          aiResponse: '[quick-parse]',
+          parsedItems: JSON.stringify(result),
+          status: 'success',
+          errorMessage: null,
+          durationMs,
+        })
+
+        return {
+          code: 0,
+          data: { items: result, raw_input: body.input, parse_log_id: logId, source: 'quick' },
+          message: '',
+        }
+      }
+
+      // === AI 解析：复杂输入走 LLM ===
 
       // 根据输入长度选择快速/完整 prompt
       const systemPrompt = buildParsePrompt({
@@ -426,6 +490,27 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         contextLines.push(`\n本月支出分类明细：`)
         for (const cat of categorySummary) {
           contextLines.push(`  ${cat.name}: ¥${(cat.total / 100).toFixed(2)}（${cat.count}笔）`)
+        }
+      }
+
+      // 注入最近交易明细（支持用户问具体问题）
+      const recentTransactions = db
+        .prepare(
+          `SELECT t.date, t.type, t.amount, t.description, c.name as category_name
+           FROM transactions t
+           LEFT JOIN categories c ON t.category_id = c.id
+           WHERE t.user_id = ? AND t.status = 'confirmed' AND t.deleted_at IS NULL
+           ORDER BY t.date DESC, t.created_at DESC
+           LIMIT 30`,
+        )
+        .all(userId) as Array<{ date: string; type: string; amount: number; description: string; category_name: string | null }>
+
+      if (recentTransactions.length > 0) {
+        contextLines.push(`\n最近交易明细（最新30笔）：`)
+        contextLines.push('日期 | 类型 | 金额 | 描述 | 分类')
+        for (const tx of recentTransactions) {
+          const typeLabel = tx.type === 'expense' ? '支出' : tx.type === 'income' ? '收入' : '转账'
+          contextLines.push(`${tx.date} | ${typeLabel} | ¥${(tx.amount / 100).toFixed(2)} | ${tx.description || '-'} | ${tx.category_name || '-'}`)
         }
       }
 

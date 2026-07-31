@@ -15,7 +15,7 @@ export async function exportRoutes(app: FastifyInstance): Promise<void> {
     const userId = request.user!.userId
 
     const transactions = db
-      .prepare('SELECT * FROM transactions WHERE user_id = ? AND deleted = 0')
+      .prepare('SELECT * FROM transactions WHERE user_id = ? AND deleted_at IS NULL')
       .all(userId)
 
     const categories = db
@@ -62,7 +62,7 @@ export async function exportRoutes(app: FastifyInstance): Promise<void> {
       FROM transactions t
       LEFT JOIN categories c ON t.category_id = c.id
       LEFT JOIN accounts a ON t.account_id = a.id
-      WHERE t.user_id = ? AND t.deleted = 0
+      WHERE t.user_id = ? AND t.deleted_at IS NULL
     `
     const params: (string | number)[] = [userId]
 

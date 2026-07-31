@@ -198,18 +198,32 @@ describe('Memory Routes', () => {
   })
 
   describe('AI parse with memories', () => {
-    it('should work without memories (empty result due to no AI key)', async () => {
+    it('simple input should be handled by quick parser', async () => {
       const res = await app.inject({
         method: 'POST',
         url: '/api/ai/parse',
         headers: authHeaders(user1Token),
         payload: { input: '午饭32' },
       })
-      // Without a valid AI key, we expect AI error (502) or key missing error
       const body = JSON.parse(res.payload)
-      // The key is not configured in test, so it should return error
-      expect([502, 200]).toContain(res.statusCode)
-      expect(body.code).not.toBe(0) // Should fail because no valid AI key
+      // Quick parser handles simple input successfully
+      expect(res.statusCode).toBe(200)
+      expect(body.code).toBe(0)
+      expect(body.data.source).toBe('quick')
+      expect(body.data.items[0].description).toBe('午饭')
+    })
+
+    it('complex input should fail without AI key', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/ai/parse',
+        headers: authHeaders(user1Token),
+        payload: { input: '昨天在星巴克请朋友喝了两杯拿铁，用信用卡付的' },
+      })
+      const body = JSON.parse(res.payload)
+      // Complex input goes to AI, which fails without key
+      expect([502, 504, 200]).toContain(res.statusCode)
+      expect(body.code).not.toBe(0)
     })
 
     it('memories are stored in DB and queryable', async () => {
