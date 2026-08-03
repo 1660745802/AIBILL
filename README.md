@@ -269,6 +269,13 @@ docker-compose up -d --build
 - [开发规范](docs/CONTRIBUTING.md)
 - [工作台扩展](docs/WORKBENCH.md)
 
+## 📱 Android 客户端
+
+原生 Android App（Kotlin + Jetpack Compose），复用同一套后端 API，额外支持通知自动记账。
+
+- 仓库：[AIBILL-ANDROID](https://github.com/1660745802/AIBILL-ANDROID)
+- 对接文档：`docs/API.md` + `docs/APP_ANDROID.md`（在 Android 仓库中）
+
 ## License
 
 MIT

@@ -6,7 +6,7 @@ import Database from 'better-sqlite3'
 import path from 'node:path'
 import fs from 'node:fs'
 import { config } from '../config.js'
-import { migration001, migration002, migration003, migration004, migration005, migration006, seedSettings } from './schema.js'
+import { migration001, migration002, migration003, migration004, migration005, migration006, migration007, seedSettings } from './schema.js'
 
 let db: Database.Database
 
@@ -74,6 +74,7 @@ function runMigrations(): void {
     { version: 4, name: 'ai_memories', sql: migration004 },
     { version: 5, name: 'subscriptions', sql: migration005 },
     { version: 6, name: 'app_logs', sql: migration006 },
+    { version: 7, name: 'notification_rules', sql: migration007 },
   ]
 
   const applied = db

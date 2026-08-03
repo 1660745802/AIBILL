@@ -812,3 +812,85 @@ GET /export/csv?start_date=2026-07-01&end_date=2026-07-31
 ```json
 { "status": "ok" }
 ```
+
+---
+
+## 十三、通知记账规则云控
+
+### GET /config/notification-rules
+
+**无需认证**。客户端启动时/定时拉取。支持 ETag/304 缓存。
+
+```
+GET /api/config/notification-rules
+If-None-Match: "15"
+```
+
+```json
+// Response 200（有更新）
+// Header: ETag: "16"
+{
+  "code": 0,
+  "data": {
+    "version": 16,
+    "updated_at": "2026-08-01T10:00:00Z",
+    "rules": {
+      "nls": { "payment_signal_regex": "...", "wechat": {...}, "alipay": {...}, ... },
+      "a11y": { "success_keywords": [...], "common_exclude_keywords": [...], ... },
+      "sms": { "spam_keywords": [...] },
+      "source_mapping": { "com.tencent.mm": "微信支付", ... },
+      "processor": { "scoring_window_seconds": 10, "dedup_window_seconds": 60, ... }
+    }
+  },
+  "message": ""
+}
+
+// Response 304（版本相同，无 body）
+```
+
+### POST /admin/notification-rules
+
+需要 admin 认证。创建新版本规则。
+
+```json
+// Request
+{
+  "version": 2,
+  "rules": {
+    "nls": {...},
+    "a11y": {...},
+    "sms": {...},
+    "source_mapping": {...},
+    "processor": {...}
+  }
+}
+
+// Response 200
+{ "code": 0, "data": { "id": 2, "version": 2, ... }, "message": "规则版本已创建" }
+```
+
+### GET /admin/notification-rules
+
+需要 admin 认证。查看所有版本。
+
+```json
+// Response 200
+{
+  "code": 0,
+  "data": {
+    "items": [
+      { "id": 2, "version": 2, "is_active": 0, "created_by": 1, "created_at": "..." },
+      { "id": 1, "version": 1, "is_active": 1, "created_by": null, "created_at": "..." }
+    ]
+  }
+}
+```
+
+### PUT /admin/notification-rules/:id/activate
+
+需要 admin 认证。激活指定版本（自动停用其他版本）。
+
+```json
+// Response 200
+{ "code": 0, "data": null, "message": "版本 2 已激活" }
+```

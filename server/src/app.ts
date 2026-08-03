@@ -27,6 +27,10 @@ async function start(): Promise<void> {
   // 确保管理员账户存在
   ensureAdminUser()
 
+  // 确保默认通知规则存在
+  const { ensureDefaultNotificationRules } = await import('./db/seed-notification-rules.js')
+  ensureDefaultNotificationRules()
+
   await app.register(cors)
   await registerRoutes(app)
 

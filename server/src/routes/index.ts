@@ -9,6 +9,7 @@ import { statsRoutes } from './stats.js'
 import { budgetRoutes } from './budget.js'
 import { importRoutes } from './import.js'
 import { exportRoutes } from './export.js'
+import { configRoutes, notificationRulesAdminRoutes } from './notification-rules.js'
 import { memoryRoutes } from './memory.js'
 import { subscriptionRoutes } from './subscription.js'
 
@@ -33,4 +34,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(exportRoutes)
   await app.register(memoryRoutes)
   await app.register(subscriptionRoutes)
+
+  // 无认证的配置接口
+  await configRoutes(app)
+
+  // 规则管理接口（admin）
+  await app.register(notificationRulesAdminRoutes)
 }

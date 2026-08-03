@@ -306,3 +306,17 @@ export function insertDefaultAccounts(db: any, userId: number): void {
     stmt.run(userId, name, type, icon, order)
   }
 }
+
+/** Migration 007: 通知记账规则表 */
+export const migration007 = `
+CREATE TABLE IF NOT EXISTS notification_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version INTEGER NOT NULL,
+    rules TEXT NOT NULL,
+    created_by INTEGER REFERENCES users(id),
+    is_active INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_notification_rules_active ON notification_rules(is_active);
+CREATE INDEX IF NOT EXISTS idx_notification_rules_version ON notification_rules(version);
+`
