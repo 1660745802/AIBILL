@@ -64,7 +64,7 @@ async function parseCsv() {
       source: source.value,
     })
     if (data.code === 0) {
-      previewItems.value = data.data.items || []
+      previewItems.value = data.data.parsed || []
       stats.value = {
         total: data.data.total ?? previewItems.value.length,
         skipped: data.data.skipped ?? 0,
@@ -87,7 +87,21 @@ async function confirmImport() {
   error.value = ''
 
   try {
-    const { data } = await api.post('/transactions', { items: previewItems.value })
+    // 补全必填字段
+    const items = previewItems.value.map((item) => ({
+      client_id: crypto.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now().toString(36),
+      client_type: 'web' as const,
+      source: 'import_csv' as const,
+      source_detail: item.description || '',
+      type: item.type,
+      amount: item.amount,
+      category_id: item.category_id || undefined,
+      account_id: item.account_id || undefined,
+      description: item.description,
+      date: item.date,
+    }))
+
+    const { data } = await api.post('/transactions', { items })
     if (data.code === 0) {
       imported.value = true
     } else {

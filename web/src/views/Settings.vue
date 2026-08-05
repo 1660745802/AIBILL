@@ -300,11 +300,25 @@ function handleLogout() {
 }
 
 function exportJson() {
-  window.open('/api/export/json')
+  api.get('/export/json', { responseType: 'blob' }).then((res) => {
+    const url = URL.createObjectURL(new Blob([res.data]))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `export_${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }).catch(() => toast.error('导出失败'))
 }
 
 function exportCsv() {
-  window.open('/api/export/csv')
+  api.get('/export/csv', { responseType: 'blob' }).then((res) => {
+    const url = URL.createObjectURL(new Blob([res.data]))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `transactions_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }).catch(() => toast.error('导出失败'))
 }
 </script>
 
