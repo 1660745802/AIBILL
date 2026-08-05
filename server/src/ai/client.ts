@@ -97,6 +97,8 @@ export async function chatCompletion(
     const content = data.choices?.[0]?.message?.content
 
     if (!content) {
+      // 可能是 API 返回了错误结构（如 {"error": {...}}）
+      console.error(`[AI] Empty/invalid response body: ${JSON.stringify(data).slice(0, 500)}`)
       throw new AiError('AI_EMPTY_RESPONSE', 'AI 返回了空响应')
     }
 
@@ -104,8 +106,10 @@ export async function chatCompletion(
   } catch (err) {
     if (err instanceof AiError) throw err
     if ((err as Error).name === 'AbortError') {
+      console.error(`[AI] Timeout after ${timeoutMs / 1000}s`)
       throw new AiError('AI_TIMEOUT', `AI 响应超时（${timeoutMs / 1000}秒）`)
     }
+    console.error(`[AI] Network error: ${(err as Error).message}`)
     throw new AiError('AI_NETWORK_ERROR', `AI 网络错误: ${(err as Error).message}`)
   } finally {
     clearTimeout(timeout)
