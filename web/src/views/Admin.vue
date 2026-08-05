@@ -35,6 +35,10 @@ const loadingAppLogs = ref(false)
 // 通知规则
 const notifRules = ref<any[]>([])
 const loadingRules = ref(false)
+const previewRuleId = ref<number | null>(null)
+const newRuleVersion = ref('')
+const newRuleContent = ref('')
+const savingRule = ref(false)
 
 // 邀请码生成
 const newCodeMaxUses = ref(1)
@@ -261,6 +265,48 @@ async function activateRule(id: number) {
       await fetchNotifRules()
     }
   } catch { toast.error('激活失败') }
+}
+
+async function createRule() {
+  const version = Number(newRuleVersion.value)
+  if (!version || version <= 0) {
+    toast.error('版本号需为正整数')
+    return
+  }
+  let rules: any
+  try {
+    rules = JSON.parse(newRuleContent.value)
+  } catch {
+    toast.error('JSON 格式错误')
+    return
+  }
+  savingRule.value = true
+  try {
+    const { data } = await api.post('/admin/notification-rules', { version, rules })
+    if (data.code === 0) {
+      toast.success('规则版本已创建')
+      newRuleVersion.value = ''
+      newRuleContent.value = ''
+      await fetchNotifRules()
+    } else {
+      toast.error(data.message)
+    }
+  } catch { toast.error('创建失败') }
+  finally { savingRule.value = false }
+}
+
+function togglePreview(id: number) {
+  previewRuleId.value = previewRuleId.value === id ? null : id
+}
+
+function formatRuleJson(rule: any): string {
+  if (!rule.rules) return '{}'
+  try {
+    const parsed = typeof rule.rules === 'string' ? JSON.parse(rule.rules) : rule.rules
+    return JSON.stringify(parsed, null, 2)
+  } catch {
+    return String(rule.rules)
+  }
 }
 
 // === 用户账单明细 ===
@@ -841,29 +887,73 @@ function formatAmount(cents: number): string {
 
     <!-- Tab 6: 通知规则 -->
     <div v-if="activeTab === 'rules'" class="space-y-3">
+      <!-- 新建版本 -->
+      <div class="bg-white rounded-xl border border-gray-100 p-4">
+        <h3 class="text-sm font-medium text-gray-700 mb-3">新建版本</h3>
+        <div class="space-y-3">
+          <div>
+            <label class="text-xs font-medium text-gray-600 mb-1 block">版本号</label>
+            <input
+              v-model="newRuleVersion"
+              type="number"
+              min="1"
+              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              placeholder="例如: 2"
+            />
+          </div>
+          <div>
+            <label class="text-xs font-medium text-gray-600 mb-1 block">规则内容 (JSON)</label>
+            <textarea
+              v-model="newRuleContent"
+              rows="6"
+              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono focus:ring-2 focus:ring-blue-500 focus:outline-none resize-y"
+              placeholder='{ "nls": [...], "source_mapping": {...}, "processor": {...} }'
+            ></textarea>
+          </div>
+          <button
+            @click="createRule"
+            :disabled="savingRule || !newRuleVersion || !newRuleContent"
+            class="w-full py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          >
+            {{ savingRule ? '保存中...' : '💾 保存规则' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- 历史版本列表 -->
       <div class="bg-white rounded-xl border border-gray-100 p-4">
         <h3 class="text-sm font-medium text-gray-700 mb-3">通知记账规则版本</h3>
         <div v-if="loadingRules" class="text-center py-4 text-xs text-gray-400">加载中...</div>
         <div v-else-if="notifRules.length === 0" class="text-center py-4 text-xs text-gray-400">暂无规则版本</div>
         <div v-else class="space-y-2">
-          <div
-            v-for="rule in notifRules"
-            :key="rule.id"
-            class="flex items-center justify-between p-3 rounded-lg border"
-            :class="rule.is_active ? 'border-green-200 bg-green-50' : 'border-gray-100'"
-          >
-            <div>
-              <div class="text-sm font-medium text-gray-800">
-                版本 {{ rule.version }}
-                <span v-if="rule.is_active" class="ml-2 text-[10px] bg-green-500 text-white px-1.5 py-0.5 rounded-full">当前激活</span>
+          <div v-for="rule in notifRules" :key="rule.id">
+            <div
+              class="flex items-center justify-between p-3 rounded-lg border"
+              :class="rule.is_active ? 'border-green-200 bg-green-50' : 'border-gray-100'"
+            >
+              <div>
+                <div class="text-sm font-medium text-gray-800">
+                  版本 {{ rule.version }}
+                  <span v-if="rule.is_active" class="ml-2 text-[10px] bg-green-500 text-white px-1.5 py-0.5 rounded-full">当前激活</span>
+                </div>
+                <div class="text-[10px] text-gray-400 mt-0.5">{{ formatLocalTime(rule.created_at) }}</div>
               </div>
-              <div class="text-[10px] text-gray-400 mt-0.5">{{ formatLocalTime(rule.created_at) }}</div>
+              <div class="flex items-center gap-2">
+                <button
+                  @click="togglePreview(rule.id)"
+                  class="text-xs px-3 py-1 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200"
+                >{{ previewRuleId === rule.id ? '收起' : '预览' }}</button>
+                <button
+                  v-if="!rule.is_active"
+                  @click="activateRule(rule.id)"
+                  class="text-xs px-3 py-1 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"
+                >激活</button>
+              </div>
             </div>
-            <button
-              v-if="!rule.is_active"
-              @click="activateRule(rule.id)"
-              class="text-xs px-3 py-1 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"
-            >激活</button>
+            <!-- Preview block -->
+            <div v-if="previewRuleId === rule.id" class="mt-2">
+              <pre class="overflow-auto max-h-60 text-xs font-mono bg-gray-50 p-3 rounded-lg border border-gray-100">{{ formatRuleJson(rule) }}</pre>
+            </div>
           </div>
         </div>
       </div>
@@ -875,7 +965,7 @@ function formatAmount(cents: number): string {
       class="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center"
       @click.self="closeUserTransactions"
     >
-      <div class="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[85vh] overflow-hidden flex flex-col">
+      <div class="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
         <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0">
           <h3 class="text-base font-semibold text-gray-800">用户账单明细</h3>
           <button @click="closeUserTransactions" class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-400">✕</button>
@@ -894,6 +984,8 @@ function formatAmount(cents: number): string {
                 <div class="text-sm text-gray-800 truncate">{{ tx.description || '-' }}</div>
                 <div class="text-[10px] text-gray-400">{{ tx.date }} · {{ tx.category_name || '-' }} · {{ tx.account_name || '-' }}</div>
               </div>
+              <span v-if="tx.source" class="hidden md:inline text-[10px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">{{ tx.source }}</span>
+              <span v-if="tx.date && tx.date.length > 10" class="hidden md:inline text-[10px] text-gray-300">{{ tx.date.slice(11, 16) }}</span>
               <span class="text-sm font-medium" :class="tx.type === 'expense' ? 'text-red-500' : 'text-green-500'">
                 {{ tx.type === 'expense' ? '-' : '+' }}¥{{ formatAmount(tx.amount) }}
               </span>

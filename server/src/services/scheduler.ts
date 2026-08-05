@@ -6,31 +6,8 @@
  * 在 app 启动时注册，每小时执行一次检查
  */
 import { getDb } from '../db/index.js'
+import { appLog as log } from './logger.js'
 import crypto from 'node:crypto'
-
-/** 应用日志记录器 */
-function log(level: 'info' | 'warn' | 'error', module: string, message: string, data?: Record<string, unknown>): void {
-  const timestamp = new Date().toISOString()
-  const prefix = `[${timestamp}] [${level.toUpperCase()}] [${module}]`
-  const extra = data ? ` ${JSON.stringify(data)}` : ''
-  if (level === 'error') {
-    console.error(`${prefix} ${message}${extra}`)
-  } else if (level === 'warn') {
-    console.warn(`${prefix} ${message}${extra}`)
-  } else {
-    console.log(`${prefix} ${message}${extra}`)
-  }
-
-  // 持久化到 app_logs 表
-  try {
-    const db = getDb()
-    db.prepare(
-      `INSERT INTO app_logs (level, module, message, data, created_at) VALUES (?, ?, ?, ?, ?)`,
-    ).run(level, module, message, extra || null, timestamp)
-  } catch {
-    // 日志写入失败不应阻塞业务
-  }
-}
 
 /**
  * 订阅自动记账

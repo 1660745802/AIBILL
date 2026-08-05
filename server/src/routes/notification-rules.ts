@@ -129,7 +129,7 @@ export async function notificationRulesAdminRoutes(app: FastifyInstance): Promis
   app.get('/api/admin/notification-rules', async () => {
     const db = getDb()
     const rows = db
-      .prepare('SELECT id, version, is_active, created_by, created_at FROM notification_rules ORDER BY version DESC')
+      .prepare('SELECT id, version, rules, is_active, created_by, created_at FROM notification_rules ORDER BY version DESC')
       .all()
     return { code: 0, data: { items: rows }, message: '' }
   })

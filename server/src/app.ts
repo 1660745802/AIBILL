@@ -32,6 +32,34 @@ async function start(): Promise<void> {
   ensureDefaultNotificationRules()
 
   await app.register(cors)
+
+  // 请求日志钩子：记录关键 API 调用到 app_logs
+  const { appLog } = await import('./services/logger.js')
+
+  app.addHook('onResponse', (request, reply, done) => {
+    const url = request.url
+    const method = request.method
+
+    // 只记录写操作和关键读操作，跳过静态资源和高频轮询
+    const shouldLog =
+      (method === 'POST' || method === 'PUT' || method === 'DELETE') &&
+      url.startsWith('/api/')
+
+    if (shouldLog) {
+      const userId = request.user?.userId || 0
+      const status = reply.statusCode
+      const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info'
+      const module = url.split('/')[2] || 'api' // /api/[module]/...
+
+      appLog(level, module, `${method} ${url} → ${status}`, {
+        user_id: userId,
+        status,
+        duration_ms: Math.round(reply.elapsedTime),
+      })
+    }
+    done()
+  })
+
   await registerRoutes(app)
 
   // 生产模式：服务前端静态文件

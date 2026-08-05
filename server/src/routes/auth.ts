@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { register, login, getUserById, changePassword, AppError } from '../services/auth.service.js'
 import { authMiddleware } from '../middleware/auth.js'
+import { appLog } from '../services/logger.js'
 
 const registerSchema = z.object({
   username: z
@@ -28,6 +29,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     try {
       const body = registerSchema.parse(request.body)
       const result = register(body)
+      appLog('info', 'auth', `新用户注册: ${body.username}`, { user_id: result.user.id, invite_code: body.invite_code })
       return { code: 0, data: result, message: '' }
     } catch (err) {
       if (err instanceof z.ZodError) {
@@ -47,6 +49,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     try {
       const body = loginSchema.parse(request.body)
       const result = login(body)
+      appLog('info', 'auth', `用户登录: ${body.username}`, { user_id: result.user.id })
       return { code: 0, data: result, message: '' }
     } catch (err) {
       if (err instanceof z.ZodError) {
@@ -54,6 +57,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         return { code: 2000, data: null, message: err.errors[0].message }
       }
       if (err instanceof AppError) {
+        appLog('warn', 'auth', `登录失败: ${(request.body as any)?.username || '?'}`, { reason: err.message })
         reply.code(401)
         return { code: err.code, data: null, message: err.message }
       }

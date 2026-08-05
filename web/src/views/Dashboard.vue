@@ -274,7 +274,10 @@ const visibleAlerts = computed(() => {
     </div>
 
     <!-- Dashboard Content -->
-    <div v-else-if="data" class="p-4 space-y-4">
+    <div v-else-if="data" class="p-4 lg:p-0">
+      <div class="lg:grid lg:grid-cols-12 lg:gap-5">
+      <!-- Left Column: 7 cols -->
+      <div class="lg:col-span-7 space-y-4 mb-4 lg:mb-0">
       <!-- Section 1: Summary Cards -->
       <div class="grid grid-cols-3 gap-3">
         <!-- 支出 -->
@@ -366,6 +369,10 @@ const visibleAlerts = computed(() => {
         </div>
       </div>
 
+      </div><!-- end left column -->
+
+      <!-- Right Column: 5 cols -->
+      <div class="lg:col-span-5 space-y-4">
       <!-- Section 4: Budget Progress -->
       <div v-if="data.budget_progress.length > 0" class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
         <h3 class="text-sm font-medium text-gray-700 mb-3">预算进度</h3>
@@ -532,6 +539,7 @@ const visibleAlerts = computed(() => {
           <div v-else class="text-xs text-gray-400 py-1">点击"生成"获取 AI 财务洞察</div>
         </div>
       </div>
-    </div>
+    </div><!-- end right column -->
+    </div><!-- end grid -->
   </div>
 </template>

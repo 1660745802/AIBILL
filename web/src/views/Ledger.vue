@@ -375,15 +375,18 @@ onMounted(() => {
               @click="handleRowClick(tx)"
               class="flex items-center justify-between px-4 py-3 border-b border-gray-50 last:border-0 cursor-pointer hover:bg-gray-50 transition-colors"
             >
-              <div class="flex items-center gap-2.5">
+              <div class="flex items-center gap-2.5 flex-1 min-w-0">
                 <span class="text-lg">{{ tx.category_icon || '📦' }}</span>
-                <div>
-                  <div class="text-sm text-gray-800">{{ tx.description || tx.category_name || '未分类' }}</div>
-                  <div class="text-xs text-gray-400 mt-0.5">{{ tx.category_name || '' }}</div>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm text-gray-800 truncate">{{ tx.description || tx.category_name || '未分类' }}</div>
+                  <div class="text-xs text-gray-400 mt-0.5">{{ tx.category_name || '' }}<span v-if="tx.account_name"> · {{ tx.account_name }}</span></div>
                 </div>
+                <!-- PC only extra info -->
+                <span v-if="tx.tags" class="hidden md:inline text-[11px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{{ tx.tags }}</span>
+                <span class="hidden md:inline text-[11px] text-gray-300">{{ tx.date.slice(11, 16) }}</span>
               </div>
               <span
-                class="text-sm font-medium"
+                class="text-sm font-medium ml-3 shrink-0"
                 :class="{
                   'text-red-500': tx.type === 'expense',
                   'text-green-500': tx.type === 'income',

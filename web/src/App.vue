@@ -111,8 +111,8 @@ function isActive(path: string): boolean {
       </aside>
 
       <!-- 主内容区 -->
-      <main class="flex-1 md:ml-56 lg:ml-64">
-        <div class="max-w-3xl mx-auto">
+      <main class="flex-1 md:ml-56 lg:ml-64 min-h-screen">
+        <div class="px-4 lg:px-8 py-2 lg:py-4">
           <RouterView v-slot="{ Component, route: viewRoute }">
             <component :is="Component" :key="viewRoute.path" />
           </RouterView>
