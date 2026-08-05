@@ -146,25 +146,30 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   // PUT /api/admin/users/:id/reset-password - 重置用户密码
   app.put('/api/admin/users/:id/reset-password', async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string }
-    const body = request.body as { new_password?: string }
-    const db = getDb()
+    const resetSchema = z.object({ new_password: z.string().min(6, '新密码至少6个字符').max(50) })
 
-    if (!body.new_password || body.new_password.length < 6) {
-      reply.code(400)
-      return { code: 2000, data: null, message: '新密码至少6个字符' }
+    try {
+      const body = resetSchema.parse(request.body)
+      const db = getDb()
+
+      const user = db.prepare('SELECT id FROM users WHERE id = ?').get(Number(id))
+      if (!user) {
+        reply.code(404)
+        return { code: 3002, data: null, message: '用户不存在' }
+      }
+
+      const bcrypt = await import('bcryptjs')
+      const hash = bcrypt.default.hashSync(body.new_password, 10)
+      db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, Number(id))
+
+      return { code: 0, data: null, message: '密码已重置' }
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        reply.code(400)
+        return { code: 2000, data: null, message: err.errors[0].message }
+      }
+      throw err
     }
-
-    const user = db.prepare('SELECT id FROM users WHERE id = ?').get(Number(id))
-    if (!user) {
-      reply.code(404)
-      return { code: 3002, data: null, message: '用户不存在' }
-    }
-
-    const bcrypt = await import('bcryptjs')
-    const hash = bcrypt.default.hashSync(body.new_password, 10)
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, Number(id))
-
-    return { code: 0, data: null, message: '密码已重置' }
   })
 
   // DELETE /api/admin/users/:id - 删除用户（清除所有数据）
@@ -192,6 +197,9 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       db.prepare('DELETE FROM accounts WHERE user_id = ?').run(userId)
       db.prepare('DELETE FROM budgets WHERE user_id = ?').run(userId)
       db.prepare('DELETE FROM ai_conversations WHERE user_id = ?').run(userId)
+      db.prepare('DELETE FROM ai_parse_logs WHERE user_id = ?').run(userId)
+      db.prepare('DELETE FROM ai_memories WHERE user_id = ?').run(userId)
+      db.prepare('DELETE FROM subscriptions WHERE user_id = ?').run(userId)
       db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(userId)
       db.prepare('DELETE FROM users WHERE id = ?').run(userId)
     })()
