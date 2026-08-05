@@ -390,122 +390,158 @@ function exportCsv() {
     </div>
 
     <!-- 管理员面板入口 -->
-    <div v-if="auth.isAdmin" class="bg-white px-4 py-3 mb-2">
+    <div v-if="auth.isAdmin" class="bg-white rounded-xl shadow-sm px-5 py-4 mb-3">
       <button
         @click="showAdmin = !showAdmin"
-        class="w-full text-left text-sm font-medium text-gray-700 flex items-center justify-between"
+        class="w-full text-left flex items-center justify-between"
       >
-        <span>⚙️ 管理员面板</span>
-        <span class="text-gray-400">{{ showAdmin ? '▲' : '▼' }}</span>
+        <div class="flex items-center gap-2">
+          <span class="text-lg">🛠️</span>
+          <span class="text-sm font-semibold text-gray-800">管理员面板</span>
+        </div>
+        <span class="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full">{{ showAdmin ? '收起 ▲' : '展开 ▼' }}</span>
       </button>
     </div>
 
     <!-- 管理员面板内容 -->
-    <div v-if="auth.isAdmin && showAdmin" class="space-y-2">
+    <div v-if="auth.isAdmin && showAdmin" class="space-y-3 mt-2">
+
       <!-- 邀请码管理 -->
-      <div class="bg-white px-4 py-4">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">邀请码管理</h3>
-        <div class="flex gap-2 mb-3">
-          <input
-            v-model.number="newCodeMaxUses"
-            type="number"
-            min="1"
-            max="100"
-            class="w-20 px-2 py-1 border border-gray-300 rounded text-sm"
-          />
-          <span class="self-center text-xs text-gray-500">次可用</span>
-          <button
-            @click="generateCode"
-            :disabled="generating"
-            class="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50"
-          >
-            生成邀请码
-          </button>
+      <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+        <div class="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+          <span class="text-lg">🎟️</span>
+          <h3 class="text-sm font-semibold text-gray-800">邀请码管理</h3>
         </div>
-        <div class="space-y-1 max-h-40 overflow-y-auto">
-          <div
-            v-for="code in inviteCodes"
-            :key="code.id"
-            class="flex items-center justify-between py-1.5 text-xs border-b border-gray-50"
-          >
-            <div>
-              <span class="font-mono font-medium text-gray-800">{{ code.code }}</span>
-              <span class="ml-2 text-gray-400">{{ code.used_count }}/{{ code.max_uses }}</span>
+        <div class="px-5 py-4">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
+              <input
+                v-model.number="newCodeMaxUses"
+                type="number"
+                min="1"
+                max="100"
+                class="w-14 px-2 py-1 border border-gray-200 rounded-md text-sm text-center focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              />
+              <span class="text-xs text-gray-500">次可用</span>
             </div>
             <button
-              v-if="code.used_count < code.max_uses"
-              @click="revokeCode(code.id)"
-              class="text-red-400 hover:text-red-600"
+              @click="generateCode"
+              :disabled="generating"
+              class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-sm"
             >
-              作废
+              {{ generating ? '生成中...' : '✨ 生成邀请码' }}
             </button>
-            <span v-else class="text-gray-300">已用完</span>
+          </div>
+          <div class="space-y-2 max-h-48 overflow-y-auto">
+            <div
+              v-for="code in inviteCodes"
+              :key="code.id"
+              class="flex items-center justify-between px-3 py-2.5 bg-gray-50 rounded-lg"
+            >
+              <div class="flex items-center gap-3">
+                <span class="font-mono text-sm font-semibold text-gray-800 bg-white px-2 py-0.5 rounded border border-gray-200">{{ code.code }}</span>
+                <span class="text-xs text-gray-400">已用 {{ code.used_count }}/{{ code.max_uses }}</span>
+              </div>
+              <button
+                v-if="code.used_count < code.max_uses"
+                @click="revokeCode(code.id)"
+                class="text-xs px-2.5 py-1 text-red-500 bg-red-50 rounded-md hover:bg-red-100 transition-colors"
+              >
+                作废
+              </button>
+              <span v-else class="text-xs px-2.5 py-1 text-gray-400 bg-gray-100 rounded-md">已用完</span>
+            </div>
+            <div v-if="inviteCodes.length === 0" class="text-center py-4 text-xs text-gray-400">
+              暂无邀请码，点击上方按钮生成
+            </div>
           </div>
         </div>
       </div>
 
       <!-- 用户管理 -->
-      <div class="bg-white px-4 py-4">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">用户管理</h3>
-        <div class="space-y-2">
-          <div
-            v-for="u in users"
-            :key="u.id"
-            class="flex items-center justify-between text-sm"
-          >
-            <div>
-              <span class="text-gray-800">{{ u.nickname || u.username }}</span>
-              <span class="text-xs text-gray-400 ml-1">{{ u.transaction_count }}笔</span>
-              <span v-if="u.role === 'admin'" class="text-xs text-blue-500 ml-1">管理员</span>
-            </div>
-            <button
-              v-if="u.id !== auth.user?.id"
-              @click="toggleUser(u.id, u.is_active)"
-              class="text-xs px-2 py-0.5 rounded"
-              :class="u.is_active ? 'text-red-500 border border-red-200' : 'text-green-500 border border-green-200'"
+      <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+        <div class="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+          <span class="text-lg">👥</span>
+          <h3 class="text-sm font-semibold text-gray-800">用户管理</h3>
+          <span class="text-xs text-gray-400 ml-auto">{{ users.length }} 人</span>
+        </div>
+        <div class="px-5 py-3">
+          <div class="space-y-1">
+            <div
+              v-for="u in users"
+              :key="u.id"
+              class="flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-gray-50 transition-colors"
             >
-              {{ u.is_active ? '禁用' : '启用' }}
-            </button>
+              <div class="flex items-center gap-3">
+                <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-sm font-medium text-blue-600">
+                  {{ (u.nickname || u.username)[0].toUpperCase() }}
+                </div>
+                <div>
+                  <div class="text-sm font-medium text-gray-800">
+                    {{ u.nickname || u.username }}
+                    <span v-if="u.role === 'admin'" class="ml-1 text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full">管理员</span>
+                  </div>
+                  <div class="text-xs text-gray-400">{{ u.transaction_count }} 笔交易</div>
+                </div>
+              </div>
+              <button
+                v-if="u.id !== auth.user?.id"
+                @click="toggleUser(u.id, u.is_active)"
+                class="text-xs px-3 py-1.5 rounded-lg font-medium transition-colors"
+                :class="u.is_active
+                  ? 'text-red-600 bg-red-50 hover:bg-red-100'
+                  : 'text-green-600 bg-green-50 hover:bg-green-100'"
+              >
+                {{ u.is_active ? '禁用' : '启用' }}
+              </button>
+              <span v-else class="text-xs text-gray-300">当前</span>
+            </div>
           </div>
         </div>
       </div>
 
       <!-- AI 设置 -->
-      <div class="bg-white px-4 py-4">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">AI 设置</h3>
-        <div class="space-y-2">
+      <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+        <div class="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+          <span class="text-lg">🤖</span>
+          <h3 class="text-sm font-semibold text-gray-800">AI 模型配置</h3>
+        </div>
+        <div class="px-5 py-4 space-y-4">
           <div>
-            <label class="text-xs text-gray-500">API Base URL</label>
+            <label class="text-xs font-medium text-gray-600 mb-1 block">API 地址</label>
             <input
               v-model="globalSettings.ai_base_url"
               type="text"
-              class="w-full px-2 py-1.5 border border-gray-300 rounded text-sm mt-0.5"
+              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:outline-none transition-shadow"
+              placeholder="https://api.openai.com/v1"
             />
           </div>
           <div>
-            <label class="text-xs text-gray-500">API Key</label>
+            <label class="text-xs font-medium text-gray-600 mb-1 block">API Key</label>
             <input
               v-model="globalSettings.ai_api_key"
               type="password"
-              class="w-full px-2 py-1.5 border border-gray-300 rounded text-sm mt-0.5"
+              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:outline-none transition-shadow"
               placeholder="sk-..."
             />
           </div>
           <div>
-            <label class="text-xs text-gray-500">模型</label>
+            <label class="text-xs font-medium text-gray-600 mb-1 block">模型名称</label>
             <input
               v-model="globalSettings.ai_model"
               type="text"
-              class="w-full px-2 py-1.5 border border-gray-300 rounded text-sm mt-0.5"
+              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:outline-none transition-shadow"
+              placeholder="gpt-4o-mini"
             />
           </div>
           <button
             @click="saveSettings"
-            class="w-full py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
+            class="w-full py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
           >
-            保存设置
+            💾 保存设置
           </button>
         </div>
+      </div>
       </div>
 
       <!-- AI 解析质量监控 -->
