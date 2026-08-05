@@ -542,4 +542,5 @@ const visibleAlerts = computed(() => {
     </div><!-- end right column -->
     </div><!-- end grid -->
   </div>
+  </div>
 </template>
