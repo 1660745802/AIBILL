@@ -176,6 +176,55 @@ async function toggleUser(id: number, currentActive: number) {
   } catch { /* ignore */ }
 }
 
+// 用户详情/操作
+const showUserDetail = ref<any>(null)
+const userStats = ref<any>(null)
+const resetPasswordId = ref<number | null>(null)
+const newPasswordInput = ref('')
+
+async function viewUserDetail(userId: number) {
+  try {
+    const { data } = await api.get(`/admin/users/${userId}/stats`)
+    if (data.code === 0) {
+      showUserDetail.value = data.data.user
+      userStats.value = data.data.stats
+    }
+  } catch { /* ignore */ }
+}
+
+async function resetPassword() {
+  if (!resetPasswordId.value || newPasswordInput.value.length < 6) {
+    toast.error('密码至少6个字符')
+    return
+  }
+  try {
+    const { data } = await api.put(`/admin/users/${resetPasswordId.value}/reset-password`, {
+      new_password: newPasswordInput.value,
+    })
+    if (data.code === 0) {
+      toast.success('密码已重置')
+      resetPasswordId.value = null
+      newPasswordInput.value = ''
+    } else {
+      toast.error(data.message)
+    }
+  } catch { toast.error('重置失败') }
+}
+
+async function deleteUser(id: number, username: string) {
+  if (!confirm(`确定删除用户 ${username}？此操作将清除该用户所有数据且不可恢复！`)) return
+  try {
+    const { data } = await api.delete(`/admin/users/${id}`)
+    if (data.code === 0) {
+      toast.success(data.message)
+      showUserDetail.value = null
+      await fetchAdminData()
+    } else {
+      toast.error(data.message)
+    }
+  } catch { toast.error('删除失败') }
+}
+
 async function saveSettings() {
   try {
     await api.put('/admin/settings', globalSettings.value)
@@ -221,6 +270,18 @@ function closeParseDetail() {
 function formatDuration(ms: number | null): string {
   if (!ms) return '-'
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
+}
+
+function formatLocalTime(utcStr: string | null | undefined): string {
+  if (!utcStr) return '-'
+  // SQLite datetime('now') 存的是 UTC，加 Z 后缀转为本地时间
+  const d = new Date(utcStr.endsWith('Z') ? utcStr : utcStr + 'Z')
+  if (isNaN(d.getTime())) return utcStr.slice(5, 16)
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const h = String(d.getHours()).padStart(2, '0')
+  const min = String(d.getMinutes()).padStart(2, '0')
+  return `${m}-${day} ${h}:${min}`
 }
 
 function statusLabel(status: string): string {
@@ -472,7 +533,7 @@ function exportCsv() {
               :key="u.id"
               class="flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-gray-50 transition-colors"
             >
-              <div class="flex items-center gap-3">
+              <div class="flex items-center gap-3 cursor-pointer" @click="viewUserDetail(u.id)">
                 <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-sm font-medium text-blue-600">
                   {{ (u.nickname || u.username)[0].toUpperCase() }}
                 </div>
@@ -481,21 +542,75 @@ function exportCsv() {
                     {{ u.nickname || u.username }}
                     <span v-if="u.role === 'admin'" class="ml-1 text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full">管理员</span>
                   </div>
-                  <div class="text-xs text-gray-400">{{ u.transaction_count }} 笔交易</div>
+                  <div class="text-xs text-gray-400">{{ u.transaction_count }} 笔 · {{ formatLocalTime(u.created_at) }}</div>
                 </div>
               </div>
-              <button
-                v-if="u.id !== auth.user?.id"
-                @click="toggleUser(u.id, u.is_active)"
-                class="text-xs px-3 py-1.5 rounded-lg font-medium transition-colors"
-                :class="u.is_active
-                  ? 'text-red-600 bg-red-50 hover:bg-red-100'
-                  : 'text-green-600 bg-green-50 hover:bg-green-100'"
-              >
-                {{ u.is_active ? '禁用' : '启用' }}
-              </button>
-              <span v-else class="text-xs text-gray-300">当前</span>
+              <div class="flex items-center gap-2">
+                <button
+                  v-if="u.id !== auth.user?.id"
+                  @click="toggleUser(u.id, u.is_active)"
+                  class="text-xs px-2.5 py-1 rounded-lg font-medium transition-colors"
+                  :class="u.is_active
+                    ? 'text-red-600 bg-red-50 hover:bg-red-100'
+                    : 'text-green-600 bg-green-50 hover:bg-green-100'"
+                >
+                  {{ u.is_active ? '禁用' : '启用' }}
+                </button>
+                <span v-else class="text-xs text-gray-300">当前</span>
+              </div>
             </div>
+          </div>
+        </div>
+
+        <!-- 用户详情弹出层 -->
+        <div v-if="showUserDetail" class="border-t border-gray-100 px-5 py-4 bg-gray-50">
+          <div class="flex items-center justify-between mb-3">
+            <h4 class="text-sm font-semibold text-gray-700">📋 {{ showUserDetail.nickname || showUserDetail.username }} 的信息</h4>
+            <button @click="showUserDetail = null" class="text-xs text-gray-400 hover:text-gray-600">✕ 关闭</button>
+          </div>
+
+          <!-- 账单统计 -->
+          <div v-if="userStats" class="grid grid-cols-3 gap-3 mb-4">
+            <div class="bg-white rounded-lg p-2.5 text-center">
+              <div class="text-lg font-semibold text-gray-800">{{ userStats.total_transactions }}</div>
+              <div class="text-[10px] text-gray-400">总笔数</div>
+            </div>
+            <div class="bg-white rounded-lg p-2.5 text-center">
+              <div class="text-lg font-semibold text-red-500">¥{{ (userStats.total_expense / 100).toFixed(0) }}</div>
+              <div class="text-[10px] text-gray-400">总支出</div>
+            </div>
+            <div class="bg-white rounded-lg p-2.5 text-center">
+              <div class="text-lg font-semibold text-green-500">¥{{ (userStats.total_income / 100).toFixed(0) }}</div>
+              <div class="text-[10px] text-gray-400">总收入</div>
+            </div>
+          </div>
+
+          <!-- 操作按钮 -->
+          <div class="space-y-2">
+            <!-- 重置密码 -->
+            <div class="flex items-center gap-2">
+              <input
+                v-model="newPasswordInput"
+                type="text"
+                class="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                placeholder="输入新密码（≥6位）"
+              />
+              <button
+                @click="resetPasswordId = showUserDetail.id; resetPassword()"
+                class="px-3 py-1.5 text-sm font-medium text-orange-600 bg-orange-50 rounded-lg hover:bg-orange-100 transition-colors whitespace-nowrap"
+              >
+                🔑 重置密码
+              </button>
+            </div>
+
+            <!-- 删除用户 -->
+            <button
+              v-if="showUserDetail.id !== auth.user?.id"
+              @click="deleteUser(showUserDetail.id, showUserDetail.username)"
+              class="w-full py-2 text-sm font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors"
+            >
+              🗑️ 删除用户（不可恢复）
+            </button>
           </div>
         </div>
       </div>
@@ -653,7 +768,7 @@ function exportCsv() {
                 </div>
               </div>
               <div class="text-[10px] text-gray-300 group-hover:text-blue-400 shrink-0 pt-0.5">
-                {{ log.created_at?.slice(5, 16) }} ›
+                {{ formatLocalTime(log.created_at) }} ›
               </div>
             </div>
           </div>
@@ -690,7 +805,7 @@ function exportCsv() {
         <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0">
           <div>
             <h3 class="text-base font-semibold text-gray-800">解析详情</h3>
-            <span class="text-[10px] text-gray-400">#{{ showParseDetail.id }} · {{ showParseDetail.created_at?.slice(0, 19) }}</span>
+            <span class="text-[10px] text-gray-400">#{{ showParseDetail.id }} · {{ formatLocalTime(showParseDetail.created_at) }}</span>
           </div>
           <button @click="closeParseDetail" class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors">✕</button>
         </div>

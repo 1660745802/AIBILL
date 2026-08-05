@@ -120,6 +120,85 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     }
   })
 
+  // GET /api/admin/users/:id/stats - 用户账单统计
+  app.get('/api/admin/users/:id/stats', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string }
+    const db = getDb()
+
+    const user = db.prepare('SELECT id, username, nickname, role, is_active, created_at FROM users WHERE id = ?').get(Number(id)) as any
+    if (!user) {
+      reply.code(404)
+      return { code: 3002, data: null, message: '用户不存在' }
+    }
+
+    const stats = db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM transactions WHERE user_id = ? AND deleted_at IS NULL) as total_transactions,
+        (SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE user_id = ? AND type = 'expense' AND status = 'confirmed' AND deleted_at IS NULL) as total_expense,
+        (SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE user_id = ? AND type = 'income' AND status = 'confirmed' AND deleted_at IS NULL) as total_income,
+        (SELECT COUNT(*) FROM categories WHERE user_id = ?) as category_count,
+        (SELECT COUNT(*) FROM accounts WHERE user_id = ?) as account_count
+    `).get(Number(id), Number(id), Number(id), Number(id), Number(id)) as any
+
+    return { code: 0, data: { user, stats }, message: '' }
+  })
+
+  // PUT /api/admin/users/:id/reset-password - 重置用户密码
+  app.put('/api/admin/users/:id/reset-password', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string }
+    const body = request.body as { new_password?: string }
+    const db = getDb()
+
+    if (!body.new_password || body.new_password.length < 6) {
+      reply.code(400)
+      return { code: 2000, data: null, message: '新密码至少6个字符' }
+    }
+
+    const user = db.prepare('SELECT id FROM users WHERE id = ?').get(Number(id))
+    if (!user) {
+      reply.code(404)
+      return { code: 3002, data: null, message: '用户不存在' }
+    }
+
+    const bcrypt = await import('bcryptjs')
+    const hash = bcrypt.default.hashSync(body.new_password, 10)
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, Number(id))
+
+    return { code: 0, data: null, message: '密码已重置' }
+  })
+
+  // DELETE /api/admin/users/:id - 删除用户（清除所有数据）
+  app.delete('/api/admin/users/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string }
+    const db = getDb()
+    const userId = Number(id)
+
+    // 不能删除自己
+    if (userId === request.user!.userId) {
+      reply.code(400)
+      return { code: 3003, data: null, message: '不能删除自己的账号' }
+    }
+
+    const user = db.prepare('SELECT id, username FROM users WHERE id = ?').get(userId) as any
+    if (!user) {
+      reply.code(404)
+      return { code: 3002, data: null, message: '用户不存在' }
+    }
+
+    // 事务中删除用户所有数据
+    db.transaction(() => {
+      db.prepare('DELETE FROM transactions WHERE user_id = ?').run(userId)
+      db.prepare('DELETE FROM categories WHERE user_id = ?').run(userId)
+      db.prepare('DELETE FROM accounts WHERE user_id = ?').run(userId)
+      db.prepare('DELETE FROM budgets WHERE user_id = ?').run(userId)
+      db.prepare('DELETE FROM ai_conversations WHERE user_id = ?').run(userId)
+      db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(userId)
+      db.prepare('DELETE FROM users WHERE id = ?').run(userId)
+    })()
+
+    return { code: 0, data: null, message: `用户 ${user.username} 已删除` }
+  })
+
   // GET /api/admin/settings - 全局设置
   app.get('/api/admin/settings', async () => {
     const db = getDb()
