@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, computed } from 'vue'
 import { RouterView, useRoute, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
@@ -14,19 +14,31 @@ onMounted(async () => {
   }
 })
 
-const navItems = [
-  { path: '/', label: '首页', icon: '📊' },
-  { path: '/quick', label: '记账', icon: '➕' },
-  { path: '/ledger', label: '账本', icon: '📒' },
-  { path: '/settings', label: '我的', icon: '⚙️' },
-]
+const navItems = computed(() => {
+  const items = [
+    { path: '/', label: '首页', icon: '📊' },
+    { path: '/quick', label: '记账', icon: '➕' },
+    { path: '/ledger', label: '账本', icon: '📒' },
+    { path: '/settings', label: '我的', icon: '⚙️' },
+  ]
+  if (auth.isAdmin) {
+    items.push({ path: '/admin', label: '管理', icon: '🛡️' })
+  }
+  return items
+})
 
-const mobileNavItems = [
-  { path: '/', label: '首页', icon: '📊' },
-  { path: '/quick', label: '记账', icon: '➕' },
-  { path: '/ledger', label: '账本', icon: '📒' },
-  { path: '/settings', label: '我的', icon: '⚙️' },
-]
+const mobileNavItems = computed(() => {
+  const items = [
+    { path: '/', label: '首页', icon: '📊' },
+    { path: '/quick', label: '记账', icon: '➕' },
+    { path: '/ledger', label: '账本', icon: '📒' },
+    { path: '/settings', label: '我的', icon: '⚙️' },
+  ]
+  if (auth.isAdmin) {
+    items.push({ path: '/admin', label: '管理', icon: '🛡️' })
+  }
+  return items
+})
 
 function isActive(path: string): boolean {
   if (path === '/') return route.path === '/'

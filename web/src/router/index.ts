@@ -81,6 +81,12 @@ const router = createRouter({
     { path: '/analysis', redirect: '/ledger' },
     { path: '/memories', redirect: '/settings' },
     {
+      path: '/admin',
+      name: 'Admin',
+      component: () => import('@/views/Admin.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/:pathMatch(.*)*',
       name: 'NotFound',
       redirect: '/',

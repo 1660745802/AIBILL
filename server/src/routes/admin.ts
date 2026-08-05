@@ -143,6 +143,44 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return { code: 0, data: { user, stats }, message: '' }
   })
 
+  // GET /api/admin/users/:id/transactions - 查看用户账单明细
+  app.get('/api/admin/users/:id/transactions', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string }
+    const query = request.query as { page?: string; page_size?: string }
+    const db = getDb()
+    const userId = Number(id)
+
+    const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId)
+    if (!user) {
+      reply.code(404)
+      return { code: 3002, data: null, message: '用户不存在' }
+    }
+
+    const page = Math.max(1, parseInt(query.page || '1', 10))
+    const pageSize = Math.min(100, Math.max(1, parseInt(query.page_size || '20', 10)))
+    const offset = (page - 1) * pageSize
+
+    const countRow = db
+      .prepare('SELECT COUNT(*) as total FROM transactions WHERE user_id = ? AND deleted_at IS NULL')
+      .get(userId) as { total: number }
+
+    const items = db
+      .prepare(
+        `SELECT t.id, t.type, t.amount, t.description, t.date, t.source,
+                c.name as category_name, c.icon as category_icon,
+                a.name as account_name
+         FROM transactions t
+         LEFT JOIN categories c ON t.category_id = c.id
+         LEFT JOIN accounts a ON t.account_id = a.id
+         WHERE t.user_id = ? AND t.deleted_at IS NULL
+         ORDER BY t.date DESC, t.created_at DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(userId, pageSize, offset)
+
+    return { code: 0, data: { items, total: countRow.total, page, page_size: pageSize }, message: '' }
+  })
+
   // PUT /api/admin/users/:id/reset-password - 重置用户密码
   app.put('/api/admin/users/:id/reset-password', async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string }
