@@ -124,12 +124,49 @@ function processTrashCleanup(): void {
 }
 
 /**
+ * 应用日志清理
+ * - app_logs: 保留 30 天
+ * - ai_parse_logs: 保留 90 天
+ * - ai_conversations: 保留 90 天
+ */
+function processLogCleanup(): void {
+  const db = getDb()
+
+  // app_logs 保留 30 天
+  const appLogCutoff = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 19).replace('T', ' ')
+  const appLogResult = db
+    .prepare('DELETE FROM app_logs WHERE created_at < ?')
+    .run(appLogCutoff)
+  if (appLogResult.changes > 0) {
+    log('info', 'scheduler', `应用日志清理: 删除 ${appLogResult.changes} 条（>30天）`)
+  }
+
+  // ai_parse_logs 保留 90 天
+  const parseCutoff = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 19).replace('T', ' ')
+  const parseResult = db
+    .prepare('DELETE FROM ai_parse_logs WHERE created_at < ?')
+    .run(parseCutoff)
+  if (parseResult.changes > 0) {
+    log('info', 'scheduler', `AI解析日志清理: 删除 ${parseResult.changes} 条（>90天）`)
+  }
+
+  // ai_conversations 保留 90 天
+  const convResult = db
+    .prepare('DELETE FROM ai_conversations WHERE created_at < ?')
+    .run(parseCutoff)
+  if (convResult.changes > 0) {
+    log('info', 'scheduler', `AI对话记录清理: 删除 ${convResult.changes} 条（>90天）`)
+  }
+}
+
+/**
  * 执行所有定时任务
  */
 function runScheduledTasks(): void {
   log('info', 'scheduler', '定时任务开始执行')
   processSubscriptionAutoRecord()
   processTrashCleanup()
+  processLogCleanup()
   log('info', 'scheduler', '定时任务执行完毕')
 }
 
