@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import api from '@/api/index'
@@ -322,80 +322,71 @@ function exportCsv() {
 }
 </script>
 
+
 <template>
   <div class="pb-4">
     <!-- 用户信息 -->
-    <div class="bg-white px-4 py-4 mb-2">
+    <div class="bg-white rounded-xl shadow-sm px-5 py-4 mb-3">
       <div class="flex items-center justify-between">
-        <div>
-          <div class="text-base font-medium text-gray-800">
-            {{ auth.user?.nickname || auth.user?.username }}
+        <div class="flex items-center gap-3">
+          <div class="w-11 h-11 rounded-full bg-blue-100 flex items-center justify-center text-lg font-medium text-blue-600">
+            {{ (auth.user?.nickname || auth.user?.username || 'U').charAt(0).toUpperCase() }}
           </div>
-          <div class="text-xs text-gray-400">
-            @{{ auth.user?.username }}
-            <span v-if="auth.isAdmin" class="ml-1 text-blue-500">管理员</span>
+          <div>
+            <div class="text-base font-semibold text-gray-800">
+              {{ auth.user?.nickname || auth.user?.username }}
+            </div>
+            <div class="text-xs text-gray-400">
+              @{{ auth.user?.username }}
+              <span v-if="auth.isAdmin" class="ml-1 text-blue-500">管理员</span>
+            </div>
           </div>
         </div>
         <button
           @click="handleLogout"
-          class="px-3 py-1.5 text-sm text-red-500 border border-red-200 rounded-md hover:bg-red-50"
+          class="px-3 py-1.5 text-sm text-red-500 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
         >
           退出登录
         </button>
       </div>
     </div>
 
-    <!-- 功能入口 -->
-    <div class="bg-white px-4 py-4 mb-2">
-      <div class="grid grid-cols-3 gap-3">
-        <RouterLink to="/budget" class="flex flex-col items-center py-3 rounded-xl bg-amber-50 hover:bg-amber-100 transition-colors">
-          <span class="text-2xl mb-1">💰</span>
-          <span class="text-xs text-gray-700">预算</span>
-        </RouterLink>
-        <RouterLink to="/subscriptions" class="flex flex-col items-center py-3 rounded-xl bg-blue-50 hover:bg-blue-100 transition-colors">
-          <span class="text-2xl mb-1">🔁</span>
-          <span class="text-xs text-gray-700">订阅</span>
-        </RouterLink>
-        <RouterLink to="/ai" class="flex flex-col items-center py-3 rounded-xl bg-purple-50 hover:bg-purple-100 transition-colors">
-          <span class="text-2xl mb-1">🤖</span>
-          <span class="text-xs text-gray-700">AI 问答</span>
-        </RouterLink>
-      </div>
-    </div>
-
     <!-- 修改密码 -->
-    <div class="bg-white px-4 py-4 mb-2">
+    <div class="bg-white rounded-xl shadow-sm px-5 py-4 mb-3">
       <button
         @click="showPasswordForm = !showPasswordForm"
-        class="text-sm text-gray-700 font-medium flex items-center justify-between w-full"
+        class="w-full text-left flex items-center justify-between"
       >
-        <span>🔒 修改密码</span>
-        <span class="text-gray-400">{{ showPasswordForm ? '▲' : '▼' }}</span>
+        <div class="flex items-center gap-2">
+          <span class="text-lg">🔒</span>
+          <span class="text-sm font-semibold text-gray-800">修改密码</span>
+        </div>
+        <span class="text-xs text-gray-400">{{ showPasswordForm ? '▲' : '▼' }}</span>
       </button>
       <form v-if="showPasswordForm" @submit.prevent="handleChangePassword" class="mt-3 space-y-2">
         <input
           v-model="oldPassword"
           type="password"
-          class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
           placeholder="当前密码"
         />
         <input
           v-model="newPassword"
           type="password"
-          class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
           placeholder="新密码（至少6位）"
         />
         <input
           v-model="confirmNewPassword"
           type="password"
-          class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
           placeholder="确认新密码"
         />
         <div v-if="passwordError" class="text-xs text-red-500">{{ passwordError }}</div>
         <button
           type="submit"
           :disabled="passwordLoading"
-          class="w-full py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50"
+          class="w-full py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
         >
           {{ passwordLoading ? '提交中...' : '确认修改' }}
         </button>
@@ -407,57 +398,81 @@ function exportCsv() {
     <AccountManager />
 
     <!-- AI 记忆 -->
-    <div class="bg-white px-4 py-4 mb-2">
-      <button @click="showMemories = !showMemories" class="w-full text-left text-sm font-medium text-gray-700 flex items-center justify-between">
-        <span>💭 AI 记忆</span>
-        <span class="flex items-center gap-2">
+    <div class="bg-white rounded-xl shadow-sm px-5 py-4 mb-3">
+      <button @click="showMemories = !showMemories" class="w-full text-left flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="text-lg">💭</span>
+          <span class="text-sm font-semibold text-gray-800">AI 记忆</span>
+        </div>
+        <div class="flex items-center gap-2">
           <span v-if="memoriesCount > 0" class="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full">{{ memoriesCount }} 条</span>
-          <span class="text-gray-400">{{ showMemories ? '▲' : '▼' }}</span>
-        </span>
+          <span class="text-xs text-gray-400">{{ showMemories ? '▲' : '▼' }}</span>
+        </div>
       </button>
       <div v-if="showMemories" class="mt-3 space-y-2">
-        <!-- Memory list -->
-        <div v-for="m in memories" :key="m.id" class="flex items-start justify-between p-2 bg-gray-50 rounded-lg">
-          <div class="flex-1 text-xs text-gray-700">{{ m.content }}</div>
-          <div class="flex items-center gap-1 ml-2 shrink-0">
-            <button @click="toggleMemory(m)" class="text-xs" :class="m.is_active ? 'text-green-500' : 'text-gray-300'">{{ m.is_active ? '✓' : '○' }}</button>
-            <button @click="deleteMemory(m.id)" class="text-xs text-red-400 hover:text-red-600">✕</button>
+        <div
+          v-for="m in memories"
+          :key="m.id"
+          class="flex items-start justify-between p-2.5 bg-gray-50 rounded-lg"
+        >
+          <div class="flex-1 text-xs text-gray-700" :class="{ 'opacity-40 line-through': !m.is_active }">
+            {{ m.content }}
+          </div>
+          <div class="flex gap-2 ml-2 shrink-0">
+            <button @click="toggleMemory(m)" class="text-[10px] text-gray-400 hover:text-blue-500">
+              {{ m.is_active ? '停用' : '启用' }}
+            </button>
+            <button @click="deleteMemory(m.id)" class="text-[10px] text-red-400 hover:text-red-600">删除</button>
           </div>
         </div>
-        <div v-if="memories.length === 0" class="text-xs text-gray-400 text-center py-3">AI 还没有记住任何偏好</div>
-        <!-- Add memory -->
+        <div v-if="memories.length === 0" class="text-xs text-gray-400 text-center py-3">
+          AI 还没有记住任何偏好
+        </div>
         <div class="flex gap-2">
-          <input v-model="newMemory" type="text" placeholder="手动添加记忆..." class="flex-1 px-2 py-1.5 border border-gray-200 rounded-lg text-xs" />
-          <button @click="addMemory" :disabled="!newMemory.trim()" class="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg disabled:opacity-50">添加</button>
+          <input
+            v-model="newMemory"
+            type="text"
+            placeholder="手动添加记忆..."
+            class="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none"
+          />
+          <button
+            @click="addMemory"
+            :disabled="!newMemory.trim()"
+            class="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg disabled:opacity-50"
+          >
+            添加
+          </button>
         </div>
       </div>
     </div>
 
     <!-- 数据管理 -->
-    <div class="bg-white px-4 py-4 mb-2">
-      <h3 class="text-sm font-medium text-gray-700 mb-3">📂 数据管理</h3>
+    <div class="bg-white rounded-xl shadow-sm px-5 py-4 mb-3">
+      <h3 class="text-sm font-semibold text-gray-800 mb-3 flex items-center gap-2">
+        <span class="text-lg">📂</span> 数据管理
+      </h3>
       <div class="space-y-2">
         <button
           @click="exportJson"
-          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3"
+          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
         >
           📦 导出 JSON（全量备份）
         </button>
         <button
           @click="exportCsv"
-          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3"
+          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
         >
           📄 导出 CSV（流水）
         </button>
         <button
           @click="router.push('/import')"
-          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3"
+          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
         >
           📥 导入账单
         </button>
         <button
           @click="router.push('/trash')"
-          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3"
+          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
         >
           🗑️ 回收站
         </button>
@@ -479,7 +494,7 @@ function exportCsv() {
     </div>
 
     <!-- 管理员面板内容 -->
-    <div v-if="auth.isAdmin && showAdmin" class="space-y-3 mt-2">
+    <div v-if="auth.isAdmin && showAdmin" class="space-y-3 mb-3">
 
       <!-- 邀请码管理 -->
       <div class="bg-white rounded-xl shadow-sm overflow-hidden">
@@ -547,7 +562,7 @@ function exportCsv() {
               :key="u.id"
               class="flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-gray-50 transition-colors"
             >
-              <div class="flex items-center gap-3 cursor-pointer" @click="viewUserDetail(u.id)">
+              <div class="flex items-center gap-3 cursor-pointer flex-1" @click="viewUserDetail(u.id)">
                 <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-sm font-medium text-blue-600">
                   {{ (u.nickname || u.username)[0].toUpperCase() }}
                 </div>
@@ -564,9 +579,7 @@ function exportCsv() {
                   v-if="u.id !== auth.user?.id"
                   @click="toggleUser(u.id, u.is_active)"
                   class="text-xs px-2.5 py-1 rounded-lg font-medium transition-colors"
-                  :class="u.is_active
-                    ? 'text-red-600 bg-red-50 hover:bg-red-100'
-                    : 'text-green-600 bg-green-50 hover:bg-green-100'"
+                  :class="u.is_active ? 'text-red-600 bg-red-50 hover:bg-red-100' : 'text-green-600 bg-green-50 hover:bg-green-100'"
                 >
                   {{ u.is_active ? '禁用' : '启用' }}
                 </button>
@@ -574,62 +587,55 @@ function exportCsv() {
               </div>
             </div>
           </div>
-        </div>
 
-        <!-- 用户详情弹出层 -->
-        <div v-if="showUserDetail" class="border-t border-gray-100 px-5 py-4 bg-gray-50">
-          <div class="flex items-center justify-between mb-3">
-            <h4 class="text-sm font-semibold text-gray-700">📋 {{ showUserDetail.nickname || showUserDetail.username }} 的信息</h4>
-            <button @click="showUserDetail = null" class="text-xs text-gray-400 hover:text-gray-600">✕ 关闭</button>
-          </div>
-
-          <!-- 账单统计 -->
-          <div v-if="userStats" class="grid grid-cols-3 gap-3 mb-4">
-            <div class="bg-white rounded-lg p-2.5 text-center">
-              <div class="text-lg font-semibold text-gray-800">{{ userStats.total_transactions }}</div>
-              <div class="text-[10px] text-gray-400">总笔数</div>
+          <!-- 用户详情弹出层 -->
+          <div v-if="showUserDetail" class="mt-3 border-t border-gray-100 pt-4">
+            <div class="flex items-center justify-between mb-3">
+              <h4 class="text-sm font-semibold text-gray-700">📋 {{ showUserDetail.nickname || showUserDetail.username }} 的信息</h4>
+              <button @click="showUserDetail = null" class="text-xs text-gray-400 hover:text-gray-600">✕ 关闭</button>
             </div>
-            <div class="bg-white rounded-lg p-2.5 text-center">
-              <div class="text-lg font-semibold text-red-500">¥{{ (userStats.total_expense / 100).toFixed(0) }}</div>
-              <div class="text-[10px] text-gray-400">总支出</div>
+            <div v-if="userStats" class="grid grid-cols-3 gap-3 mb-4">
+              <div class="bg-gray-50 rounded-lg p-2.5 text-center">
+                <div class="text-lg font-semibold text-gray-800">{{ userStats.total_transactions }}</div>
+                <div class="text-[10px] text-gray-400">总笔数</div>
+              </div>
+              <div class="bg-gray-50 rounded-lg p-2.5 text-center">
+                <div class="text-lg font-semibold text-red-500">¥{{ (userStats.total_expense / 100).toFixed(0) }}</div>
+                <div class="text-[10px] text-gray-400">总支出</div>
+              </div>
+              <div class="bg-gray-50 rounded-lg p-2.5 text-center">
+                <div class="text-lg font-semibold text-green-500">¥{{ (userStats.total_income / 100).toFixed(0) }}</div>
+                <div class="text-[10px] text-gray-400">总收入</div>
+              </div>
             </div>
-            <div class="bg-white rounded-lg p-2.5 text-center">
-              <div class="text-lg font-semibold text-green-500">¥{{ (userStats.total_income / 100).toFixed(0) }}</div>
-              <div class="text-[10px] text-gray-400">总收入</div>
-            </div>
-          </div>
-
-          <!-- 操作按钮 -->
-          <div class="space-y-2">
-            <!-- 重置密码 -->
-            <div class="flex items-center gap-2">
-              <input
-                v-model="newPasswordInput"
-                type="text"
-                class="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                placeholder="输入新密码（≥6位）"
-              />
+            <div class="space-y-2">
+              <div class="flex items-center gap-2">
+                <input
+                  v-model="newPasswordInput"
+                  type="text"
+                  class="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  placeholder="输入新密码（≥6位）"
+                />
+                <button
+                  @click="resetPasswordId = showUserDetail.id; resetPassword()"
+                  class="px-3 py-1.5 text-sm font-medium text-orange-600 bg-orange-50 rounded-lg hover:bg-orange-100 transition-colors whitespace-nowrap"
+                >
+                  🔑 重置密码
+                </button>
+              </div>
               <button
-                @click="resetPasswordId = showUserDetail.id; resetPassword()"
-                class="px-3 py-1.5 text-sm font-medium text-orange-600 bg-orange-50 rounded-lg hover:bg-orange-100 transition-colors whitespace-nowrap"
+                v-if="showUserDetail.id !== auth.user?.id"
+                @click="deleteUser(showUserDetail.id, showUserDetail.username)"
+                class="w-full py-2 text-sm font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors"
               >
-                🔑 重置密码
+                🗑️ 删除用户（不可恢复）
               </button>
             </div>
-
-            <!-- 删除用户 -->
-            <button
-              v-if="showUserDetail.id !== auth.user?.id"
-              @click="deleteUser(showUserDetail.id, showUserDetail.username)"
-              class="w-full py-2 text-sm font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors"
-            >
-              🗑️ 删除用户（不可恢复）
-            </button>
           </div>
         </div>
       </div>
 
-      <!-- AI 设置 -->
+      <!-- AI 模型配置 -->
       <div class="bg-white rounded-xl shadow-sm overflow-hidden">
         <div class="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
           <span class="text-lg">🤖</span>
@@ -641,7 +647,7 @@ function exportCsv() {
             <input
               v-model="globalSettings.ai_base_url"
               type="text"
-              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:outline-none transition-shadow"
+              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none transition-shadow"
               placeholder="https://api.openai.com/v1"
             />
           </div>
@@ -650,7 +656,7 @@ function exportCsv() {
             <input
               v-model="globalSettings.ai_api_key"
               type="password"
-              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:outline-none transition-shadow"
+              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none transition-shadow"
               placeholder="sk-..."
             />
           </div>
@@ -659,7 +665,7 @@ function exportCsv() {
             <input
               v-model="globalSettings.ai_model"
               type="text"
-              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:outline-none transition-shadow"
+              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none transition-shadow"
               placeholder="gpt-4o-mini"
             />
           </div>
@@ -671,16 +677,18 @@ function exportCsv() {
           </button>
         </div>
       </div>
-      </div>
 
       <!-- AI 解析质量监控 -->
-      <div class="bg-white px-4 py-4">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-sm font-medium text-gray-700">🔍 AI 解析质量</h3>
+      <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+        <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-lg">🔍</span>
+            <h3 class="text-sm font-semibold text-gray-800">AI 解析质量</h3>
+          </div>
           <select
             v-model="parseLogsFilter.days"
             @change="fetchParseStats(); fetchParseLogs(1)"
-            class="px-2 py-1 border border-gray-200 rounded-lg text-xs text-gray-600 bg-gray-50"
+            class="px-2 py-1 border border-gray-200 rounded-lg text-xs text-gray-600 bg-gray-50 focus:outline-none"
           >
             <option value="7">近 7 天</option>
             <option value="30">近 30 天</option>
@@ -689,120 +697,112 @@ function exportCsv() {
           </select>
         </div>
 
-        <!-- 指标卡片 -->
-        <div v-if="parseStats" class="grid grid-cols-4 gap-2 mb-4">
-          <div class="relative overflow-hidden rounded-xl bg-gradient-to-br from-blue-50 to-blue-100 p-3 text-center">
-            <div class="text-xl font-bold text-blue-700">{{ parseStats.overview.total }}</div>
-            <div class="text-[10px] text-blue-500 mt-0.5">总调用</div>
+        <div class="px-5 py-4">
+          <!-- 指标卡片 -->
+          <div v-if="parseStats" class="grid grid-cols-4 gap-2 mb-4">
+            <div class="rounded-xl bg-gradient-to-br from-blue-50 to-blue-100 p-3 text-center">
+              <div class="text-xl font-bold text-blue-700">{{ parseStats.overview.total }}</div>
+              <div class="text-[10px] text-blue-500 mt-0.5">总调用</div>
+            </div>
+            <div class="rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100 p-3 text-center">
+              <div class="text-xl font-bold text-emerald-700">{{ parseStats.overview.success_rate }}%</div>
+              <div class="text-[10px] text-emerald-500 mt-0.5">成功率</div>
+            </div>
+            <div class="rounded-xl bg-gradient-to-br from-violet-50 to-violet-100 p-3 text-center">
+              <div class="text-xl font-bold text-violet-700">{{ formatDuration(parseStats.overview.avg_duration_ms) }}</div>
+              <div class="text-[10px] text-violet-500 mt-0.5">平均耗时</div>
+            </div>
+            <div class="rounded-xl bg-gradient-to-br from-amber-50 to-amber-100 p-3 text-center">
+              <div class="text-xl font-bold text-amber-700">{{ parseStats.modification.modification_rate }}%</div>
+              <div class="text-[10px] text-amber-500 mt-0.5">修正率</div>
+            </div>
           </div>
-          <div class="relative overflow-hidden rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100 p-3 text-center">
-            <div class="text-xl font-bold text-emerald-700">{{ parseStats.overview.success_rate }}%</div>
-            <div class="text-[10px] text-emerald-500 mt-0.5">成功率</div>
-          </div>
-          <div class="relative overflow-hidden rounded-xl bg-gradient-to-br from-violet-50 to-violet-100 p-3 text-center">
-            <div class="text-xl font-bold text-violet-700">{{ formatDuration(parseStats.overview.avg_duration_ms) }}</div>
-            <div class="text-[10px] text-violet-500 mt-0.5">平均耗时</div>
-          </div>
-          <div class="relative overflow-hidden rounded-xl bg-gradient-to-br from-amber-50 to-amber-100 p-3 text-center">
-            <div class="text-xl font-bold text-amber-700">{{ parseStats.modification.modification_rate }}%</div>
-            <div class="text-[10px] text-amber-500 mt-0.5">修正率</div>
-          </div>
-        </div>
 
-        <!-- 状态筛选标签 -->
-        <div class="flex gap-1.5 mb-3 overflow-x-auto pb-1">
-          <button
-            @click="parseLogsFilter.status = ''; fetchParseLogs(1)"
-            class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-            :class="parseLogsFilter.status === '' ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-          >
-            全部
-          </button>
-          <button
-            @click="parseLogsFilter.status = 'success'; fetchParseLogs(1)"
-            class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-            :class="parseLogsFilter.status === 'success' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'"
-          >
-            ✓ 成功
-          </button>
-          <button
-            @click="parseLogsFilter.status = 'empty'; fetchParseLogs(1)"
-            class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-            :class="parseLogsFilter.status === 'empty' ? 'bg-yellow-500 text-white' : 'bg-yellow-50 text-yellow-700 hover:bg-yellow-100'"
-          >
-            ○ 空结果
-          </button>
-          <button
-            @click="parseLogsFilter.status = 'error'; fetchParseLogs(1)"
-            class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-            :class="parseLogsFilter.status === 'error' ? 'bg-red-600 text-white' : 'bg-red-50 text-red-700 hover:bg-red-100'"
-          >
-            ✕ 错误
-          </button>
-          <button
-            @click="parseLogsFilter.status = 'timeout'; fetchParseLogs(1)"
-            class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-            :class="parseLogsFilter.status === 'timeout' ? 'bg-orange-600 text-white' : 'bg-orange-50 text-orange-700 hover:bg-orange-100'"
-          >
-            ⏱ 超时
-          </button>
-        </div>
+          <!-- 状态筛选 -->
+          <div class="flex gap-1.5 mb-3 overflow-x-auto pb-1">
+            <button
+              @click="parseLogsFilter.status = ''; fetchParseLogs(1)"
+              class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
+              :class="parseLogsFilter.status === '' ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+            >全部</button>
+            <button
+              @click="parseLogsFilter.status = 'success'; fetchParseLogs(1)"
+              class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
+              :class="parseLogsFilter.status === 'success' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'"
+            >✓ 成功</button>
+            <button
+              @click="parseLogsFilter.status = 'empty'; fetchParseLogs(1)"
+              class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
+              :class="parseLogsFilter.status === 'empty' ? 'bg-yellow-500 text-white' : 'bg-yellow-50 text-yellow-700 hover:bg-yellow-100'"
+            >○ 空结果</button>
+            <button
+              @click="parseLogsFilter.status = 'error'; fetchParseLogs(1)"
+              class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
+              :class="parseLogsFilter.status === 'error' ? 'bg-red-600 text-white' : 'bg-red-50 text-red-700 hover:bg-red-100'"
+            >✕ 错误</button>
+            <button
+              @click="parseLogsFilter.status = 'timeout'; fetchParseLogs(1)"
+              class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
+              :class="parseLogsFilter.status === 'timeout' ? 'bg-orange-600 text-white' : 'bg-orange-50 text-orange-700 hover:bg-orange-100'"
+            >⏱ 超时</button>
+          </div>
 
-        <!-- 日志列表 -->
-        <div class="space-y-2 max-h-96 overflow-y-auto">
-          <div v-if="loadingParseLogs" class="flex items-center justify-center py-8">
-            <div class="w-5 h-5 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin"></div>
-            <span class="ml-2 text-xs text-gray-400">加载中...</span>
-          </div>
-          <div v-else-if="parseLogs.length === 0" class="text-center py-8 text-xs text-gray-400">
-            暂无解析记录
-          </div>
-          <div
-            v-for="log in parseLogs"
-            :key="log.id"
-            @click="viewParseDetail(log)"
-            class="group border border-gray-100 rounded-xl p-3 cursor-pointer hover:border-blue-200 hover:shadow-sm transition-all"
-          >
-            <div class="flex items-start justify-between gap-2">
-              <div class="flex-1 min-w-0">
-                <div class="text-sm text-gray-800 truncate leading-snug">{{ log.raw_input }}</div>
-                <div class="flex items-center gap-2 mt-1.5">
-                  <span
-                    class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
-                    :class="{
-                      'bg-emerald-50 text-emerald-700': log.status === 'success',
-                      'bg-yellow-50 text-yellow-700': log.status === 'empty',
-                      'bg-red-50 text-red-700': log.status === 'error',
-                      'bg-orange-50 text-orange-700': log.status === 'timeout',
-                    }"
-                  >{{ statusLabel(log.status) }}</span>
-                  <span class="text-[10px] text-gray-400">{{ log.username }}</span>
-                  <span class="text-[10px] text-gray-400">{{ formatDuration(log.duration_ms) }}</span>
-                  <span v-if="log.user_modified" class="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 text-[10px] font-medium">已修正</span>
+          <!-- 日志列表 -->
+          <div class="space-y-2 max-h-96 overflow-y-auto">
+            <div v-if="loadingParseLogs" class="flex items-center justify-center py-8">
+              <div class="w-5 h-5 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin"></div>
+              <span class="ml-2 text-xs text-gray-400">加载中...</span>
+            </div>
+            <div v-else-if="parseLogs.length === 0" class="text-center py-8 text-xs text-gray-400">
+              暂无解析记录
+            </div>
+            <div
+              v-for="log in parseLogs"
+              :key="log.id"
+              @click="viewParseDetail(log)"
+              class="group border border-gray-100 rounded-xl p-3 cursor-pointer hover:border-blue-200 hover:shadow-sm transition-all"
+            >
+              <div class="flex items-start justify-between gap-2">
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm text-gray-800 truncate leading-snug">{{ log.raw_input }}</div>
+                  <div class="flex items-center gap-2 mt-1.5">
+                    <span
+                      class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
+                      :class="{
+                        'bg-emerald-50 text-emerald-700': log.status === 'success',
+                        'bg-yellow-50 text-yellow-700': log.status === 'empty',
+                        'bg-red-50 text-red-700': log.status === 'error',
+                        'bg-orange-50 text-orange-700': log.status === 'timeout',
+                      }"
+                    >{{ statusLabel(log.status) }}</span>
+                    <span class="text-[10px] text-gray-400">{{ log.username }}</span>
+                    <span class="text-[10px] text-gray-400">{{ formatDuration(log.duration_ms) }}</span>
+                    <span v-if="log.user_modified" class="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 text-[10px] font-medium">已修正</span>
+                  </div>
                 </div>
-              </div>
-              <div class="text-[10px] text-gray-300 group-hover:text-blue-400 shrink-0 pt-0.5">
-                {{ formatLocalTime(log.created_at) }} ›
+                <div class="text-[10px] text-gray-300 group-hover:text-blue-400 shrink-0 pt-0.5">
+                  {{ formatLocalTime(log.created_at) }} ›
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <!-- 分页 -->
-        <div v-if="parseLogsPagination.total_pages > 1" class="flex items-center justify-between mt-4 pt-3 border-t border-gray-100">
-          <span class="text-[10px] text-gray-400">共 {{ parseLogsPagination.total }} 条</span>
-          <div class="flex items-center gap-1">
-            <button
-              :disabled="parseLogsPagination.page <= 1"
-              @click="fetchParseLogs(parseLogsPagination.page - 1)"
-              class="w-7 h-7 flex items-center justify-center rounded-lg text-xs border border-gray-200 disabled:opacity-30 hover:bg-gray-50"
-            >‹</button>
-            <span class="px-2 text-xs text-gray-600">{{ parseLogsPagination.page }} / {{ parseLogsPagination.total_pages }}</span>
-            <button
-              :disabled="parseLogsPagination.page >= parseLogsPagination.total_pages"
-              @click="fetchParseLogs(parseLogsPagination.page + 1)"
-              class="w-7 h-7 flex items-center justify-center rounded-lg text-xs border border-gray-200 disabled:opacity-30 hover:bg-gray-50"
-            >›</button>
+          <!-- 分页 -->
+          <div v-if="parseLogsPagination.total_pages > 1" class="flex items-center justify-between mt-4 pt-3 border-t border-gray-100">
+            <span class="text-[10px] text-gray-400">共 {{ parseLogsPagination.total }} 条</span>
+            <div class="flex items-center gap-1">
+              <button
+                :disabled="parseLogsPagination.page <= 1"
+                @click="fetchParseLogs(parseLogsPagination.page - 1)"
+                class="w-7 h-7 flex items-center justify-center rounded-lg text-xs border border-gray-200 disabled:opacity-30 hover:bg-gray-50"
+              >‹</button>
+              <span class="px-2 text-xs text-gray-600">{{ parseLogsPagination.page }} / {{ parseLogsPagination.total_pages }}</span>
+              <button
+                :disabled="parseLogsPagination.page >= parseLogsPagination.total_pages"
+                @click="fetchParseLogs(parseLogsPagination.page + 1)"
+                class="w-7 h-7 flex items-center justify-center rounded-lg text-xs border border-gray-200 disabled:opacity-30 hover:bg-gray-50"
+              >›</button>
+            </div>
           </div>
         </div>
       </div>
@@ -811,11 +811,10 @@ function exportCsv() {
     <!-- 解析日志详情弹窗 -->
     <div
       v-if="showParseDetail"
-      class="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center"
+      class="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center"
       @click.self="closeParseDetail"
     >
-      <div class="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[90vh] overflow-hidden flex flex-col animate-[slideUp_0.2s_ease]">
-        <!-- 头部 -->
+      <div class="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
         <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0">
           <div>
             <h3 class="text-base font-semibold text-gray-800">解析详情</h3>
@@ -824,67 +823,43 @@ function exportCsv() {
           <button @click="closeParseDetail" class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors">✕</button>
         </div>
 
-        <!-- 内容区域 -->
         <div class="overflow-y-auto flex-1 px-5 py-4 space-y-4">
-          <!-- 状态摘要 -->
           <div class="flex items-center gap-3 p-3 rounded-xl bg-gray-50">
-            <span
-              class="w-10 h-10 rounded-full flex items-center justify-center text-lg"
-              :class="{
-                'bg-emerald-100': showParseDetail.status === 'success',
-                'bg-yellow-100': showParseDetail.status === 'empty',
-                'bg-red-100': showParseDetail.status === 'error',
-                'bg-orange-100': showParseDetail.status === 'timeout',
-              }"
-            >
-              {{ showParseDetail.status === 'success' ? '✓' : showParseDetail.status === 'empty' ? '○' : showParseDetail.status === 'timeout' ? '⏱' : '✕' }}
-            </span>
-            <div class="flex-1">
-              <div class="text-sm font-medium" :class="statusColor(showParseDetail.status)">{{ statusLabel(showParseDetail.status) }}</div>
-              <div class="text-[11px] text-gray-500 mt-0.5">
-                用户 {{ showParseDetail.username }} · 耗时 {{ formatDuration(showParseDetail.duration_ms) }}
-                <span v-if="showParseDetail.user_modified" class="ml-1 text-amber-600 font-medium">· 已修正</span>
-              </div>
-            </div>
+            <span class="text-sm font-medium" :class="statusColor(showParseDetail.status)">{{ statusLabel(showParseDetail.status) }}</span>
+            <span class="text-[11px] text-gray-500">用户 {{ showParseDetail.username }} · 耗时 {{ formatDuration(showParseDetail.duration_ms) }}</span>
+            <span v-if="showParseDetail.user_modified" class="text-[11px] text-amber-600 font-medium">· 已修正</span>
           </div>
 
-          <!-- 原始输入 -->
           <div>
             <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">用户输入</div>
             <div class="bg-gray-50 border border-gray-100 p-3 rounded-xl text-sm text-gray-800 leading-relaxed">{{ showParseDetail.raw_input }}</div>
           </div>
 
-          <!-- 清洗后 -->
           <div v-if="showParseDetail.cleaned_input && showParseDetail.cleaned_input !== showParseDetail.raw_input">
             <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">清洗后</div>
             <div class="bg-blue-50 border border-blue-100 p-3 rounded-xl text-sm text-gray-800 leading-relaxed">{{ showParseDetail.cleaned_input }}</div>
           </div>
 
-          <!-- AI 原始返回 -->
           <div v-if="showParseDetail.ai_response">
             <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">AI 返回</div>
             <div class="bg-gray-50 border border-gray-100 p-3 rounded-xl font-mono text-[11px] text-gray-700 max-h-36 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">{{ showParseDetail.ai_response }}</div>
           </div>
 
-          <!-- 解析结果 -->
           <div v-if="showParseDetail.parsed_items">
             <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">解析结果</div>
             <div class="bg-emerald-50 border border-emerald-100 p-3 rounded-xl font-mono text-[11px] text-gray-700 max-h-36 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">{{ showParseDetail.parsed_items }}</div>
           </div>
 
-          <!-- 用户最终提交 -->
           <div v-if="showParseDetail.final_items">
             <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">最终提交</div>
             <div class="bg-amber-50 border border-amber-100 p-3 rounded-xl font-mono text-[11px] text-gray-700 max-h-36 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">{{ showParseDetail.final_items }}</div>
           </div>
 
-          <!-- 修正详情 -->
           <div v-if="showParseDetail.modification_detail">
             <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">修正详情</div>
             <div class="bg-yellow-50 border border-yellow-100 p-3 rounded-xl font-mono text-[11px] text-gray-700 whitespace-pre-wrap break-all leading-relaxed">{{ showParseDetail.modification_detail }}</div>
           </div>
 
-          <!-- 错误信息 -->
           <div v-if="showParseDetail.error_message">
             <div class="text-[11px] font-medium text-red-500 uppercase tracking-wide mb-1.5">错误信息</div>
             <div class="bg-red-50 border border-red-100 p-3 rounded-xl text-sm text-red-700 leading-relaxed">{{ showParseDetail.error_message }}</div>
