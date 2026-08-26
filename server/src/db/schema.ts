@@ -237,6 +237,79 @@ CREATE INDEX IF NOT EXISTS idx_app_logs_module ON app_logs(module);
 CREATE INDEX IF NOT EXISTS idx_app_logs_created ON app_logs(created_at);
 `
 
+/** Migration 008: 财务工作台 - 资产全景 + 财务目标 */
+export const migration008 = `
+-- 扩展 accounts 表：资产类型、信用卡信息
+ALTER TABLE accounts ADD COLUMN asset_type TEXT DEFAULT 'liquid';
+ALTER TABLE accounts ADD COLUMN currency TEXT DEFAULT 'CNY';
+ALTER TABLE accounts ADD COLUMN credit_limit INTEGER DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN billing_day INTEGER DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN due_day INTEGER DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN note TEXT;
+
+-- 资产快照表：月度记录各账户余额，用于生成净资产趋势
+CREATE TABLE IF NOT EXISTS asset_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    account_id INTEGER NOT NULL REFERENCES accounts(id),
+    balance INTEGER NOT NULL,
+    snapshot_date TEXT NOT NULL,
+    source TEXT DEFAULT 'auto' CHECK(source IN ('auto', 'manual')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, account_id, snapshot_date)
+);
+CREATE INDEX IF NOT EXISTS idx_asset_snapshots_user_date ON asset_snapshots(user_id, snapshot_date);
+
+-- 周期性收支模式表：AI 识别或手动标记的固定收支
+CREATE TABLE IF NOT EXISTS recurring_patterns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    type TEXT NOT NULL CHECK(type IN ('income', 'expense')),
+    amount INTEGER NOT NULL CHECK(amount > 0),
+    frequency TEXT NOT NULL CHECK(frequency IN ('monthly', 'weekly', 'biweekly', 'quarterly', 'yearly')),
+    expected_day INTEGER,
+    category_id INTEGER REFERENCES categories(id),
+    account_id INTEGER REFERENCES accounts(id),
+    confidence REAL DEFAULT 1.0,
+    is_active INTEGER DEFAULT 1,
+    source TEXT DEFAULT 'manual' CHECK(source IN ('manual', 'ai_detected')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_recurring_patterns_user ON recurring_patterns(user_id, is_active);
+
+-- 财务目标表
+CREATE TABLE IF NOT EXISTS financial_goals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    type TEXT NOT NULL CHECK(type IN ('saving', 'debt_payoff', 'investment', 'custom')),
+    target_amount INTEGER NOT NULL CHECK(target_amount > 0),
+    current_amount INTEGER DEFAULT 0,
+    deadline TEXT,
+    priority INTEGER DEFAULT 5,
+    linked_account_id INTEGER REFERENCES accounts(id),
+    monthly_contribution INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'active' CHECK(status IN ('active', 'completed', 'paused', 'abandoned')),
+    icon TEXT DEFAULT '🎯',
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_financial_goals_user ON financial_goals(user_id, status);
+
+-- 目标进度快照表
+CREATE TABLE IF NOT EXISTS goal_progress (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id INTEGER NOT NULL REFERENCES financial_goals(id) ON DELETE CASCADE,
+    amount INTEGER NOT NULL,
+    snapshot_date TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(goal_id, snapshot_date)
+);
+CREATE INDEX IF NOT EXISTS idx_goal_progress_goal ON goal_progress(goal_id, snapshot_date);
+`
+
 /** 默认全局设置数据 */
 export const seedSettings = `
 INSERT OR IGNORE INTO settings (key, value) VALUES

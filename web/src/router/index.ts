@@ -64,6 +64,24 @@ const router = createRouter({
       meta: { auth: true },
     },
     {
+      path: '/assets',
+      name: 'Assets',
+      component: () => import('@/views/Assets.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/goals',
+      name: 'Goals',
+      component: () => import('@/views/Goals.vue'),
+      meta: { auth: true },
+    },
+    {
+      path: '/me',
+      name: 'Me',
+      component: () => import('@/views/Me.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/settings',
       name: 'Settings',
       component: () => import('@/views/Settings.vue'),
