@@ -1,8 +1,10 @@
-version: '3.8'
-
 services:
   bill:
-    build: .
+    build:
+      context: .
+      network: host
+      args:
+        NPM_PROXY: ${NPM_PROXY:-}
     container_name: bill-app
     restart: unless-stopped
     ports:

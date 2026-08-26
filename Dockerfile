@@ -3,7 +3,9 @@
 # --- 前端构建 ---
 FROM node:20-alpine AS web-builder
 WORKDIR /app/web
-RUN npm config set registry https://registry.npmmirror.com
+ARG NPM_PROXY=""
+RUN npm config set registry https://registry.npmmirror.com && \
+    if [ -n "$NPM_PROXY" ]; then npm config set proxy $NPM_PROXY && npm config set https-proxy $NPM_PROXY; fi
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
@@ -12,12 +14,14 @@ RUN npm run build
 # --- 后端构建 ---
 FROM node:20-slim AS server-builder
 WORKDIR /app/server
-RUN npm config set registry https://registry.npmmirror.com
+ARG NPM_PROXY=""
+RUN npm config set registry https://registry.npmmirror.com && \
+    if [ -n "$NPM_PROXY" ]; then npm config set proxy $NPM_PROXY && npm config set https-proxy $NPM_PROXY; fi
 COPY server/package.json server/package-lock.json ./
 RUN npm ci
 COPY server/ ./
 RUN npx tsc
-# 单独安装生产依赖
+# 单独安装生产依赖（生产依赖也需要代理下载）
 RUN rm -rf node_modules && npm ci --omit=dev
 
 # --- 运行镜像 ---
