@@ -286,7 +286,7 @@ onMounted(() => {
     <div class="mb-5">
       <div class="flex items-center justify-between">
         <div>
-          <h1 class="text-xl font-bold text-gray-800">🔁 订阅管理</h1>
+          <h1 class="text-xl font-bold text-[color:var(--color-text-primary)]">🔁 订阅管理</h1>
           <p class="text-xs text-gray-400 mt-1">管理你的周期性订阅支出</p>
         </div>
         <button
@@ -322,12 +322,12 @@ onMounted(() => {
           <div class="flex items-center gap-3">
             <span class="text-lg">⚡</span>
             <div>
-              <p class="text-sm font-medium text-gray-800">{{ item.name }}</p>
+              <p class="text-sm font-medium text-[color:var(--color-text-primary)]">{{ item.name }}</p>
               <p class="text-[11px] text-amber-600">{{ item.next_payment_date }}</p>
             </div>
           </div>
           <div class="text-right">
-            <p class="text-sm font-bold text-gray-800">¥{{ formatAmount(item.amount) }}</p>
+            <p class="text-sm font-bold text-[color:var(--color-text-primary)]">¥{{ formatAmount(item.amount) }}</p>
             <p class="text-[11px] text-amber-600 font-medium">{{ daysUntil(item.next_payment_date) }}天后</p>
           </div>
         </div>
@@ -375,7 +375,7 @@ onMounted(() => {
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2">
               <h3
-                class="text-sm font-semibold text-gray-800 truncate"
+                class="text-sm font-semibold text-[color:var(--color-text-primary)] truncate"
                 :class="{ 'line-through': sub.status === 'cancelled' }"
               >
                 {{ sub.name }}
@@ -398,7 +398,7 @@ onMounted(() => {
 
           <!-- Amount -->
           <div class="text-right flex-shrink-0">
-            <p class="text-sm font-bold text-gray-800">¥{{ formatAmount(sub.amount) }}</p>
+            <p class="text-sm font-bold text-[color:var(--color-text-primary)]">¥{{ formatAmount(sub.amount) }}</p>
             <p class="text-[10px] text-gray-400">/ {{ cycleConfig[sub.cycle].badge }}</p>
           </div>
         </div>
@@ -468,7 +468,7 @@ onMounted(() => {
           <div class="relative w-full max-w-lg bg-white rounded-t-2xl md:rounded-2xl max-h-[85vh] overflow-y-auto shadow-xl">
             <!-- Header -->
             <div class="sticky top-0 bg-white border-b border-gray-100 px-5 py-4 flex items-center justify-between rounded-t-2xl z-10">
-              <h2 class="text-base font-semibold text-gray-800">
+              <h2 class="text-base font-semibold text-[color:var(--color-text-primary)]">
                 {{ editingId ? '编辑订阅' : '新增订阅' }}
               </h2>
               <button @click="closeForm" class="p-1 text-gray-400 hover:text-gray-600">
@@ -487,7 +487,7 @@ onMounted(() => {
                   v-model="form.name"
                   type="text"
                   placeholder="如：Netflix、iCloud、会员"
-                  class="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  class="w-full px-3 py-2.5 border border-[color:var(--color-border)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
 
@@ -502,7 +502,7 @@ onMounted(() => {
                     step="0.01"
                     min="0"
                     placeholder="0.00"
-                    class="w-full pl-7 pr-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    class="w-full pl-7 pr-3 py-2.5 border border-[color:var(--color-border)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                 </div>
               </div>
@@ -518,7 +518,7 @@ onMounted(() => {
                     class="py-2 rounded-lg text-xs font-medium transition-all border"
                     :class="form.cycle === key
                       ? 'border-blue-500 bg-blue-50 text-blue-700'
-                      : 'border-gray-200 text-gray-500 hover:border-gray-300'"
+                      : 'border-[color:var(--color-border)] text-gray-500 hover:border-gray-300'"
                   >
                     {{ cfg.label }}
                   </button>
@@ -531,7 +531,7 @@ onMounted(() => {
                 <input
                   v-model="form.start_date"
                   type="date"
-                  class="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  class="w-full px-3 py-2.5 border border-[color:var(--color-border)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
 
@@ -540,7 +540,7 @@ onMounted(() => {
                 <label class="block text-xs font-medium text-gray-600 mb-1.5">分类（可选）</label>
                 <select
                   v-model="form.category_id"
-                  class="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+                  class="w-full px-3 py-2.5 border border-[color:var(--color-border)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
                 >
                   <option :value="null">不指定</option>
                   <option v-for="cat in categories" :key="cat.id" :value="cat.id">
@@ -554,7 +554,7 @@ onMounted(() => {
                 <label class="block text-xs font-medium text-gray-600 mb-1.5">账户（可选）</label>
                 <select
                   v-model="form.account_id"
-                  class="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+                  class="w-full px-3 py-2.5 border border-[color:var(--color-border)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
                 >
                   <option :value="null">不指定</option>
                   <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
@@ -571,7 +571,7 @@ onMounted(() => {
                   type="number"
                   min="0"
                   max="30"
-                  class="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  class="w-full px-3 py-2.5 border border-[color:var(--color-border)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
 
@@ -600,7 +600,7 @@ onMounted(() => {
                   v-model="form.note"
                   rows="2"
                   placeholder="添加备注..."
-                  class="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+                  class="w-full px-3 py-2.5 border border-[color:var(--color-border)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
                 ></textarea>
               </div>
             </div>
@@ -609,7 +609,7 @@ onMounted(() => {
             <div class="sticky bottom-0 bg-white border-t border-gray-100 px-5 py-4 flex gap-3">
               <button
                 @click="closeForm"
-                class="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+                class="flex-1 py-2.5 border border-[color:var(--color-border)] rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
               >
                 取消
               </button>

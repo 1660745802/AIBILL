@@ -172,7 +172,7 @@ function handleEditSaved() {
 </script>
 
 <template>
-  <div class="pb-4">
+  <div class="pb-20 md:pb-4">
     <!-- 搜索和筛选 -->
     <div class="bg-white px-4 py-3 mb-2 space-y-2">
       <div class="flex gap-2">

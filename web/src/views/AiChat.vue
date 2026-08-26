@@ -89,8 +89,8 @@ async function scrollToBottom() {
 <template>
   <div class="flex flex-col h-[calc(100vh-4rem)]">
     <!-- 顶部栏 -->
-    <div class="bg-white px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-      <h2 class="text-sm font-medium text-gray-800">AI 助手</h2>
+    <div class="bg-white px-4 py-3 border-b border-[color:var(--color-border)] flex items-center justify-between">
+      <h2 class="text-sm font-medium text-[color:var(--color-text-primary)]">AI 助手</h2>
       <div class="flex gap-2">
         <button
           @click="showSessions = !showSessions"
@@ -108,7 +108,7 @@ async function scrollToBottom() {
     </div>
 
     <!-- 历史对话列表 -->
-    <div v-if="showSessions" class="bg-white border-b border-gray-200 px-4 py-2 max-h-48 overflow-y-auto">
+    <div v-if="showSessions" class="bg-white border-b border-[color:var(--color-border)] px-4 py-2 max-h-48 overflow-y-auto">
       <div v-if="sessions.length === 0" class="text-xs text-gray-400 py-2">暂无历史对话</div>
       <div
         v-for="s in sessions"
@@ -164,7 +164,7 @@ async function scrollToBottom() {
           class="max-w-[80%] px-3 py-2 rounded-lg text-sm whitespace-pre-wrap"
           :class="msg.role === 'user'
             ? 'bg-blue-600 text-white'
-            : 'bg-gray-100 text-gray-800'"
+            : 'bg-gray-100 text-[color:var(--color-text-primary)]'"
         >
           {{ msg.content }}
         </div>
@@ -179,7 +179,7 @@ async function scrollToBottom() {
     </div>
 
     <!-- 输入区域 -->
-    <div class="bg-white border-t border-gray-200 px-4 py-3">
+    <div class="bg-white border-t border-[color:var(--color-border)] px-4 py-3">
       <form @submit.prevent="sendMessage" class="flex gap-2">
         <input
           v-model="input"
@@ -191,7 +191,7 @@ async function scrollToBottom() {
         <button
           type="submit"
           :disabled="loading || !input.trim()"
-          class="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          class="px-4 py-2 btn-primary disabled:opacity-50"
         >
           发送
         </button>

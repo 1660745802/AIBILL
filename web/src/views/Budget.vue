@@ -155,7 +155,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="pb-4">
+  <div class="pb-20 md:pb-4">
     <!-- 月份切换 -->
     <div class="bg-white px-4 py-3 mb-2 flex items-center justify-between">
       <button
@@ -166,7 +166,7 @@ onMounted(() => {
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
         </svg>
       </button>
-      <h2 class="text-lg font-semibold text-gray-800">{{ displayMonth }}</h2>
+      <h2 class="text-lg font-semibold text-[color:var(--color-text-primary)]">{{ displayMonth }}</h2>
       <button
         @click="nextMonth"
         class="p-2 rounded-lg hover:bg-gray-100 text-gray-600"
@@ -210,7 +210,7 @@ onMounted(() => {
         <button
           type="submit"
           :disabled="saving || !formAmount"
-          class="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
+          class="px-4 py-2 btn-primary disabled:opacity-50 whitespace-nowrap"
         >
           {{ saving ? '保存中...' : '保存' }}
         </button>
@@ -237,7 +237,7 @@ onMounted(() => {
           <div class="flex items-center justify-between mb-2">
             <div class="flex items-center gap-2">
               <span class="text-lg">{{ item.category_icon || '💰' }}</span>
-              <span class="text-sm font-medium text-gray-800">{{ item.category_name || '总预算' }}</span>
+              <span class="text-sm font-medium text-[color:var(--color-text-primary)]">{{ item.category_name || '总预算' }}</span>
             </div>
             <button
               @click="handleDelete(item.id)"

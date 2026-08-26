@@ -120,7 +120,7 @@ function formatAmount(cents: number): string {
 </script>
 
 <template>
-  <div class="pb-4">
+  <div class="pb-20 md:pb-4">
     <!-- 月份切换 -->
     <div class="bg-white px-4 py-3 flex items-center justify-between mb-2">
       <button @click="prevMonth" class="px-3 py-1 text-sm text-gray-600 hover:bg-gray-100 rounded">◀</button>

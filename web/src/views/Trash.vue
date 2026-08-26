@@ -69,10 +69,10 @@ function nextPage() {
 </script>
 
 <template>
-  <div class="pb-4">
+  <div class="pb-20 md:pb-4">
     <!-- 标题 -->
     <div class="bg-white px-4 py-3 mb-2">
-      <h2 class="text-base font-medium text-gray-800">🗑️ 回收站</h2>
+      <h2 class="text-base font-medium text-[color:var(--color-text-primary)]">🗑️ 回收站</h2>
       <p class="text-xs text-gray-400 mt-0.5">已删除的交易可在此恢复或永久删除</p>
     </div>
 
@@ -96,7 +96,7 @@ function nextPage() {
           <div class="flex items-center gap-2 flex-1 min-w-0">
             <span class="text-base">{{ tx.category_icon || '📦' }}</span>
             <div class="min-w-0 flex-1">
-              <div class="text-sm text-gray-800 truncate">
+              <div class="text-sm text-[color:var(--color-text-primary)] truncate">
                 {{ tx.description || tx.category_name || '未分类' }}
               </div>
               <div class="text-xs text-gray-400">

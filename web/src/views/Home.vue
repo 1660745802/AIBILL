@@ -211,94 +211,86 @@ function formatAmount(cents: number): string {
 </script>
 
 <template>
-  <div class="pb-4">
+  <div class="pb-20 md:pb-4">
     <!-- 预算超支提醒 -->
-    <div v-if="showBudgetWarning && budgetWarnings.length > 0" class="mb-2">
+    <div v-if="showBudgetWarning && budgetWarnings.length > 0" class="mb-3 space-y-2">
       <div
         v-for="(w, idx) in budgetWarnings"
         :key="idx"
-        class="px-4 py-2.5 text-sm flex items-center justify-between"
-        :class="w.status === 'exceeded' ? 'bg-red-50 text-red-700' : 'bg-yellow-50 text-yellow-700'"
+        class="card flex items-center justify-between py-2.5 px-3"
+        :style="w.status === 'exceeded' ? 'border-color: #fecaca; background: #fef2f2' : 'border-color: #fde68a; background: #fffbeb'"
       >
-        <span v-if="w.status === 'warning'">
-          ⚠️ 本月{{ w.category_name }}预算已用{{ w.percent }}%，接近上限
+        <span class="text-sm" v-if="w.status === 'warning'" style="color: var(--color-text-primary)">
+          ⚠️ {{ w.category_name }}预算已用{{ w.percent }}%
         </span>
-        <span v-else>
-          🚨 本月{{ w.category_name }}已超支，超出¥{{ formatAmount(w.spent - w.amount) }}
+        <span class="text-sm" v-else style="color: var(--color-expense)">
+          🔴 {{ w.category_name }}已超支 ¥{{ formatAmount(w.spent - w.amount) }}
         </span>
         <button
           @click="budgetWarnings.splice(idx, 1); if (budgetWarnings.length === 0) showBudgetWarning = false"
-          class="ml-2 text-current opacity-60 hover:opacity-100"
-        >
-          ✕
-        </button>
+          class="text-xs opacity-40 hover:opacity-100 ml-2"
+        >✕</button>
       </div>
     </div>
 
-    <!-- 本月摘要（可点击跳转统计） -->
-    <div
-      class="bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-4 mb-2 rounded-lg mx-2 cursor-pointer relative"
-      @click="$router.push('/stats')"
-    >
-      <div class="grid grid-cols-3 gap-4 text-center">
-        <div>
-          <div class="text-xs text-blue-100">本月支出</div>
-          <div class="text-lg font-semibold text-white">¥{{ formatAmount(summary.expense) }}</div>
-        </div>
-        <div>
-          <div class="text-xs text-blue-100">本月收入</div>
-          <div class="text-lg font-semibold text-white">¥{{ formatAmount(summary.income) }}</div>
-        </div>
-        <div>
-          <div class="text-xs text-blue-100">结余</div>
-          <div class="text-lg font-semibold text-white">
-            ¥{{ formatAmount(balance) }}
-          </div>
-        </div>
+    <!-- 本月摘要 -->
+    <div class="grid grid-cols-3 gap-3 mb-4">
+      <div class="card text-center cursor-pointer" @click="$router.push('/ledger')">
+        <p class="text-[11px] mb-1" style="color: var(--color-text-muted)">本月支出</p>
+        <p class="text-base font-semibold amount-number amount-expense">¥{{ formatAmount(summary.expense) }}</p>
       </div>
-      <div class="absolute bottom-2 right-3 text-xs text-white opacity-70">点击查看详情 ›</div>
+      <div class="card text-center">
+        <p class="text-[11px] mb-1" style="color: var(--color-text-muted)">本月收入</p>
+        <p class="text-base font-semibold amount-number amount-income">¥{{ formatAmount(summary.income) }}</p>
+      </div>
+      <div class="card text-center">
+        <p class="text-[11px] mb-1" style="color: var(--color-text-muted)">结余</p>
+        <p class="text-base font-semibold amount-number amount-balance">¥{{ formatAmount(balance) }}</p>
+      </div>
     </div>
 
     <!-- AI 输入区 -->
-    <div class="bg-white px-4 py-4 mb-2">
+    <div class="card mb-4">
       <form @submit.prevent="handleAiParse" class="flex gap-2">
         <input
           v-model="input"
           type="text"
-          class="flex-1 px-3 py-2 border border-gray-300 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+          class="flex-1 px-3 py-2.5 rounded-lg text-sm"
+          style="border: 1px solid var(--color-border); background: var(--color-page-bg)"
           placeholder="说点什么就能记账... 如：午饭32，打车15"
           :disabled="loading"
         />
         <button
           type="submit"
           :disabled="loading || !input.trim()"
-          class="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
+          class="btn-primary whitespace-nowrap disabled:opacity-50"
         >
           {{ loading ? '...' : '记账' }}
         </button>
         <button
           type="button"
           @click="showManual = true"
-          class="px-3 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 whitespace-nowrap"
+          class="btn-secondary whitespace-nowrap"
         >
           手动
         </button>
       </form>
 
       <!-- 快捷短语 -->
-      <div class="flex gap-2 overflow-x-auto pb-2 mt-2">
+      <div class="flex gap-2 overflow-x-auto pb-1 mt-3">
         <button
           v-for="phrase in quickPhrases"
           :key="phrase"
           type="button"
           @click="appendPhrase(phrase)"
-          class="px-3 py-1 bg-gray-100 rounded-full text-xs text-gray-600 hover:bg-gray-200 whitespace-nowrap"
+          class="px-3 py-1 rounded-md text-xs font-medium whitespace-nowrap transition"
+          style="background: var(--color-primary-50); color: var(--color-primary-700)"
         >
           {{ phrase }}
         </button>
       </div>
 
-      <div v-if="error" class="mt-2 text-sm text-red-600 bg-red-50 p-2 rounded">
+      <div v-if="error" class="mt-3 text-sm p-2.5 rounded-lg" style="color: var(--color-expense); background: #fef2f2; border: 1px solid #fecaca">
         {{ error }}
       </div>
     </div>

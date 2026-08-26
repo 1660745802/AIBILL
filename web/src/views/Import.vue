@@ -138,7 +138,7 @@ function getTypeLabel(type: string): string {
 </script>
 
 <template>
-  <div class="pb-4">
+  <div class="pb-20 md:pb-4">
     <!-- 标题栏 -->
     <div class="bg-white px-4 py-4 mb-2 flex items-center justify-between">
       <h1 class="text-lg font-bold text-gray-900">导入账单</h1>
@@ -155,7 +155,7 @@ function getTypeLabel(type: string): string {
       <div class="flex gap-3 justify-center">
         <button
           @click="router.push('/transactions')"
-          class="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
+          class="px-4 py-2 btn-primary"
         >
           查看流水
         </button>
@@ -176,14 +176,14 @@ function getTypeLabel(type: string): string {
           <button
             @click="source = 'wechat'"
             class="flex-1 py-2 text-sm rounded-lg border transition-colors"
-            :class="source === 'wechat' ? 'bg-green-50 border-green-300 text-green-700' : 'border-gray-200 text-gray-600'"
+            :class="source === 'wechat' ? 'bg-green-50 border-green-300 text-green-700' : 'border-[color:var(--color-border)] text-gray-600'"
           >
             💬 微信
           </button>
           <button
             @click="source = 'alipay'"
             class="flex-1 py-2 text-sm rounded-lg border transition-colors"
-            :class="source === 'alipay' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-gray-200 text-gray-600'"
+            :class="source === 'alipay' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-[color:var(--color-border)] text-gray-600'"
           >
             💰 支付宝
           </button>
@@ -213,7 +213,7 @@ function getTypeLabel(type: string): string {
           v-if="fileContent && !previewItems.length"
           @click="parseCsv"
           :disabled="loading"
-          class="w-full mt-3 py-2.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          class="w-full mt-3 py-2.5 btn-primary disabled:opacity-50"
         >
           {{ loading ? '解析中...' : '解析文件' }}
         </button>
@@ -238,7 +238,7 @@ function getTypeLabel(type: string): string {
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
-              <tr class="border-b border-gray-200">
+              <tr class="border-b border-[color:var(--color-border)]">
                 <th class="text-left py-2 text-xs text-gray-500 font-medium">日期</th>
                 <th class="text-left py-2 text-xs text-gray-500 font-medium">类型</th>
                 <th class="text-right py-2 text-xs text-gray-500 font-medium">金额</th>
@@ -264,7 +264,7 @@ function getTypeLabel(type: string): string {
                     {{ getTypeLabel(item.type) }}
                   </span>
                 </td>
-                <td class="py-2 text-right text-xs font-medium text-gray-800">
+                <td class="py-2 text-right text-xs font-medium text-[color:var(--color-text-primary)]">
                   ¥{{ formatAmount(item.amount) }}
                 </td>
                 <td class="py-2 pl-3 text-xs text-gray-600 max-w-32 truncate">
@@ -283,7 +283,7 @@ function getTypeLabel(type: string): string {
           <button
             @click="confirmImport"
             :disabled="importLoading"
-            class="flex-1 py-2.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            class="flex-1 py-2.5 btn-primary disabled:opacity-50"
           >
             {{ importLoading ? '导入中...' : `确认导入 ${previewItems.length} 条` }}
           </button>

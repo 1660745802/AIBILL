@@ -143,7 +143,7 @@ function exportCsv() {
 
 
 <template>
-  <div class="pb-4">
+  <div class="pb-20 md:pb-4">
     <!-- 用户信息 -->
     <div class="bg-white rounded-xl shadow-sm px-5 py-4 mb-3">
       <div class="flex items-center justify-between">
@@ -152,7 +152,7 @@ function exportCsv() {
             {{ (auth.user?.nickname || auth.user?.username || 'U').charAt(0).toUpperCase() }}
           </div>
           <div>
-            <div class="text-base font-semibold text-gray-800">
+            <div class="text-base font-semibold text-[color:var(--color-text-primary)]">
               {{ auth.user?.nickname || auth.user?.username }}
             </div>
             <div class="text-xs text-gray-400">
@@ -178,7 +178,7 @@ function exportCsv() {
       >
         <div class="flex items-center gap-2">
           <span class="text-lg">🔒</span>
-          <span class="text-sm font-semibold text-gray-800">修改密码</span>
+          <span class="text-sm font-semibold text-[color:var(--color-text-primary)]">修改密码</span>
         </div>
         <span class="text-xs text-gray-400">{{ showPasswordForm ? '▲' : '▼' }}</span>
       </button>
@@ -186,26 +186,26 @@ function exportCsv() {
         <input
           v-model="oldPassword"
           type="password"
-          class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+          class="w-full px-3 py-2 border border-[color:var(--color-border)] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
           placeholder="当前密码"
         />
         <input
           v-model="newPassword"
           type="password"
-          class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+          class="w-full px-3 py-2 border border-[color:var(--color-border)] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
           placeholder="新密码（至少6位）"
         />
         <input
           v-model="confirmNewPassword"
           type="password"
-          class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+          class="w-full px-3 py-2 border border-[color:var(--color-border)] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
           placeholder="确认新密码"
         />
         <div v-if="passwordError" class="text-xs text-red-500">{{ passwordError }}</div>
         <button
           type="submit"
           :disabled="passwordLoading"
-          class="w-full py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          class="w-full py-2 btn-primary disabled:opacity-50"
         >
           {{ passwordLoading ? '提交中...' : '确认修改' }}
         </button>
@@ -221,7 +221,7 @@ function exportCsv() {
       <button @click="showMemories = !showMemories" class="w-full text-left flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="text-lg">💭</span>
-          <span class="text-sm font-semibold text-gray-800">AI 记忆</span>
+          <span class="text-sm font-semibold text-[color:var(--color-text-primary)]">AI 记忆</span>
         </div>
         <div class="flex items-center gap-2">
           <span v-if="memoriesCount > 0" class="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full">{{ memoriesCount }} 条</span>
@@ -252,7 +252,7 @@ function exportCsv() {
             v-model="newMemory"
             type="text"
             placeholder="手动添加记忆..."
-            class="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none"
+            class="flex-1 px-3 py-1.5 border border-[color:var(--color-border)] rounded-lg text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none"
           />
           <button
             @click="addMemory"
@@ -267,31 +267,31 @@ function exportCsv() {
 
     <!-- 数据管理 -->
     <div class="bg-white rounded-xl shadow-sm px-5 py-4 mb-3">
-      <h3 class="text-sm font-semibold text-gray-800 mb-3 flex items-center gap-2">
+      <h3 class="text-sm font-semibold text-[color:var(--color-text-primary)] mb-3 flex items-center gap-2">
         <span class="text-lg">📂</span> 数据管理
       </h3>
       <div class="space-y-2">
         <button
           @click="exportJson"
-          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
+          class="w-full py-2 text-sm text-gray-700 border border-[color:var(--color-border)] rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
         >
           📦 导出 JSON（全量备份）
         </button>
         <button
           @click="exportCsv"
-          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
+          class="w-full py-2 text-sm text-gray-700 border border-[color:var(--color-border)] rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
         >
           📄 导出 CSV（流水）
         </button>
         <button
           @click="router.push('/import')"
-          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
+          class="w-full py-2 text-sm text-gray-700 border border-[color:var(--color-border)] rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
         >
           📥 导入账单
         </button>
         <button
           @click="router.push('/trash')"
-          class="w-full py-2 text-sm text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
+          class="w-full py-2 text-sm text-gray-700 border border-[color:var(--color-border)] rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
         >
           🗑️ 回收站
         </button>

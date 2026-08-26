@@ -291,28 +291,28 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="pb-4">
+  <div class="pb-20 md:pb-4">
     <!-- Month Selector -->
-    <div class="bg-white px-4 py-3 flex items-center justify-between">
-      <button @click="prevMonth" class="w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 transition-colors">◀</button>
-      <span class="text-sm font-semibold text-gray-800">{{ year }}年{{ month }}月</span>
-      <button @click="nextMonth" class="w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 transition-colors">▶</button>
+    <div class="flex items-center justify-between mb-4">
+      <button @click="prevMonth" class="w-8 h-8 flex items-center justify-center rounded-lg transition" style="color: var(--color-text-muted)" >◀</button>
+      <span class="text-sm font-semibold" style="color: var(--color-text-primary)">{{ year }}年{{ month }}月</span>
+      <button @click="nextMonth" class="w-8 h-8 flex items-center justify-center rounded-lg transition" style="color: var(--color-text-muted)">▶</button>
     </div>
 
     <!-- Tab Bar -->
-    <div class="bg-white px-4 pt-1 pb-3">
-      <div class="flex bg-gray-100 rounded-xl p-1">
+    <div class="mb-4">
+      <div class="flex rounded-lg p-1" style="background: var(--color-border-light)">
         <button
           @click="activeTab = 'transactions'"
-          class="flex-1 py-2 text-sm font-medium rounded-lg transition-all"
-          :class="activeTab === 'transactions' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
+          class="flex-1 py-2 text-sm font-medium rounded-md transition-all"
+          :style="activeTab === 'transactions' ? 'background: var(--color-card-bg); color: var(--color-text-primary); box-shadow: 0 1px 3px rgba(0,0,0,0.05)' : 'color: var(--color-text-muted)'"
         >
           流水
         </button>
         <button
           @click="activeTab = 'stats'"
-          class="flex-1 py-2 text-sm font-medium rounded-lg transition-all"
-          :class="activeTab === 'stats' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
+          class="flex-1 py-2 text-sm font-medium rounded-md transition-all"
+          :style="activeTab === 'stats' ? 'background: var(--color-card-bg); color: var(--color-text-primary); box-shadow: 0 1px 3px rgba(0,0,0,0.05)' : 'color: var(--color-text-muted)'"
         >
           图表
         </button>
@@ -322,15 +322,15 @@ onMounted(() => {
     <!-- Tab 1: Transactions -->
     <div v-if="activeTab === 'transactions'">
       <!-- Filters -->
-      <div class="bg-white px-4 py-3 mb-2 space-y-3">
+      <div class="card mb-3 space-y-3">
         <!-- Type filter pills -->
         <div class="flex gap-2">
           <button
             v-for="opt in [{ label: '全部', value: '' }, { label: '支出', value: 'expense' }, { label: '收入', value: 'income' }]"
             :key="opt.value"
             @click="handleFilterType(opt.value)"
-            class="px-3 py-1.5 rounded-full text-xs font-medium transition-all"
-            :class="filterType === opt.value ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+            class="px-3 py-1.5 rounded-md text-xs font-medium transition-all"
+            :style="filterType === opt.value ? 'background: var(--color-primary-600); color: white' : 'background: var(--color-primary-50); color: var(--color-text-secondary)'"
           >
             {{ opt.label }}
           </button>
@@ -340,40 +340,37 @@ onMounted(() => {
           <input
             v-model="keyword"
             type="text"
-            class="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            class="flex-1 px-3 py-1.5 rounded-lg text-sm"
+            style="border: 1px solid var(--color-border)"
             placeholder="搜索描述..."
             @keyup.enter="handleSearch"
           />
-          <button
-            @click="handleSearch"
-            class="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            搜索
-          </button>
+          <button @click="handleSearch" class="btn-primary text-xs !py-1.5">搜索</button>
         </div>
       </div>
 
       <!-- Transaction List -->
-      <div v-if="txLoading && transactions.length === 0" class="bg-white">
+      <div v-if="txLoading && transactions.length === 0">
         <Skeleton :lines="5" />
       </div>
 
-      <div v-else-if="transactions.length === 0" class="bg-white">
+      <div v-else-if="transactions.length === 0">
         <EmptyState icon="📄" title="暂无交易记录" description="该月还没有记录" />
       </div>
 
       <div v-else>
-        <div v-for="[date, items] in groupedTransactions" :key="date" class="mb-2">
-          <div class="px-4 py-2 text-xs bg-gray-50 flex items-center justify-between">
-            <span class="text-gray-500">{{ formatDate(date) }}</span>
-            <span class="text-red-500">-¥{{ formatAmount(getDailyExpense(items)) }}</span>
+        <div v-for="[date, items] in groupedTransactions" :key="date" class="mb-3">
+          <div class="px-3 py-1.5 text-[11px] flex items-center justify-between" style="color: var(--color-text-muted)">
+            <span>{{ formatDate(date) }}</span>
+            <span class="amount-expense">-¥{{ formatAmount(getDailyExpense(items)) }}</span>
           </div>
-          <div class="bg-white">
+          <div class="card !p-0 overflow-hidden">
             <div
               v-for="tx in items"
               :key="tx.id"
               @click="handleRowClick(tx)"
-              class="flex items-center justify-between px-4 py-3 border-b border-gray-50 last:border-0 cursor-pointer hover:bg-gray-50 transition-colors"
+              class="flex items-center justify-between px-4 py-3 cursor-pointer transition-colors hover:bg-gray-50"
+              :style="'border-bottom: 1px solid var(--color-border-light)'"
             >
               <div class="flex items-center gap-2.5 flex-1 min-w-0">
                 <span class="text-lg">{{ tx.category_icon || '📦' }}</span>
