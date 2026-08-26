@@ -31,10 +31,12 @@ const month = ref(now.getMonth() + 1)
 function prevMonth() {
   if (month.value === 1) { year.value--; month.value = 12 }
   else month.value--
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 function nextMonth() {
   if (month.value === 12) { year.value++; month.value = 1 }
   else month.value++
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 // ==================== Tab 1: Transactions ====================

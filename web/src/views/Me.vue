@@ -1,11 +1,12 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useRouter } from 'vue-router'
 
 const auth = useAuthStore()
 const router = useRouter()
 
-const sections = [
+const sections = computed(() => [
   {
     title: '财务管理',
     items: [
@@ -30,7 +31,7 @@ const sections = [
       ...(auth.isAdmin ? [{ path: '/admin', label: '管理面板', icon: '🛡️', desc: '用户与系统管理' }] : []),
     ],
   },
-]
+])
 
 function handleLogout() {
   if (confirm('确定退出登录？')) {

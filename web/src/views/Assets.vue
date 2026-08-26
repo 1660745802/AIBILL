@@ -83,12 +83,17 @@ const groupedAccounts = computed(() => {
 
 function startEdit(acc: any) {
   editingAccount.value = acc.id
-  editForm.value = { asset_type: acc.asset_type || 'liquid', credit_limit: acc.credit_limit || 0, billing_day: acc.billing_day || 0, due_day: acc.due_day || 0, note: acc.note || '' }
+  editForm.value = { asset_type: acc.asset_type || 'liquid', credit_limit: (acc.credit_limit || 0) / 100, billing_day: acc.billing_day || 0, due_day: acc.due_day || 0, note: acc.note || '' }
 }
 
 async function saveEdit() {
   if (!editingAccount.value) return
-  try { await updateAccountAsset(editingAccount.value, editForm.value); toast.success('已更新'); editingAccount.value = null; await loadData() }
+  try {
+    const payload = { ...editForm.value }
+    if (payload.credit_limit) payload.credit_limit = Math.round(payload.credit_limit * 100)
+    await updateAccountAsset(editingAccount.value, payload)
+    toast.success('已更新'); editingAccount.value = null; await loadData()
+  }
   catch { toast.error('更新失败') }
 }
 
