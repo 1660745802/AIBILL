@@ -344,51 +344,65 @@ function formatAmount(cents: number): string {
 
 
 <template>
-  <div class="pb-6 px-4 pt-4">
-    <!-- Header -->
-    <div class="mb-4">
-      <h1 class="text-xl font-bold text-gray-800">🛡️ 管理面板</h1>
-      <p class="text-xs text-gray-400 mt-0.5">系统管理和监控</p>
-    </div>
+  <div class="pb-20 md:pb-4">
+    <!-- 管理面板：左侧菜单 + 右侧内容 -->
+    <div class="flex gap-0 md:gap-5">
+      <!-- 左侧菜单 (PC 显示为固定侧栏，移动端显示为横向滚动) -->
+      <aside class="hidden md:block md:w-44 lg:w-48 shrink-0">
+        <div class="sticky top-6">
+          <h1 class="page-title mb-1">管理面板</h1>
+          <p class="page-subtitle mb-4">系统管理和监控</p>
+          <nav class="space-y-0.5">
+            <button
+              v-for="tab in [
+                { key: 'overview', label: '概览', icon: '📋' },
+                { key: 'users', label: '用户管理', icon: '👥' },
+                { key: 'codes', label: '邀请码', icon: '🎟️' },
+                { key: 'ai', label: 'AI 设置', icon: '🤖' },
+                { key: 'quality', label: '解析质量', icon: '🔍' },
+                { key: 'logs', label: '系统日志', icon: '📜' },
+                { key: 'rules', label: '通知规则', icon: '📱' },
+              ]"
+              :key="tab.key"
+              @click="activeTab = tab.key as any; tab.key === 'logs' && fetchAppLogs(); tab.key === 'rules' && fetchNotifRules()"
+              class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2"
+              :style="activeTab === tab.key
+                ? 'background: var(--color-primary-50); color: var(--color-primary-700)'
+                : 'color: var(--color-text-secondary)'"
+            >
+              <span class="text-sm">{{ tab.icon }}</span>
+              <span>{{ tab.label }}</span>
+            </button>
+          </nav>
+        </div>
+      </aside>
 
-    <!-- Tab navigation -->
-    <div class="flex gap-1.5 mb-4 overflow-x-auto pb-1">
-      <button
-        @click="activeTab = 'overview'"
-        class="px-3 py-2 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-        :class="activeTab === 'overview' ? 'bg-gray-800 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-      >📋 概览</button>
-      <button
-        @click="activeTab = 'users'"
-        class="px-3 py-2 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-        :class="activeTab === 'users' ? 'bg-gray-800 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-      >👥 用户</button>
-      <button
-        @click="activeTab = 'codes'"
-        class="px-3 py-2 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-        :class="activeTab === 'codes' ? 'bg-gray-800 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-      >🎟️ 邀请码</button>
-      <button
-        @click="activeTab = 'ai'"
-        class="px-3 py-2 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-        :class="activeTab === 'ai' ? 'bg-gray-800 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-      >🤖 AI</button>
-      <button
-        @click="activeTab = 'quality'"
-        class="px-3 py-2 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-        :class="activeTab === 'quality' ? 'bg-gray-800 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-      >🔍 质量</button>
-      <button
-        @click="activeTab = 'logs'; fetchAppLogs()"
-        class="px-3 py-2 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-        :class="activeTab === 'logs' ? 'bg-gray-800 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-      >📜 日志</button>
-      <button
-        @click="activeTab = 'rules'; fetchNotifRules()"
-        class="px-3 py-2 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-        :class="activeTab === 'rules' ? 'bg-gray-800 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-      >📱 通知规则</button>
-    </div>
+      <!-- 移动端：横向 Tab (仅 md 以下显示) -->
+      <div class="md:hidden w-full mb-4">
+        <h1 class="page-title mb-3">管理面板</h1>
+        <div class="flex gap-1.5 overflow-x-auto pb-1">
+          <button
+            v-for="tab in [
+              { key: 'overview', label: '概览' },
+              { key: 'users', label: '用户' },
+              { key: 'codes', label: '邀请码' },
+              { key: 'ai', label: 'AI' },
+              { key: 'quality', label: '质量' },
+              { key: 'logs', label: '日志' },
+              { key: 'rules', label: '规则' },
+            ]"
+            :key="tab.key"
+            @click="activeTab = tab.key as any; tab.key === 'logs' && fetchAppLogs(); tab.key === 'rules' && fetchNotifRules()"
+            class="px-3 py-1.5 rounded-md text-xs font-medium transition whitespace-nowrap"
+            :style="activeTab === tab.key
+              ? 'background: var(--color-primary-600); color: white'
+              : 'background: var(--color-primary-50); color: var(--color-text-secondary)'"
+          >{{ tab.label }}</button>
+        </div>
+      </div>
+
+      <!-- 右侧内容区 -->
+      <div class="flex-1 min-w-0">
 
     <!-- Tab 0: 系统概览 -->
     <div v-if="activeTab === 'overview'" class="space-y-3">
@@ -1000,5 +1014,7 @@ function formatAmount(cents: number): string {
         </div>
       </div>
     </div>
+      </div><!-- content area end -->
+    </div><!-- flex layout end -->
   </div>
 </template>
