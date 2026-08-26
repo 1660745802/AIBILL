@@ -465,19 +465,19 @@ function formatAmount(cents: number): string {
     <!-- Tab 1: 用户管理 -->
     <div v-if="activeTab === 'users'" class="space-y-3">
       <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div class="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+        <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
           <span class="text-lg">👥</span>
           <h3 class="text-sm font-semibold text-gray-800">用户管理</h3>
           <span class="text-xs text-gray-400 ml-auto">{{ users.length }} 人</span>
         </div>
-        <div class="px-5 py-3">
+        <div class="px-3 py-3">
           <div class="space-y-1">
             <div
               v-for="u in users"
               :key="u.id"
-              class="flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-gray-50 transition-colors"
+              class="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 rounded-lg hover:bg-gray-50 transition-colors"
             >
-              <div class="flex items-center gap-3 cursor-pointer flex-1" @click="viewUserDetail(u.id)">
+              <div class="flex items-center gap-3 cursor-pointer flex-1 min-w-0" @click="viewUserDetail(u.id)">
                 <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-sm font-medium text-blue-600">
                   {{ (u.nickname || u.username)[0].toUpperCase() }}
                 </div>
@@ -489,10 +489,10 @@ function formatAmount(cents: number): string {
                   <div class="text-xs text-gray-400">{{ u.transaction_count }} 笔 · {{ formatLocalTime(u.created_at) }}</div>
                 </div>
               </div>
-              <div class="flex items-center gap-2">
+              <div class="flex items-center gap-1.5 shrink-0">
                 <button
                   @click.stop="fetchUserTransactions(u.id)"
-                  class="text-xs px-2.5 py-1 rounded-lg font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
+                  class="text-xs px-2 py-1 rounded-lg font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
                 >账单</button>
                 <button
                   v-if="u.id !== auth.user?.id"
@@ -528,7 +528,7 @@ function formatAmount(cents: number): string {
               </div>
             </div>
             <div class="space-y-2">
-              <div class="flex items-center gap-2">
+              <div class="flex flex-col sm:flex-row gap-2">
                 <input
                   v-model="newPasswordInput"
                   type="text"
@@ -558,12 +558,12 @@ function formatAmount(cents: number): string {
     <!-- Tab 2: 邀请码管理 -->
     <div v-if="activeTab === 'codes'" class="space-y-3">
       <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div class="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+        <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
           <span class="text-lg">🎟️</span>
           <h3 class="text-sm font-semibold text-gray-800">邀请码管理</h3>
         </div>
-        <div class="px-5 py-4">
-          <div class="flex items-center gap-3 mb-4">
+        <div class="px-3 py-3">
+          <div class="flex flex-wrap items-center gap-3 mb-4">
             <div class="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
               <input
                 v-model.number="newCodeMaxUses"
@@ -586,7 +586,7 @@ function formatAmount(cents: number): string {
             <div
               v-for="code in inviteCodes"
               :key="code.id"
-              class="flex items-center justify-between px-3 py-2.5 bg-gray-50 rounded-lg"
+              class="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 bg-gray-50 rounded-lg"
             >
               <div class="flex items-center gap-3">
                 <span class="font-mono text-sm font-semibold text-gray-800 bg-white px-2 py-0.5 rounded border border-gray-200">{{ code.code }}</span>
@@ -612,7 +612,7 @@ function formatAmount(cents: number): string {
     <!-- Tab 3: AI 设置 -->
     <div v-if="activeTab === 'ai'" class="space-y-3">
       <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div class="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+        <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
           <span class="text-lg">🤖</span>
           <h3 class="text-sm font-semibold text-gray-800">AI 模型配置</h3>
         </div>
@@ -657,7 +657,7 @@ function formatAmount(cents: number): string {
     <!-- Tab 4: 质量监控 -->
     <div v-if="activeTab === 'quality'" class="space-y-3">
       <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
           <div class="flex items-center gap-2">
             <span class="text-lg">🔍</span>
             <h3 class="text-sm font-semibold text-gray-800">AI 解析质量</h3>
@@ -674,7 +674,7 @@ function formatAmount(cents: number): string {
           </select>
         </div>
 
-        <div class="px-5 py-4">
+        <div class="px-3 py-3">
           <!-- 指标卡片 -->
           <div v-if="parseStats" class="grid grid-cols-4 gap-2 mb-4">
             <div class="rounded-xl bg-gradient-to-br from-blue-50 to-blue-100 p-3 text-center">
