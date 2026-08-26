@@ -346,7 +346,7 @@ function formatAmount(cents: number): string {
 <template>
   <div class="pb-20 md:pb-4">
     <!-- 管理面板：左侧菜单 + 右侧内容 -->
-    <div class="flex gap-0 md:gap-5">
+    <div class="flex flex-col md:flex-row gap-0 md:gap-5">
       <!-- 左侧菜单 (PC 显示为固定侧栏，移动端显示为横向滚动) -->
       <aside class="hidden md:block md:w-44 lg:w-48 shrink-0">
         <div class="sticky top-6">
@@ -378,7 +378,7 @@ function formatAmount(cents: number): string {
       </aside>
 
       <!-- 移动端：横向 Tab (仅 md 以下显示) -->
-      <div class="md:hidden w-full mb-4">
+      <div class="md:hidden mb-4">
         <h1 class="page-title mb-3">管理面板</h1>
         <div class="flex gap-1.5 overflow-x-auto pb-1">
           <button
