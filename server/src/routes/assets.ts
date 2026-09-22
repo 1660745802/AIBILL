@@ -15,38 +15,30 @@ const updateAccountSchema = z.object({
   note: z.string().max(500).optional(),
 })
 
-/** 计算单个账户的当前余额（分） */
-function calcAccountBalance(db: any, userId: number, accountId: number): number {
-  const income = db.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND type = 'income' AND account_id = ?
-       AND status = 'confirmed' AND deleted_at IS NULL`
-  ).get(userId, accountId) as { total: number }
+/**
+ * 一次性计算该用户所有活跃账户的余额（分），返回 account_id → balance 映射
+ * 修复 N+1：原版每个账户 4 次 SELECT；新版 1 次聚合 LEFT JOIN GROUP BY
+ */
+function calcAccountBalances(db: any, userId: number): Map<number, number> {
+  const rows = db.prepare(
+    `SELECT
+       a.id AS account_id,
+       a.initial_balance
+         + COALESCE(SUM(CASE WHEN t.type='income'    THEN t.amount           ELSE 0 END), 0)
+         - COALESCE(SUM(CASE WHEN t.type='expense'   THEN t.amount           ELSE 0 END), 0)
+         + COALESCE(SUM(CASE WHEN t.type='transfer' AND t.target_account_id=a.id THEN t.amount ELSE 0 END), 0)
+         - COALESCE(SUM(CASE WHEN t.type='transfer' AND t.account_id=a.id        THEN t.amount ELSE 0 END), 0)
+       AS balance
+     FROM accounts a
+     LEFT JOIN transactions t ON (t.account_id = a.id OR t.target_account_id = a.id)
+       AND t.user_id = a.user_id
+       AND t.status = 'confirmed'
+       AND t.deleted_at IS NULL
+     WHERE a.user_id = ? AND a.is_active = 1
+     GROUP BY a.id`,
+  ).all(userId) as Array<{ account_id: number; balance: number }>
 
-  const expense = db.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND type = 'expense' AND account_id = ?
-       AND status = 'confirmed' AND deleted_at IS NULL`
-  ).get(userId, accountId) as { total: number }
-
-  const transferIn = db.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND type = 'transfer' AND target_account_id = ?
-       AND status = 'confirmed' AND deleted_at IS NULL`
-  ).get(userId, accountId) as { total: number }
-
-  const transferOut = db.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND type = 'transfer' AND account_id = ?
-       AND status = 'confirmed' AND deleted_at IS NULL`
-  ).get(userId, accountId) as { total: number }
-
-  const account = db.prepare(
-    'SELECT initial_balance FROM accounts WHERE id = ? AND user_id = ?'
-  ).get(accountId, userId) as { initial_balance: number } | undefined
-
-  const initial = account?.initial_balance || 0
-  return initial + income.total - expense.total + transferIn.total - transferOut.total
+  return new Map(rows.map((r) => [r.account_id, r.balance]))
 }
 
 export async function assetsRoutes(app: FastifyInstance): Promise<void> {
@@ -69,8 +61,11 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
     let totalLiabilities = 0
     const byType: Record<string, { total: number; count: number }> = {}
 
+    // 单条聚合 SQL 取所有账户余额（修复 N+1）
+    const balances = calcAccountBalances(db, userId)
+
     const accountsWithBalance = accounts.map((acc: any) => {
-      const balance = calcAccountBalance(db, userId, acc.id)
+      const balance = balances.get(acc.id) ?? 0
       const assetType = acc.asset_type || 'liquid'
 
       // 信用卡和贷款算负债
@@ -152,6 +147,9 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
       'SELECT id FROM accounts WHERE user_id = ? AND is_active = 1'
     ).all(userId) as Array<{ id: number }>
 
+    // 单条聚合 SQL 取所有账户余额（修复 N+1）
+    const balances = calcAccountBalances(db, userId)
+
     let created = 0
     let skipped = 0
 
@@ -162,7 +160,7 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
 
     const runSnapshot = db.transaction(() => {
       for (const acc of accounts) {
-        const balance = calcAccountBalance(db, userId, acc.id)
+        const balance = balances.get(acc.id) ?? 0
         const result = insertStmt.run(userId, acc.id, balance, today)
         if (result.changes > 0) {
           created++

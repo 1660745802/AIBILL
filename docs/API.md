@@ -1,896 +1,396 @@
-# AI 记账 API 文档
+# API 接口文档
 
-> Base URL: `http(s)://<host>:3000/api`  
-> 认证方式: `Authorization: Bearer <jwt>`  
-> 响应格式: `{ "code": 0, "data": <T>, "message": "" }`
-
----
-
-## 通用规则
-
-| 项 | 说明 |
-|----|------|
-| 金额单位 | **整数，单位：分**。¥32.50 传 3250 |
-| 日期格式 | `YYYY-MM-DD` 字符串 |
-| 时间格式 | `HH:mm` 字符串 |
-| 列表响应 | `data.items` 数组 |
-| 分页参数 | `page`（从1开始）、`page_size`（默认20，最大100） |
-| 幂等 | POST /transactions 通过 `client_id` 去重 |
+> **Base URL**: `http(s)://<host>:3000/api`
+> **认证**: 除 `/health`、`/api/auth/*`、`/api/config/notification-rules` 外均需 `Authorization: Bearer <jwt>`
+> **响应格式**: 统一 `{ code: 0, data: <T>, message: "" }`
+> **路由总数**: 80（基于 `server/src/routes/*.ts` 2026-09 重构）
 
 ---
 
-## 错误处理
+## 0. 通用规则
 
-### HTTP 状态码
+### 0.1 响应包装
+```json
+// 成功
+{ "code": 0, "data": {...}, "message": "" }
+
+// 错误
+{ "code": 1001, "data": null, "message": "未提供认证令牌" }
+```
+
+### 0.2 HTTP 状态码
 
 | Status | 含义 |
 |--------|------|
-| 200 | 成功（检查 body.code） |
+| 200 | 成功（看 body.code） |
 | 400 | 参数错误 |
-| 401 | 未认证/Token过期 |
+| 401 | 未认证 / Token 过期 / 已撤销 |
 | 403 | 权限不足（需 admin） |
 | 404 | 资源不存在 |
+| 429 | 限流 |
 | 502/504 | AI 服务异常 |
 
-### 业务错误码
+### 0.3 业务错误码
 
-| code | 含义 |
+| 范围 | 含义 |
 |------|------|
 | 0 | 成功 |
+| 1xxx | 认证/授权 |
+| 2xxx | 参数校验 |
+| 3xxx | 业务逻辑 |
+| 4xxx | 外部依赖 |
+| 5xxx | AI 相关 |
+
+| Code | 含义 |
+|------|------|
 | 1001 | 未提供 Token |
-| 1002 | Token 无效/过期 |
+| 1002 | Token 无效/过期/已撤销 |
 | 1003 | 权限不足 |
 | 1004 | 用户名或密码错误 |
 | 1005 | 账号已禁用 |
-| 1007 | 当前密码错误（修改密码时） |
+| 1006 | Token 已被撤销（改密/重置） |
+| 1007 | 当前密码错误 |
 | 2000 | 参数校验失败 |
 | 2001 | 邀请码无效/过期/用完 |
 | 2002 | 用户名已存在 |
 | 2003 | 业务校验失败 |
 | 3001 | 唯一约束冲突 |
 | 3002 | 资源不存在 |
-| 3003 | 不能操作自己（如禁用自己） |
+| 3003 | 不能操作自己 |
 | 5001 | AI 解析失败 |
 | 5002 | AI 响应格式异常 |
 | 5003 | AI 问答失败 |
 
----
+### 0.4 字段约定
 
-## 一、认证
-
-### POST /auth/register
-
-无需认证。
-
-```json
-// Request
-{
-  "username": "zhangsan",       // 3-20字符，字母数字下划线
-  "password": "123456",         // 6-50字符
-  "invite_code": "ABC12345",    // 必填
-  "nickname": "张三"            // 可选，最多20字符
-}
-
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "token": "eyJhbGci...",
-    "user": { "id": 1, "username": "zhangsan", "nickname": "张三", "role": "user" }
-  },
-  "message": ""
-}
-```
-
-### POST /auth/login
-
-无需认证。
-
-```json
-// Request
-{ "username": "zhangsan", "password": "123456" }
-
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "token": "eyJhbGci...",
-    "user": { "id": 1, "username": "zhangsan", "nickname": "张三", "role": "user" }
-  },
-  "message": ""
-}
-
-// Response 401（密码错误）
-{ "code": 1004, "data": null, "message": "用户名或密码错误" }
-```
-
-### GET /auth/me
-
-```json
-// Response 200
-{
-  "code": 0,
-  "data": { "user": { "id": 1, "username": "zhangsan", "nickname": "张三", "role": "user" } },
-  "message": ""
-}
-```
-
-### PUT /auth/password
-
-```json
-// Request
-{ "old_password": "123456", "new_password": "newpass123" }
-
-// Response 200
-{ "code": 0, "data": null, "message": "密码修改成功" }
-
-// Response 400（旧密码错误）
-{ "code": 1007, "data": null, "message": "当前密码错误" }
-```
+| 项 | 约定 |
+|----|------|
+| 金额单位 | **整数（分）**，¥32.50 → 3200 |
+| 日期 | `YYYY-MM-DD` |
+| 时间 | `HH:mm` |
+| 时间戳 | `datetime('now')` 字符串或 ISO8601 |
+| 列表响应 | `{ items: [...], total, page, page_size }` |
+| 分页 | `page`（从1）、`page_size`（默认20，最大100） |
+| 幂等 | `POST /transactions` 用 `client_id` |
 
 ---
 
-## 二、交易
+## 1. 认证 `/api/auth/*` & `/api/settings`
 
-### POST /transactions
-
-批量创建，支持幂等。
-
+### POST `/api/auth/register`
+无需认证。**限流：5/分钟**。
 ```json
 // Request
-{
-  "items": [
-    {
-      "client_id": "550e8400-e29b-41d4-a716-446655440000",  // UUID，幂等键
-      "client_type": "web",              // web | app_android | app_ios | import_script
-      "source": "ai",                    // manual | ai | import_csv | app_notification | ocr | subscription
-      "source_detail": "午饭32",         // 可选，原始来源文本
-      "type": "expense",                 // expense | income | transfer
-      "amount": 3200,                    // 必填，分，正整数
-      "category_id": 1,                  // transfer 时为 null
-      "account_id": 1,                   // 可选
-      "target_account_id": null,         // 仅 transfer 时必填
-      "description": "午饭",            // 可选，最多200字符
-      "date": "2026-07-02",             // 必填 YYYY-MM-DD
-      "time": "12:30",                  // 可选 HH:mm
-      "tags": ["工作日"],               // 可选
-      "client_created_at": "2026-07-02T12:30:00+08:00",  // 可选，离线记账本地时间
-      "ai_raw_input": "午饭32"          // 可选，AI记账原始输入
-    }
-  ]
-}
-
+{ "username": "zhangsan", "password": "12345678", "invite_code": "ABC12345", "nickname": "张三" }
 // Response 200
-{
-  "code": 0,
-  "data": {
-    "created": [{ "id": 1, "client_id": "550e...", "type": "expense", "amount": 3200, ... }],
-    "duplicates": []
-  },
-  "message": ""
-}
+{ "code": 0, "data": { "token": "eyJ...", "user": { "id": 1, "username": "zhangsan", "nickname": "张三", "role": "user" } }, "message": "" }
 ```
 
-**幂等规则**：同一 `user_id + client_id` 重复提交 → 不入库，返回在 `duplicates` 中。
-
-### GET /transactions
-
-```
-GET /transactions?page=1&page_size=20&start_date=2026-07-01&end_date=2026-07-31&type=expense&category_id=1&account_id=1&keyword=午饭&tag=旅行
-```
-
-所有参数可选。
-
-| 参数 | 说明 |
-|------|------|
-| page | 页码，从 1 开始 |
-| page_size | 每页条数，默认 20，最大 100 |
-| start_date | 起始日期 YYYY-MM-DD |
-| end_date | 结束日期 YYYY-MM-DD |
-| type | 类型筛选：expense / income / transfer |
-| category_id | 分类 ID 筛选 |
-| account_id | 账户 ID 筛选（含来源和目标） |
-| keyword | 描述关键词模糊搜索 |
-| tag | 标签筛选（精确匹配标签名） |
-
+### POST `/api/auth/login`
+无需认证。**限流：5/分钟**。
 ```json
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "items": [
-      {
-        "id": 1,
-        "user_id": 1,
-        "type": "expense",
-        "amount": 3200,
-        "category_id": 1,
-        "category_name": "餐饮",
-        "category_icon": "🍜",
-        "account_id": 1,
-        "account_name": "微信",
-        "target_account_id": null,
-        "target_account_name": null,
-        "description": "午饭",
-        "date": "2026-07-02",
-        "time": "12:30",
-        "tags": "[\"工作日\"]",
-        "source": "ai",
-        "client_id": "550e...",
-        "created_at": "2026-07-02 04:30:00",
-        "updated_at": "2026-07-02 04:30:00"
-      }
-    ],
-    "total": 156,
-    "page": 1,
-    "page_size": 20
-  },
-  "message": ""
-}
+{ "username": "zhangsan", "password": "12345678" }
 ```
+成功返回 `{ token, user }`；密码错误返回 1004；账号禁用 1005。
 
-### GET /transactions/:id
+### GET `/api/auth/me`
+返回 `{ user: {...} }`。
 
-单条详情，字段同列表 item。
-
-### PUT /transactions/:id
-
+### PUT `/api/auth/password`
 ```json
-// Request（只传需要修改的字段）
-{
-  "amount": 3500,
-  "description": "午饭加饮料",
-  "category_id": 1
-}
-
-// Response 200
-{ "code": 0, "data": { "id": 1, ... }, "message": "" }
+{ "old_password": "...", "new_password": "newpass123" }
 ```
+改密成功后**自动撤销该用户所有现存 token**（写入 `jwt_revocations`）。
 
-### DELETE /transactions/:id
+### GET `/api/settings`
+返回合并后的设置（用户覆盖 > 全局）。普通用户**看不到 AI Key**。
 
-软删除（设置 deleted_at），可在回收站恢复。
-
-```json
-// Response 200
-{ "code": 0, "data": null, "message": "交易已删除" }
-```
-
-### GET /transactions/trash
-
-已删除的交易列表。
-
-```json
-// Response 200
-{ "code": 0, "data": { "items": [...], "total": 5 }, "message": "" }
-```
-
-### POST /transactions/:id/restore
-
-恢复已删除交易。
-
-```json
-// Response 200
-{ "code": 0, "data": null, "message": "已恢复" }
-```
-
-### DELETE /transactions/:id/permanent
-
-永久物理删除，不可恢复。
-
-```json
-// Response 200
-{ "code": 0, "data": null, "message": "已永久删除" }
-```
-
-### GET /transactions/tags
-
-获取当前用户所有已使用的标签（去重）。
-
-```json
-// Response 200
-{
-  "code": 0,
-  "data": { "items": ["旅行", "报销", "项目A"] },
-  "message": ""
-}
-```
+### PUT `/api/settings`
+白名单字段：`default_account_id` / `theme` / `ai_model`（覆盖全局模型）。
 
 ---
 
-## 三、AI
+## 2. 交易 `/api/transactions/*`
 
-### POST /ai/parse
-
-自然语言 → 结构化记账数据。
-
+### POST `/api/transactions`
+**批量 + 幂等**。items 单条通用契约见 [ARCHITECTURE.md §3.4](ARCHITECTURE.md)。
 ```json
-// Request
+{ "items": [
+  { "client_id": "uuid", "client_type": "web", "source": "ai",
+    "type": "expense", "amount": 3200, "category_id": 1, "account_id": 1,
+    "description": "午饭", "date": "2026-07-02", "time": "12:30",
+    "tags": ["工作日"], "ai_raw_input": "午饭32" }
+] }
+// Response
+{ "code": 0, "data": { "created": [...], "duplicates": [...] }, "message": "" }
+```
+幂等：同 `user_id + client_id` 不入库，挪到 `duplicates`。
+
+### GET `/api/transactions`
+支持 `page` / `page_size` / `start_date` / `end_date` / `type` / `category_id` / `account_id` / `keyword` / `tag`。
+
+### GET `/api/transactions/:id`
+单条详情。
+
+### PUT `/api/transactions/:id`
+部分字段更新。
+
+### DELETE `/api/transactions/:id`
+软删除（设 `deleted_at`），可恢复。
+
+### GET `/api/transactions/trash`
+已软删除列表。
+
+### POST `/api/transactions/:id/restore`
+恢复软删除记录。
+
+### DELETE `/api/transactions/:id/permanent`
+永久物理删除。
+
+### GET `/api/transactions/tags`
+返回当前用户所有用过的标签（去重）。`{ items: ["旅行", "报销"] }`
+
+---
+
+## 3. AI `/api/ai/*` & `/api/memories/*`
+
+### POST `/api/ai/parse`
+**限流：20/分钟**。用户输入 `<user_input>` 包裹后送 LLM。
+```json
 { "input": "午饭32，打车15" }
-
-// Response 200（成功）
-{
-  "code": 0,
-  "data": {
-    "items": [
-      {
-        "type": "expense",
-        "amount": 3200,
-        "category_id": 1,
-        "category_name": "餐饮",
-        "category_icon": "🍜",
-        "description": "午饭",
-        "date": "2026-07-02",
-        "account_id": null,
-        "account_name": "",
-        "target_account_id": null,
-        "target_account_name": ""
-      },
-      {
-        "type": "expense",
-        "amount": 1500,
-        "category_id": 2,
-        "category_name": "交通",
-        "category_icon": "🚗",
-        "description": "打车",
-        "date": "2026-07-02",
-        "account_id": null,
-        "account_name": "",
-        "target_account_id": null,
-        "target_account_name": ""
-      }
-    ],
-    "raw_input": "午饭32，打车15"
-  },
-  "message": ""
-}
-
-// Response 200（解析失败，需切手动）
-{ "code": 5001, "data": null, "message": "AI 无法解析，请尝试手动记账", "fallback": "manual", "raw_input": "..." }
-
-// Response 502（AI 超时）
-{ "code": 5001, "data": null, "message": "AI 响应超时（10秒）", "fallback": "manual", "raw_input": "..." }
+// Response 成功
+{ "code": 0, "data": { "items": [{ "type": "expense", "amount": 3200, "category_id": 1, "category_name": "餐饮", "category_icon": "🍜", "description": "午饭", "date": "2026-07-02", "account_id": null, "account_name": "", "target_account_id": null, "target_account_name": "" }], "raw_input": "..." }, "message": "" }
+// 失败 fallback
+{ "code": 5001, "data": null, "message": "AI 无法解析...", "fallback": "manual", "raw_input": "..." }
 ```
 
-### POST /ai/chat
+### POST `/api/ai/parse-feedback`
+记录用户是否修正（用于质量统计 + 自动学习）。
 
-智能问答，基于用户财务数据回答。
-
+### POST `/api/ai/chat`
 ```json
-// Request
 { "message": "这个月花了多少？", "session_id": "abc-123-or-null" }
-
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "message": "本月总支出 ¥3,280.00，其中餐饮占比最高（45%）...",
-    "session_id": "abc-123"
-  },
-  "message": ""
-}
-```
-
-### GET /ai/sessions
-
-对话列表。
-
-```json
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "items": [
-      { "session_id": "abc-123", "first_message": "这个月花了多少", "last_at": "2026-07-02 12:00:00", "message_count": 4 }
-    ]
-  },
-  "message": ""
-}
-```
-
-### DELETE /ai/sessions/:session_id
-
-删除对话。
-
----
-
-## 四、分类
-
-### GET /categories
-
-```
-GET /categories?type=expense&include_inactive=1
-```
-
-参数可选。
-
-```json
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "items": [
-      { "id": 1, "user_id": 1, "name": "餐饮", "type": "expense", "icon": "🍜", "parent_id": null, "sort_order": 1, "is_active": 1 }
-    ]
-  },
-  "message": ""
-}
-```
-
-### POST /categories
-
-```json
-// Request
-{ "name": "宠物", "type": "expense", "icon": "🐱", "sort_order": 12 }
-```
-
-### PUT /categories/:id
-
-```json
-// Request
-{ "name": "新名称", "icon": "🐶", "sort_order": 5, "is_active": 0 }
-```
-
-### DELETE /categories/:id
-
-停用分类（is_active = 0），不物理删除。
-
----
-
-## 五、账户
-
-### GET /accounts
-
-```
-GET /accounts?include_inactive=1
-```
-
-```json
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "items": [
-      {
-        "id": 1, "user_id": 1, "name": "微信", "type": "wechat", "icon": "💚",
-        "initial_balance": 0, "sort_order": 1, "is_active": 1,
-        "current_balance": 1150000
-      }
-    ]
-  },
-  "message": ""
-}
-```
-
-`current_balance` 由后端实时计算：`initial_balance + income - expense + transfer_in - transfer_out`
-
-### POST /accounts
-
-```json
-// Request
-{ "name": "信用卡", "type": "credit", "icon": "💳", "initial_balance": -500000, "sort_order": 5 }
-```
-
-type 枚举：`cash | wechat | alipay | bank | credit | other`
-
-### PUT /accounts/:id
-
-```json
-// Request（只传需要修改的字段）
-{
-  "name": "招行卡",
-  "icon": "🏦",
-  "current_balance": 500000   // 设置目标余额（分），后端自动反算，显示即为此值
-}
-```
-
-| 字段 | 说明 |
-|------|------|
-| current_balance | **推荐**。设置目标余额，后端反算 initial_balance，使显示余额 = 你设的值。后续新账单在此基础上增减 |
-| initial_balance | 兼容保留。直接设底层初始值（不推荐，设了之后流水还会叠加） |
-
-两个字段二选一传，优先 `current_balance`。
-
-### DELETE /accounts/:id
-
-停用账户（is_active = 0）。
-
----
-
-## 六、统计
-
-### GET /stats/summary
-
-```
-GET /stats/summary?year=2026&month=7
-```
-
-参数可选，默认当月。
-
-```json
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "year": 2026,
-    "month": 7,
-    "expense": 328000,
-    "income": 1200000,
-    "balance": 872000,
-    "expense_count": 45,
-    "income_count": 3,
-    "prev_expense": 284000,
-    "prev_income": 1200000,
-    "expense_change": 15,
-    "income_change": 0
-  },
-  "message": ""
-}
-```
-
-`expense_change` / `income_change`：环比百分比（整数），可能为 `null`（上月无数据）。
-
-### GET /stats/by-category
-
-```
-GET /stats/by-category?year=2026&month=7&type=expense
-```
-
-```json
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "items": [
-      { "id": 1, "name": "餐饮", "icon": "🍜", "total": 150000, "count": 20, "percent": 45.7 }
-    ],
-    "total": 328000,
-    "year": 2026,
-    "month": 7,
-    "type": "expense"
-  },
-  "message": ""
-}
-```
-
-### GET /stats/trend
-
-```
-GET /stats/trend?year=2026&month=7&period=daily&type=expense
-```
-
-period: `daily`（指定月每天）| `monthly`（最近12个月）
-
-```json
-// Response 200（daily）
-{
-  "code": 0,
-  "data": {
-    "items": [
-      { "date": "2026-07-01", "total": 12000, "count": 3 },
-      { "date": "2026-07-02", "total": 8500, "count": 2 },
-      { "date": "2026-07-03", "total": 0, "count": 0 }
-    ],
-    "period": "daily",
-    "type": "expense",
-    "year": 2026,
-    "month": 7
-  },
-  "message": ""
-}
-
-// Response 200（monthly）
-{
-  "code": 0,
-  "data": {
-    "items": [
-      { "month": "2025-08", "total": 280000, "count": 40 },
-      { "month": "2025-09", "total": 310000, "count": 45 }
-    ],
-    "period": "monthly",
-    "type": "expense"
-  },
-  "message": ""
-}
-```
-
-daily 模式会补全当月所有日期（无数据的天 total=0）。
-
----
-
-## 七、预算
-
-### GET /budgets
-
-```
-GET /budgets?year=2026&month=7
-```
-
-```json
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "items": [
-      {
-        "id": 1,
-        "user_id": 1,
-        "category_id": 0,
-        "category_name": "总预算",
-        "category_icon": "💰",
-        "amount": 500000,
-        "period": "monthly",
-        "year": 2026,
-        "month": 7,
-        "spent": 328000,
-        "percent": 66,
-        "status": "normal",
-        "remaining": 172000
-      }
-    ],
-    "year": 2026,
-    "month": 7
-  },
-  "message": ""
-}
-```
-
-| 字段 | 说明 |
-|------|------|
-| category_id | 0 = 总预算，>0 = 分类预算 |
-| spent | 当月已花费（分），后端自动计算 |
-| percent | 使用百分比（整数） |
-| status | `normal`(<80%) / `warning`(80-100%) / `exceeded`(>100%) |
-| remaining | 剩余可用（分），超支时为 0 |
-
-### POST /budgets
-
-```json
-// Request
-{ "category_id": 0, "amount": 500000, "period": "monthly", "year": 2026, "month": 7 }
-
-// 同一 user + category_id + year + month 自动 UPSERT
-```
-
-### PUT /budgets/:id
-
-```json
-{ "amount": 600000 }
-```
-
-### DELETE /budgets/:id
-
----
-
-## 八、导入
-
-### POST /import/csv
-
-前端读取 CSV 文件内容后传入。返回解析结果供预览，**不直接入库**。
-
-```json
-// Request
-{ "content": "CSV文件全部文本内容...", "source": "wechat" }
-
-// source 枚举：wechat | alipay
-
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "parsed": [
-      { "type": "expense", "amount": 3200, "description": "沙县小吃", "date": "2026-07-01", "source_detail": "原始行内容" }
-    ],
-    "total": 50,
-    "skipped": 3,
-    "errors": 1
-  },
-  "message": ""
-}
-```
-
-确认导入时，客户端将 `parsed` 数组组装为 POST /transactions 的 items 提交。
-
----
-
-## 九、导出
-
-### GET /export/json
-
-返回 JSON 文件下载（Content-Disposition: attachment）。
-
-包含用户全部数据：transactions + categories + accounts + budgets。
-
-### GET /export/csv
-
-```
-GET /export/csv?start_date=2026-07-01&end_date=2026-07-31
-```
-
-返回 CSV 文件下载。列：日期,类型,金额(元),分类,账户,描述。UTF-8 BOM 编码（Excel 兼容）。
-
----
-
-## 十、用户设置
-
-### GET /settings
-
-返回合并后的设置（全局 + 用户级覆盖）。普通用户看不到 AI Key。
-
-```json
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "ai_base_url": "https://api.openai.com/v1",
-    "ai_model": "gpt-4o-mini",
-    "currency": "CNY",
-    "default_account_id": "1"
-  },
-  "message": ""
-}
-```
-
-### PUT /settings
-
-```json
-// Request（只允许 default_account_id / theme / ai_model）
-{ "default_account_id": "2" }
-```
-
----
-
-## 十一、管理员接口（需 admin 角色）
-
-### POST /admin/invite-codes
-
-```json
-// Request
-{ "max_uses": 5, "expires_at": "2026-12-31" }
-
-// expires_at 可选，null = 永不过期
-```
-
-### GET /admin/invite-codes
-
-```json
 // Response
-{
-  "code": 0,
-  "data": {
-    "items": [
-      { "id": 1, "code": "ABC12345", "max_uses": 5, "used_count": 2, "created_by": 1, "expires_at": null, "created_at": "..." }
-    ]
-  }
-}
+{ "code": 0, "data": { "message": "本月总支出 ¥3,280...", "session_id": "abc-123" }, "message": "" }
 ```
 
-### DELETE /admin/invite-codes/:id
+### GET `/api/ai/sessions`
+返回对话列表。
 
-作废邀请码（将 max_uses 设为 used_count）。
+### DELETE `/api/ai/sessions/:id`
+删除整个会话。
 
-### GET /admin/users
+### `/api/memories/*`（AI 全局记忆）
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/memories` | 当前用户所有 memory |
+| POST | `/api/memories` | 新增（`source: manual \| ai_suggested`） |
+| PUT | `/api/memories/:id` | 更新内容/启用状态 |
+| DELETE | `/api/memories/:id` | 删除 |
 
+**注入约束**：LLM prompt 只取 `source='manual'`，排除 `ai_suggested`。
+
+---
+
+## 4. 分类 `/api/categories/*` & 账户 `/api/accounts/*`
+
+### `/api/categories`
+| Method | 说明 |
+|--------|------|
+| GET | 列出当前用户分类，可 `?type=expense&include_inactive=1` |
+| POST | 创建 `{ name, type, icon, sort_order }` |
+| PUT | 更新（部分字段） |
+| DELETE | 停用（`is_active=0`，不真删） |
+
+### `/api/accounts`
+| Method | 说明 |
+|--------|------|
+| GET | 列出账户，含 `current_balance`（实时计算） |
+| POST | 创建账户（`initial_balance` 可负） |
+| PUT | 更新；**支持 `current_balance`**（推荐）—— 后端反算 initial_balance，使显示余额 = 你设的值 |
+| DELETE | 停用 |
+
+`account.type`: `cash | wechat | alipay | bank | credit | other`
+
+---
+
+## 5. 统计 `/api/stats/*`
+
+### GET `/api/stats/summary?year=2026&month=7`
+返回 `{ expense, income, balance, expense_count, income_count, prev_expense, prev_income, expense_change, income_change }`。`change` 为环比百分比（整数，可能为 null）。
+
+### GET `/api/stats/by-category?year=2026&month=7&type=expense`
+`{ items: [{ id, name, icon, total, count, percent }], total, year, month, type }`
+
+### GET `/api/stats/trend?year=2026&month=7&period=daily&type=expense`
+- `period=daily`：补全当月所有日期（无数据 total=0）
+- `period=monthly`：最近 12 个月
+
+### GET `/api/stats/dashboard`
+聚合首页仪表盘：本月收支 + 净资产 + 趋势 + 分类饼图 + 预算进度 + 异常提醒。
+
+### POST `/api/stats/analysis`
 ```json
+{ "dimension": "overall | spending | forecast", "months": 4 }
 // Response
-{
-  "code": 0,
-  "data": {
-    "items": [
-      { "id": 1, "username": "admin", "nickname": "管理员", "role": "admin", "is_active": 1, "created_at": "...", "transaction_count": 156 }
-    ]
-  }
-}
+{ "code": 0, "data": { "analysis": "AI 生成的报告...", "chart_data": {...} }, "message": "" }
 ```
-
-### PUT /admin/users/:id
-
-```json
-{ "is_active": 0 }   // 禁用用户
-```
-
-### GET /admin/settings
-
-返回全局设置（AI Key 脱敏显示前8位 + ***）。
-
-### PUT /admin/settings
-
-```json
-{ "ai_base_url": "...", "ai_api_key": "sk-...", "ai_model": "gpt-4o" }
-```
-
-白名单字段：ai_base_url / ai_api_key / ai_model / ai_temperature_parse / ai_temperature_chat / currency
+服务端**单条 `GROUP BY substr(date,1,7)`** 取多个月数据。
 
 ---
 
-## 十二、健康检查
+## 6. 预算 `/api/budgets/*`
 
-### GET /health
-
-无需认证。
-
-```json
-{ "status": "ok" }
-```
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/budgets?year=2026&month=7` | 列表 + `spent` + `percent` + `status`（`normal/warning/exceeded`） |
+| POST | `/api/budgets` | 创建（`category_id=0` = 总预算） |
+| PUT | `/api/budgets/:id` | 更新 |
+| DELETE | `/api/budgets/:id` | 删除 |
 
 ---
 
-## 十三、通知记账规则云控
+## 7. 导入导出 `/api/import/*` `/api/export/*`
 
-### GET /config/notification-rules
+### POST `/api/import/csv`
+```json
+{ "content": "CSV文件全部文本...", "source": "wechat | alipay" }
+// Response
+{ "code": 0, "data": { "parsed": [...], "total": 50, "skipped": 3, "errors": 1 }, "message": "" }
+```
+**只解析不直接入库**，前端预览确认后组装 items 调 `POST /api/transactions`。
 
+### GET `/api/export/json`
+返回 JSON 文件下载（Content-Disposition: attachment）。含 transactions + categories + accounts + budgets。
+
+### GET `/api/export/csv?start_date=&end_date=`
+返回 CSV（UTF-8 BOM，Excel 兼容）。列：日期,类型,金额(元),分类,账户,描述。
+
+---
+
+## 8. 资产 `/api/assets/*`（财务工作台）
+
+### GET `/api/assets/overview`
+返回 `{ net_assets, total_assets, total_liabilities, distribution: [...], accounts: [...] }`。**单条聚合 SQL**（已修 N+1）。
+
+### GET `/api/assets/trend?months=6`
+净资产历史趋势（基于 `asset_snapshots`）。
+
+### POST `/api/assets/snapshot`
+手动触发月度快照。
+
+### PUT `/api/assets/accounts/:id`
+更新账户资产属性：`asset_type` / `currency` / `credit_limit` / `billing_day` / `due_day` / `note`。
+
+---
+
+## 9. 目标 `/api/goals/*`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/goals` | 目标列表 |
+| POST | `/api/goals` | 创建 `{ name, type, target_amount, deadline, priority, linked_account_id, monthly_contribution }` |
+| PUT | `/api/goals/:id` | 更新 |
+| DELETE | `/api/goals/:id` | 删除 |
+| POST | `/api/goals/:id/progress` | 记录进度 `{ amount, snapshot_date }` |
+| GET | `/api/goals/:id/progress` | 进度历史 |
+
+`type`: `saving | debt_payoff | investment | custom`
+`status`: `active | completed | paused | abandoned`
+
+---
+
+## 10. 订阅 `/api/subscriptions/*`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/subscriptions?status=active` | 列表 + 月/年总费用 |
+| POST | `/api/subscriptions` | 创建 `{ name, amount, cycle, category_id, account_id, start_date, next_payment_date, reminder_days, auto_record }` |
+| PUT | `/api/subscriptions/:id` | 更新 |
+| DELETE | `/api/subscriptions/:id` | 删除 |
+| POST | `/api/subscriptions/:id/cancel` | 取消订阅（`status=cancelled`） |
+| POST | `/api/subscriptions/:id/renew` | 恢复订阅 |
+
+`cycle`: `monthly | quarterly | yearly`
+
+---
+
+## 11. 通知规则 `/api/config/notification-rules` `/api/admin/notification-rules/*`
+
+### GET `/api/config/notification-rules`
 **无需认证**。客户端启动时/定时拉取。支持 ETag/304 缓存。
-
 ```
 GET /api/config/notification-rules
 If-None-Match: "15"
 ```
+返回 `{ version, updated_at, rules: { nls, a11y, sms, source_mapping, processor } }`。
 
+### POST `/api/admin/notification-rules`
+**需要 admin**。创建新版本规则。
+
+### GET `/api/admin/notification-rules`
+**需要 admin**。列出所有版本。
+
+### PUT `/api/admin/notification-rules/:id/activate`
+**需要 admin**。激活指定版本（自动停用其他）。
+
+---
+
+## 12. 管理员 `/api/admin/*` & `/api/settings`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| POST | `/api/admin/invite-codes` | 生成 `{ max_uses, expires_at }` |
+| GET | `/api/admin/invite-codes` | 列出所有邀请码 |
+| DELETE | `/api/admin/invite-codes/:id` | 作废（max_uses = used_count） |
+| GET | `/api/admin/users` | 用户列表（**不返回**交易金额） |
+| PUT | `/api/admin/users/:id` | 启用/禁用 `{ is_active: 0 }` |
+| GET | `/api/admin/users/:id/stats` | 单用户统计（笔数/总额） |
+| GET | `/api/admin/users/:id/transactions` | 单用户交易明细（**仅管理员可查明细**，不在前端 UI 暴露） |
+| PUT | `/api/admin/users/:id/reset-password` | 重置密码（同时撤销该用户所有 token） |
+| DELETE | `/api/admin/users/:id` | 删除用户（**硬删 + 撤销该用户所有 token**） |
+| GET | `/api/admin/settings` | 全局设置（Key 脱敏） |
+| PUT | `/api/admin/settings` | 更新白名单全局设置 |
+| GET | `/api/admin/ai-parse-stats` | AI 解析总览（成功率/修正率/P95） |
+| GET | `/api/admin/ai-parse-logs` | 解析日志分页 |
+| GET | `/api/admin/ai-parse-logs/:id` | 单条日志 |
+| GET | `/api/admin/logs` | 应用日志分页 |
+
+---
+
+## 13. 健康检查
+
+### GET `/health`
+无需认证。
 ```json
-// Response 200（有更新）
-// Header: ETag: "16"
-{
-  "code": 0,
-  "data": {
-    "version": 16,
-    "updated_at": "2026-08-01T10:00:00Z",
-    "rules": {
-      "nls": { "payment_signal_regex": "...", "wechat": {...}, "alipay": {...}, ... },
-      "a11y": { "success_keywords": [...], "common_exclude_keywords": [...], ... },
-      "sms": { "spam_keywords": [...] },
-      "source_mapping": { "com.tencent.mm": "微信支付", ... },
-      "processor": { "scoring_window_seconds": 10, "dedup_window_seconds": 60, ... }
-    }
-  },
-  "message": ""
-}
-
-// Response 304（版本相同，无 body）
+{ "status": "ok", "db": "ok", "ai": "ok" }
 ```
+（增强版同时检查 DB 连接 + AI 配置可达性）
 
-### POST /admin/notification-rules
+---
 
-需要 admin 认证。创建新版本规则。
+## 附录 A：模块-端点索引
 
-```json
-// Request
-{
-  "version": 2,
-  "rules": {
-    "nls": {...},
-    "a11y": {...},
-    "sms": {...},
-    "source_mapping": {...},
-    "processor": {...}
-  }
-}
+| 模块 | 端点数 | 关键端点 |
+|------|--------|---------|
+| auth | 4 | register, login, me, password |
+| settings | 2 | GET, PUT（用户级） |
+| transactions | 9 | CRUD + trash + tags |
+| ai | 5 | parse, chat, sessions, feedback |
+| memories | 4 | CRUD |
+| categories | 4 | CRUD |
+| accounts | 4 | CRUD |
+| stats | 5 | summary, by-category, trend, dashboard, analysis |
+| budgets | 4 | CRUD |
+| import | 1 | CSV 预览 |
+| export | 2 | JSON, CSV |
+| assets | 4 | overview, trend, snapshot, accounts |
+| goals | 6 | CRUD + progress |
+| subscriptions | 6 | CRUD + cancel, renew |
+| notification-rules | 4 | config + admin |
+| admin | 15 | invites/users/settings/ai/stats/logs |
+| health | 1 | /health |
 
-// Response 200
-{ "code": 0, "data": { "id": 2, "version": 2, ... }, "message": "规则版本已创建" }
-```
+## 附录 B：自动生成脚本
 
-### GET /admin/notification-rules
-
-需要 admin 认证。查看所有版本。
-
-```json
-// Response 200
-{
-  "code": 0,
-  "data": {
-    "items": [
-      { "id": 2, "version": 2, "is_active": 0, "created_by": 1, "created_at": "..." },
-      { "id": 1, "version": 1, "is_active": 1, "created_by": null, "created_at": "..." }
-    ]
-  }
-}
-```
-
-### PUT /admin/notification-rules/:id/activate
-
-需要 admin 认证。激活指定版本（自动停用其他版本）。
-
-```json
-// Response 200
-{ "code": 0, "data": null, "message": "版本 2 已激活" }
-```
+`scripts/gen-api-docs.ts` 可从 `routes/*.ts` 解析 `app.get/post/put/delete` + zod schema 自动生成端点表。CI 可选运行。

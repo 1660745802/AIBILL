@@ -31,7 +31,27 @@ async function start(): Promise<void> {
   const { ensureDefaultNotificationRules } = await import('./db/seed-notification-rules.js')
   ensureDefaultNotificationRules()
 
-  await app.register(cors)
+  await app.register(cors, {
+    origin: (origin, cb) => {
+      // 同源请求（curl/Postman）允许无 Origin header
+      if (!origin) {
+        cb(null, true)
+        return
+      }
+      if (config.corsOrigins.includes(origin) || config.corsOrigins.includes('*')) {
+        cb(null, true)
+        return
+      }
+      cb(new Error('CORS not allowed'), false)
+    },
+    credentials: true,
+  })
+
+  // 全局限流（按 IP）
+  const rateLimit = (await import('@fastify/rate-limit')).default
+  await app.register(rateLimit, {
+    global: false, // 默认不限制，按路由单独开启
+  })
 
   // 请求日志钩子：记录关键 API 调用到 app_logs
   const { appLog } = await import('./services/logger.js')
@@ -61,6 +81,58 @@ async function start(): Promise<void> {
   })
 
   await registerRoutes(app)
+
+  // 全局响应包装：未包装的响应自动加 {code:0, data, message}
+  // 已含 `code` 字段的（手工 success/fail）保持原样
+  // 跳过：/health（外部探针）、文件下载（Content-Disposition: attachment）、静态文件
+  // 注意：Fastify onSend 要求返回 string/Buffer/object；返回 object 时需确保 Content-Type 是 JSON
+  const { isWrapped } = await import('./lib/response.js')
+  app.addHook('onSend', async (request, reply, payload) => {
+    const status = reply.statusCode
+    const contentType = String(reply.getHeader('content-type') || '')
+    const contentDisposition = reply.getHeader('content-disposition') || ''
+    const url = request.url || ''
+
+    // 跳过条件：
+    // 1. 健康检查（k8s/外部探针）
+    // 2. 文件下载（导出 JSON/CSV）
+    // 3. 静态资源（text/html、css、js 等）
+    // 4. 非 API 路由（前端 SPA 静态文件）
+    if (
+      url === '/health' ||
+      String(contentDisposition).includes('attachment') ||
+      contentType.includes('text/') ||
+      contentType.includes('octet-stream') ||
+      (!url.startsWith('/api/') && status < 400)
+    ) {
+      return payload
+    }
+
+    // payload 可能是 string（已 JSON 序列化）或 object（Fastify 待序列化）
+    let parsed: unknown = payload
+    if (typeof payload === 'string') {
+      try {
+        parsed = JSON.parse(payload)
+      } catch {
+        return payload // 非 JSON 字符串，原样返回
+      }
+    }
+
+    // 已包装 → 原样返回
+    if (isWrapped(parsed)) {
+      return payload
+    }
+
+    // 未包装 → 自动包装
+    if (parsed === null || parsed === undefined) {
+      return JSON.stringify({ code: 0, data: null, message: '' })
+    }
+    return JSON.stringify({
+      code: status >= 400 ? status : 0,
+      data: parsed,
+      message: '',
+    })
+  })
 
   // 生产模式：服务前端静态文件
   const __dirname = path.dirname(fileURLToPath(import.meta.url))

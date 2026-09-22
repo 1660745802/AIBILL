@@ -272,20 +272,24 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       transaction_count: transactionCount,
     }
 
-    // === 2. 净资产 ===
-    // === 2. 净资产（实际余额 = 初始余额 + 收入 - 支出 + 转入 - 转出）===
+    // === 2. 净资产（单条聚合 SQL，修复 N+1：原每账户 4 个相关子查询） ===
     const accounts = db
       .prepare(
         `SELECT
           a.id, a.name, a.icon,
           a.initial_balance
-            + COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'income' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
-            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'expense' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
-            + COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'transfer' AND target_account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
-            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'transfer' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
+            + COALESCE(SUM(CASE WHEN t.type='income'    THEN t.amount           ELSE 0 END), 0)
+            - COALESCE(SUM(CASE WHEN t.type='expense'   THEN t.amount           ELSE 0 END), 0)
+            + COALESCE(SUM(CASE WHEN t.type='transfer' AND t.target_account_id=a.id THEN t.amount ELSE 0 END), 0)
+            - COALESCE(SUM(CASE WHEN t.type='transfer' AND t.account_id=a.id        THEN t.amount ELSE 0 END), 0)
           AS balance
         FROM accounts a
+        LEFT JOIN transactions t ON (t.account_id = a.id OR t.target_account_id = a.id)
+          AND t.user_id = a.user_id
+          AND t.status = 'confirmed'
+          AND t.deleted_at IS NULL
         WHERE a.user_id = ? AND a.is_active = 1
+        GROUP BY a.id
         ORDER BY a.sort_order ASC, a.id ASC`,
       )
       .all(userId) as Array<{ id: number; name: string; icon: string; balance: number }>
@@ -512,32 +516,36 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       const year = now.getFullYear()
       const month = now.getMonth() + 1
 
-      // 收集近 4 个月数据
-      const months: Array<{ month: string; expense: number; income: number }> = []
+      // 收集近 4 个月数据（单条 GROUP BY 查询，原 4 次循环已合并）
+      const monthsData = new Map<string, { expense: number; income: number }>()
       for (let i = 0; i < 4; i++) {
         const m = month - i <= 0 ? month - i + 12 : month - i
         const y = month - i <= 0 ? year - 1 : year
         const ms = `${y}-${String(m).padStart(2, '0')}`
-        const mStart = `${ms}-01`
-        const mLastDay = new Date(y, m, 0).getDate()
-        const mEnd = `${ms}-${String(mLastDay).padStart(2, '0')}`
-
-        const rows = db
-          .prepare(
-            `SELECT type, SUM(amount) as total FROM transactions
-             WHERE user_id = ? AND status = 'confirmed' AND deleted_at IS NULL
-               AND type IN ('expense', 'income') AND date BETWEEN ? AND ?
-             GROUP BY type`,
-          )
-          .all(userId, mStart, mEnd) as Array<{ type: string; total: number }>
-
-        let exp = 0, inc = 0
-        for (const r of rows) {
-          if (r.type === 'expense') exp = r.total
-          if (r.type === 'income') inc = r.total
-        }
-        months.push({ month: ms, expense: exp, income: inc })
+        monthsData.set(ms, { expense: 0, income: 0 })
       }
+      const earliestKey = [...monthsData.keys()].sort()[0]
+      const rows = db
+        .prepare(
+          `SELECT substr(date, 1, 7) AS ym, type, SUM(amount) AS total
+           FROM transactions
+           WHERE user_id = ? AND status = 'confirmed' AND deleted_at IS NULL
+             AND type IN ('expense', 'income')
+             AND substr(date, 1, 7) >= ?
+           GROUP BY ym, type`,
+        )
+        .all(userId, earliestKey) as Array<{ ym: string; type: string; total: number }>
+      for (const r of rows) {
+        const slot = monthsData.get(r.ym)
+        if (!slot) continue
+        if (r.type === 'expense') slot.expense = r.total
+        else if (r.type === 'income') slot.income = r.total
+      }
+      const months = [...monthsData.entries()].map(([month, v]) => ({
+        month,
+        expense: v.expense,
+        income: v.income,
+      }))
 
       // 当月分类明细
       const thisStart = `${year}-${String(month).padStart(2, '0')}-01`
@@ -553,22 +561,26 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
         )
         .all(userId, thisStart, thisEnd) as Array<{ name: string; icon: string; total: number }>
 
-      // 净资产
-      // 净资产（实际余额）
+      // 净资产（单条聚合 SQL，修复 N+1）
       const netWorthRow = db
         .prepare(
           `SELECT COALESCE(SUM(
             a.initial_balance
-            + COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'income' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
-            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'expense' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
-            + COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'transfer' AND target_account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
-            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'transfer' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
+            + COALESCE(SUM(CASE WHEN t.type='income'    THEN t.amount           ELSE 0 END), 0)
+            - COALESCE(SUM(CASE WHEN t.type='expense'   THEN t.amount           ELSE 0 END), 0)
+            + COALESCE(SUM(CASE WHEN t.type='transfer' AND t.target_account_id=a.id THEN t.amount ELSE 0 END), 0)
+            - COALESCE(SUM(CASE WHEN t.type='transfer' AND t.account_id=a.id        THEN t.amount ELSE 0 END), 0)
           ), 0) AS total
           FROM accounts a
-          WHERE a.user_id = ? AND a.is_active = 1`,
+          LEFT JOIN transactions t ON (t.account_id = a.id OR t.target_account_id = a.id)
+            AND t.user_id = a.user_id
+            AND t.status = 'confirmed'
+            AND t.deleted_at IS NULL
+          WHERE a.user_id = ? AND a.is_active = 1
+          GROUP BY a.id`,
         )
-        .get(userId) as { total: number }
-      const netWorth = netWorthRow.total
+        .get(userId) as { total: number } | undefined
+      const netWorth = netWorthRow?.total ?? 0
 
       // 订阅月支出
       const subRow = db

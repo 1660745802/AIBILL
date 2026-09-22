@@ -1,14 +1,17 @@
 /**
  * JWT 认证中间件
- * 解析 Authorization: Bearer <token>，注入 userId/role 到 request
+ * 解析 Authorization: Bearer <token>，注入 userId/role/ver 到 request
+ * 校验 token_version：改密/重置密码/禁用用户时使旧 token 立即失效
  */
 import type { FastifyRequest, FastifyReply } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { config } from '../config.js'
+import { getDb } from '../db/index.js'
 
 export interface JwtPayload {
   userId: number
   role: 'admin' | 'user'
+  ver: number
 }
 
 declare module 'fastify' {
@@ -35,6 +38,22 @@ export async function authMiddleware(
 
   try {
     const payload = jwt.verify(token, config.jwtSecret) as JwtPayload
+    // 校验用户状态 + token_version（失效控制）
+    const row = getDb()
+      .prepare(`SELECT is_active, COALESCE(token_version, 0) AS v FROM users WHERE id = ?`)
+      .get(payload.userId) as { is_active: number; v: number } | undefined
+    if (!row) {
+      reply.code(401).send({ code: 1002, data: null, message: '用户不存在' })
+      return
+    }
+    if (!row.is_active) {
+      reply.code(401).send({ code: 1005, data: null, message: '账号已被禁用' })
+      return
+    }
+    if (row.v !== (payload.ver ?? 0)) {
+      reply.code(401).send({ code: 1006, data: null, message: '令牌已失效（密码已修改或账号已重置）' })
+      return
+    }
     request.user = payload
   } catch {
     reply.code(401).send({ code: 1002, data: null, message: '令牌无效或已过期' })

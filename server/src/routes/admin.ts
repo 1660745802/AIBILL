@@ -6,6 +6,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware, adminMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
+import { adminResetPassword } from '../services/auth.service.js'
 import crypto from 'node:crypto'
 
 const createInviteCodeSchema = z.object({
@@ -102,7 +103,11 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const result = db
-        .prepare('UPDATE users SET is_active = ? WHERE id = ?')
+        .prepare(
+          `UPDATE users SET is_active = ?,
+           token_version = COALESCE(token_version, 0) + 1
+           WHERE id = ?`,
+        )
         .run(body.is_active, Number(id))
 
       if (result.changes === 0) {
@@ -188,19 +193,12 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const body = resetSchema.parse(request.body)
-      const db = getDb()
-
-      const user = db.prepare('SELECT id FROM users WHERE id = ?').get(Number(id))
-      if (!user) {
+      const result = adminResetPassword(Number(id), body.new_password)
+      if (!result.success) {
         reply.code(404)
-        return { code: 3002, data: null, message: '用户不存在' }
+        return { code: 3002, data: null, message: result.message }
       }
-
-      const bcrypt = await import('bcryptjs')
-      const hash = bcrypt.default.hashSync(body.new_password, 10)
-      db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, Number(id))
-
-      return { code: 0, data: null, message: '密码已重置' }
+      return { code: 0, data: null, message: result.message }
     } catch (err) {
       if (err instanceof z.ZodError) {
         reply.code(400)

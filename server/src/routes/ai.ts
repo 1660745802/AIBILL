@@ -43,7 +43,10 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware)
 
   // POST /api/ai/parse - AI 记账解析
-  app.post('/api/ai/parse', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post(
+    '/api/ai/parse',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
     const startTime = Date.now()
 
     try {
@@ -140,11 +143,13 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         accounts: accounts.map((a) => a.name),
       }, cleanedInput.length)
 
-      // 注入用户偏好记忆
+      // 注入用户偏好记忆（仅 source='manual'，防 AI 自我污染）
       let finalSystemPrompt = systemPrompt
       const memories = db
         .prepare(
-          'SELECT content FROM ai_memories WHERE user_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 20',
+          `SELECT content FROM ai_memories
+           WHERE user_id = ? AND is_active = 1 AND source = 'manual'
+           ORDER BY created_at DESC LIMIT 20`,
         )
         .all(userId) as Array<{ content: string }>
 
@@ -153,11 +158,11 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         finalSystemPrompt += `\n\n## 用户偏好记忆\n${memoryLines}\n\n参考以上偏好进行解析，但用户明确指定的信息优先。`
       }
 
-      // 调用 LLM
+      // 调用 LLM（user content 用 <user_input> 包裹，防止 prompt 注入）
       const aiResponse = await chatCompletion(
         [
           { role: 'system', content: finalSystemPrompt },
-          { role: 'user', content: cleanedInput },
+          { role: 'user', content: `<user_input>\n${cleanedInput}\n</user_input>` },
         ],
         0.1,
         60000,
@@ -436,7 +441,10 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
   })
 
   // POST /api/ai/chat - AI 问答
-  app.post('/api/ai/chat', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post(
+    '/api/ai/chat',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const body = chatInputSchema.parse(request.body)
       const db = getDb()

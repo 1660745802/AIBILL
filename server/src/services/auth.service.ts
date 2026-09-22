@@ -49,12 +49,28 @@ interface InviteCodeRow {
 }
 
 /**
- * 签发 JWT（30 天有效期）
+ * 签发 JWT（30 天有效期，含 token_version 用于失效控制）
+ * 
+ * 失效策略：users.token_version 单调递增。JWT payload 含 ver。
+ * 任意时刻改密 / 重置 / 禁用用户时，BUMP 该用户的 token_version，
+ * 所有旧 JWT 在中间件校验时因 ver 不匹配而失效。
+ * 不需要维护 jti 黑名单（O(1) 失效，无查询开销）。
  */
-function signToken(userId: number, role: string): string {
-  return jwt.sign({ userId, role } as JwtPayload, config.jwtSecret, {
+function signToken(userId: number, role: string, tokenVersion: number): string {
+  return jwt.sign({ userId, role, ver: tokenVersion } as JwtPayload, config.jwtSecret, {
     expiresIn: '30d',
   })
+}
+
+/**
+ * 获取用户当前 token_version
+ */
+export function getUserTokenVersion(userId: number): number {
+  const db = getDb()
+  const row = db
+    .prepare(`SELECT COALESCE(token_version, 0) AS v FROM users WHERE id = ?`)
+    .get(userId) as { v: number } | undefined
+  return row?.v ?? 0
 }
 
 /**
@@ -83,7 +99,7 @@ export function register(input: RegisterInput): { token: string; user: UserInfo 
   }
 
   // 3. 在事务内完成：创建用户 + 默认分类 + 默认账户 + 邀请码计数+1
-  const passwordHash = bcrypt.hashSync(input.password, 10)
+  const passwordHash = bcrypt.hashSync(input.password, 12)
 
   const result = db.transaction(() => {
     // 创建用户
@@ -113,7 +129,7 @@ export function register(input: RegisterInput): { token: string; user: UserInfo 
     }
   })()
 
-  const token = signToken(result.id, result.role)
+  const token = signToken(result.id, result.role, 0)
 
   return { token, user: result }
 }
@@ -125,8 +141,10 @@ export function login(input: LoginInput): { token: string; user: UserInfo } {
   const db = getDb()
 
   const user = db
-    .prepare('SELECT id, username, password_hash, nickname, role, is_active FROM users WHERE username = ?')
-    .get(input.username) as UserRow | undefined
+    .prepare(`SELECT id, username, password_hash, nickname, role, is_active,
+                     COALESCE(token_version, 0) AS token_version
+              FROM users WHERE username = ?`)
+    .get(input.username) as (UserRow & { token_version: number }) | undefined
 
   if (!user) {
     throw new AppError(1004, '用户名或密码错误')
@@ -141,7 +159,7 @@ export function login(input: LoginInput): { token: string; user: UserInfo } {
     throw new AppError(1004, '用户名或密码错误')
   }
 
-  const token = signToken(user.id, user.role)
+  const token = signToken(user.id, user.role, user.token_version)
 
   return {
     token,
@@ -173,7 +191,7 @@ export function ensureAdminUser(): void {
   const admin = db.prepare('SELECT id FROM users WHERE role = ?').get('admin')
   if (admin) return
 
-  const passwordHash = bcrypt.hashSync(config.adminPassword, 10)
+  const passwordHash = bcrypt.hashSync(config.adminPassword, 12)
   const result = db
     .prepare(
       `INSERT INTO users (username, password_hash, nickname, role) VALUES (?, ?, '管理员', 'admin')`,
@@ -209,10 +227,38 @@ export function changePassword(userId: number, oldPassword: string, newPassword:
     return { success: false, message: '当前密码错误' }
   }
 
-  const newHash = bcrypt.hashSync(newPassword, 10)
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, userId)
+  const newHash = bcrypt.hashSync(newPassword, 12)
+  db.prepare(
+    `UPDATE users SET password_hash = ?, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?`,
+  ).run(newHash, userId)
 
   return { success: true, message: '密码修改成功' }
+}
+
+/**
+ * 管理员重置密码 + 撤销该用户所有 token
+ */
+export function adminResetPassword(userId: number, newPassword: string): { success: boolean; message: string } {
+  const db = getDb()
+  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId)
+  if (!user) {
+    return { success: false, message: '用户不存在' }
+  }
+  const newHash = bcrypt.hashSync(newPassword, 12)
+  db.prepare(
+    `UPDATE users SET password_hash = ?, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?`,
+  ).run(newHash, userId)
+  return { success: true, message: '密码已重置，旧 token 已失效' }
+}
+
+/**
+ * 禁用用户 + 撤销 token
+ */
+export function disableUser(userId: number): void {
+  const db = getDb()
+  db.prepare(
+    `UPDATE users SET is_active = 0, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?`,
+  ).run(userId)
 }
 
 /**

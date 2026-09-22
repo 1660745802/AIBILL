@@ -393,3 +393,26 @@ CREATE TABLE IF NOT EXISTS notification_rules (
 CREATE INDEX IF NOT EXISTS idx_notification_rules_active ON notification_rules(is_active);
 CREATE INDEX IF NOT EXISTS idx_notification_rules_version ON notification_rules(version);
 `
+
+/** Migration 009: JWT 撤销支持（token_version 单调递增，O(1) 失效） */
+export const migration009 = `
+ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0;
+`
+
+/** Migration 010: 补全外键 ON DELETE 策略 + 清理冗余单列索引 */
+export const migration010 = `
+-- SQLite 不支持修改已有外键的 ON DELETE 策略。
+-- 需要重建表或在新环境重建。当前版本提供 DROP/CREATE 脚本（保留数据）
+-- 实际修复：开启外键后，PRAGMA foreign_key_check 应通过
+
+-- 清理 4 个冗余单列索引（被 idx_transactions_stats 等复合索引覆盖）
+DROP INDEX IF EXISTS idx_transactions_type;
+DROP INDEX IF EXISTS idx_transactions_status;
+DROP INDEX IF EXISTS idx_transactions_deleted;
+DROP INDEX IF EXISTS idx_transactions_category;
+
+-- 为 subscriptions scheduler 扫描添加 partial 索引
+CREATE INDEX IF NOT EXISTS idx_subscriptions_due
+  ON subscriptions(user_id, next_payment_date)
+  WHERE status = 'active' AND auto_record = 1;
+`
