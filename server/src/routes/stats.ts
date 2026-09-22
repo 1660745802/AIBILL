@@ -297,6 +297,44 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     const netWorthTotal = accounts.reduce((sum, a) => sum + a.balance, 0)
     const net_worth = { total: netWorthTotal, accounts }
 
+    // === 2.1 资产分布（按 asset_type 分组，用于工作台配置图）===
+    // 重新查一次带 asset_type 的轻量聚合
+    const assetBreakdownRows = db
+      .prepare(
+        `SELECT a.asset_type,
+                a.initial_balance
+                  + COALESCE(SUM(CASE WHEN t.type='income'    THEN t.amount           ELSE 0 END), 0)
+                  - COALESCE(SUM(CASE WHEN t.type='expense'   THEN t.amount           ELSE 0 END), 0)
+                  + COALESCE(SUM(CASE WHEN t.type='transfer' AND t.target_account_id=a.id THEN t.amount ELSE 0 END), 0)
+                  - COALESCE(SUM(CASE WHEN t.type='transfer' AND t.account_id=a.id        THEN t.amount ELSE 0 END), 0)
+                AS balance
+         FROM accounts a
+         LEFT JOIN transactions t ON (t.account_id = a.id OR t.target_account_id = a.id)
+           AND t.user_id = a.user_id
+           AND t.status = 'confirmed'
+           AND t.deleted_at IS NULL
+         WHERE a.user_id = ? AND a.is_active = 1
+         GROUP BY a.id`,
+      )
+      .all(userId) as Array<{ asset_type: string; balance: number }>
+
+    const assetTypeMap: Record<string, { total: number; count: number }> = {}
+    for (const row of assetBreakdownRows) {
+      const t = row.asset_type || 'liquid'
+      if (!assetTypeMap[t]) assetTypeMap[t] = { total: 0, count: 0 }
+      assetTypeMap[t].total += row.balance
+      assetTypeMap[t].count += 1
+    }
+    const asset_breakdown = Object.entries(assetTypeMap).map(([type, v]) => ({
+      type,
+      total: v.total,
+      count: v.count,
+    }))
+    // 负债合计（信用卡 + 贷款，负余额）
+    const total_liabilities = asset_breakdown
+      .filter((b) => (b.type === 'credit' || b.type === 'loan') && b.total < 0)
+      .reduce((sum, b) => sum + Math.abs(b.total), 0)
+
     // === 3. 7天支出趋势 ===
     const today = `${year}-${String(month).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
     const sevenDaysAgo = new Date(now)
@@ -487,16 +525,86 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       })
     }
 
+    // === 9. 储蓄率（本月收入 - 支出 / 收入） ===
+    const saving_rate = income > 0 ? Math.round(((income - expense) / income) * 100) : 0
+
+    // === 10. 活跃目标（Top 3） ===
+    const goalsRows = db
+      .prepare(
+        `SELECT id, name, icon, target_amount, current_amount, type, deadline, priority, monthly_contribution
+         FROM financial_goals
+         WHERE user_id = ? AND status = 'active'
+         ORDER BY priority ASC, created_at DESC
+         LIMIT 3`,
+      )
+      .all(userId) as Array<{
+        id: number
+        name: string
+        icon: string
+        target_amount: number
+        current_amount: number
+        type: string
+        deadline: string | null
+        priority: number
+        monthly_contribution: number
+      }>
+
+    const goals_top = goalsRows.map((g) => {
+      const percent = g.target_amount > 0
+        ? Math.min(100, Math.round((g.current_amount / g.target_amount) * 100))
+        : 0
+      const remaining = Math.max(0, g.target_amount - g.current_amount)
+      let estimated_completion: string | null = null
+      if (g.monthly_contribution > 0 && remaining > 0) {
+        const monthsLeft = Math.ceil(remaining / g.monthly_contribution)
+        const est = new Date()
+        est.setMonth(est.getMonth() + monthsLeft)
+        estimated_completion = est.toISOString().split('T')[0]
+      }
+      return {
+        id: g.id,
+        name: g.name,
+        icon: g.icon,
+        target_amount: g.target_amount,
+        current_amount: g.current_amount,
+        percent,
+        remaining,
+        deadline: g.deadline,
+        estimated_completion,
+      }
+    })
+
+    // === 11. 订阅概览（活跃订阅 + 月费折算） ===
+    const subStats = db
+      .prepare(
+        `SELECT COUNT(*) as count,
+                SUM(CASE WHEN cycle='monthly' THEN amount ELSE 0 END) as monthly_total,
+                SUM(CASE WHEN cycle='yearly' THEN amount / 12.0 ELSE 0 END) as monthly_yearly_equiv,
+                SUM(CASE WHEN cycle='quarterly' THEN amount / 3.0 ELSE 0 END) as monthly_quarterly_equiv
+         FROM subscriptions
+         WHERE user_id = ? AND status = 'active'`,
+      )
+      .get(userId) as { count: number; monthly_total: number; monthly_yearly_equiv: number; monthly_quarterly_equiv: number }
+    const subscriptions_overview = {
+      active_count: subStats.count || 0,
+      monthly_total: Math.round((subStats.monthly_total || 0) + (subStats.monthly_yearly_equiv || 0) + (subStats.monthly_quarterly_equiv || 0)),
+      yearly_total: Math.round(((subStats.monthly_total || 0) + (subStats.monthly_yearly_equiv || 0) + (subStats.monthly_quarterly_equiv || 0)) * 12),
+    }
+
     return {
       code: 0,
       data: {
-        summary,
+        summary: { ...summary, saving_rate },
         net_worth,
+        total_liabilities,
+        asset_breakdown,
         trend_7days,
         top_categories,
         budget_progress,
         alerts,
         recent_transactions,
+        goals_top,
+        subscriptions_overview,
       },
     }
   })
