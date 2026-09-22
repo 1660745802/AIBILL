@@ -16,6 +16,11 @@ async function start(): Promise<void> {
   initDb()
   console.log('[App] Database initialized')
 
+  // 确保 APK 存储目录存在
+  if (!fs.existsSync(config.updatesDir)) {
+    fs.mkdirSync(config.updatesDir, { recursive: true })
+  }
+
   // 安全警告
   if (config.jwtSecret === 'your-random-secret-at-least-32-chars') {
     console.warn('[⚠️  Security] JWT_SECRET 使用默认值，生产环境请务必设置自定义密钥！')
@@ -48,6 +53,14 @@ async function start(): Promise<void> {
     // 不需要 credentials：项目用 JWT Bearer header（localStorage），
     // 不依赖 cookie。开启 credentials 会与 origin: '*' 冲突。
     credentials: false,
+  })
+
+  // Multipart 支持（用于文件上传）
+  const multipart = (await import('@fastify/multipart')).default
+  await app.register(multipart, {
+    limits: {
+      fileSize: 200 * 1024 * 1024, // 200MB 上限（APK 文件可能较大）
+    },
   })
 
   // 全局限流（按 IP）
@@ -140,13 +153,25 @@ async function start(): Promise<void> {
   // 生产模式：服务前端静态文件
   const __dirname = path.dirname(fileURLToPath(import.meta.url))
   const publicDir = path.join(__dirname, '..', 'public')
+  const fastifyStatic = await import('@fastify/static')
+
+  // APK 下载：服务 data/updates/ 目录（始终注册，不依赖 publicDir）
+  if (fs.existsSync(config.updatesDir)) {
+    await app.register(fastifyStatic.default, {
+      root: config.updatesDir,
+      prefix: '/updates/',
+      wildcard: false,
+    })
+  }
+
   if (fs.existsSync(publicDir)) {
-    const fastifyStatic = await import('@fastify/static')
     await app.register(fastifyStatic.default, {
       root: publicDir,
       prefix: '/',
+      decorateReply: false, // 避免与上面的注册冲突
       wildcard: false,
     })
+
     // SPA fallback: 非 API 路由返回 index.html
     app.setNotFoundHandler(async (request, reply) => {
       if (request.url.startsWith('/api/')) {

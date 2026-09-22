@@ -399,6 +399,25 @@ export const migration009 = `
 ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0;
 `
 
+/** Migration 011: App 自托管更新表 */
+export const migration011 = `
+-- 兼容历史 schema：如果表已存在且由旧代码创建，不重建
+-- 新部署会创建下面这个表（不带 apk_filename，文件名由 version_name 派生）
+CREATE TABLE IF NOT EXISTS app_updates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_name TEXT NOT NULL,
+    version_code INTEGER NOT NULL,
+    changelog TEXT,
+    force_update INTEGER DEFAULT 0,
+    apk_url TEXT NOT NULL,
+    apk_size INTEGER NOT NULL,
+    is_active INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_app_updates_active ON app_updates(is_active);
+CREATE INDEX IF NOT EXISTS idx_app_updates_version_code ON app_updates(version_code);
+`
+
 /** Migration 010: 补全外键 ON DELETE 策略 + 清理冗余单列索引 */
 export const migration010 = `
 -- SQLite 不支持修改已有外键的 ON DELETE 策略。

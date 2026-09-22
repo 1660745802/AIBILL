@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import path from 'node:path';
 
 dotenv.config();
 
@@ -12,6 +13,7 @@ export interface AppConfig {
   aiModel: string;
   dbPath: string;
   corsOrigins: string[];
+  updatesDir: string;
 }
 
 export const config: AppConfig = {
@@ -27,4 +29,5 @@ export const config: AppConfig = {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
+  updatesDir: process.env.UPDATES_DIR || path.join(process.cwd(), 'data', 'updates'),
 };
