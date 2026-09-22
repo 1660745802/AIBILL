@@ -23,7 +23,7 @@ export const config: AppConfig = {
   aiApiKey: process.env.AI_API_KEY || 'sk-your-key',
   aiModel: process.env.AI_MODEL || 'gpt-4o-mini',
   dbPath: process.env.DB_PATH || './data/bill.db',
-  corsOrigins: (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3000')
+  corsOrigins: (process.env.CORS_ORIGINS || '*')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),

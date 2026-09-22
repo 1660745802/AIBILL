@@ -38,13 +38,16 @@ async function start(): Promise<void> {
         cb(null, true)
         return
       }
-      if (config.corsOrigins.includes(origin) || config.corsOrigins.includes('*')) {
+      // 配置了 '*' 或 origin 在白名单内 → 允许
+      if (config.corsOrigins.includes('*') || config.corsOrigins.includes(origin)) {
         cb(null, true)
         return
       }
       cb(new Error('CORS not allowed'), false)
     },
-    credentials: true,
+    // 不需要 credentials：项目用 JWT Bearer header（localStorage），
+    // 不依赖 cookie。开启 credentials 会与 origin: '*' 冲突。
+    credentials: false,
   })
 
   // 全局限流（按 IP）
