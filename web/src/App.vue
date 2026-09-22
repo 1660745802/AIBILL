@@ -87,7 +87,7 @@ const iconPaths: Record<string, string> = {
           leave-to-class="opacity-0 -translate-y-1 scale-95"
         >
           <div
-            v-for="t in toast.toasts"
+            v-for="t in toast.toasts.value"
             :key="t.id"
             class="pointer-events-auto px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-2 cursor-pointer backdrop-blur-sm"
             :class="{
