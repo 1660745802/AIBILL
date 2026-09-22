@@ -155,14 +155,32 @@ async function start(): Promise<void> {
   const publicDir = path.join(__dirname, '..', 'public')
   const fastifyStatic = await import('@fastify/static')
 
-  // APK 下载：服务 data/updates/ 目录（始终注册，不依赖 publicDir）
-  if (fs.existsSync(config.updatesDir)) {
-    await app.register(fastifyStatic.default, {
-      root: config.updatesDir,
-      prefix: '/updates/',
-      wildcard: false,
-    })
-  }
+  // APK 下载：动态读磁盘（不使用 @fastify/static，
+  // 避免其启动时缓存目录列表导致新上传的 APK 必须重启才能下载）
+  app.get('/updates/:filename', async (request, reply) => {
+    const filename = (request.params as { filename: string }).filename
+    // 防 path traversal
+    if (!filename || filename.includes('/') || filename.includes('..') || filename.includes('\\')) {
+      reply.code(400).send({ code: 4000, data: null, message: 'invalid filename' })
+      return
+    }
+    const filepath = path.join(config.updatesDir, filename)
+    // 限定在 updatesDir 下，防 symlink 跳出
+    const resolved = path.resolve(filepath)
+    const resolvedRoot = path.resolve(config.updatesDir)
+    if (!resolved.startsWith(resolvedRoot + path.sep) && resolved !== resolvedRoot) {
+      reply.code(400).send({ code: 4000, data: null, message: 'invalid path' })
+      return
+    }
+    if (!fs.existsSync(filepath)) {
+      reply.code(404).send({ code: 4004, data: null, message: 'file not found' })
+      return
+    }
+    reply.type('application/vnd.android.package-archive')
+    reply.header('Content-Length', fs.statSync(filepath).size.toString())
+    // 支持范围请求（resume download）
+    return reply.send(fs.createReadStream(filepath))
+  })
 
   if (fs.existsSync(publicDir)) {
     await app.register(fastifyStatic.default, {
