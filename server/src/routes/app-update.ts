@@ -6,13 +6,11 @@
  * GET  /api/admin/updates       — 查看历史版本（admin，分页）
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { z } from 'zod'
 import { authMiddleware, adminMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { config } from '../config.js'
 import path from 'node:path'
 import fs from 'node:fs'
-import crypto from 'node:crypto'
 
 // ---------------------------------------------------------------------------
 // 常量 & 工具
@@ -28,17 +26,9 @@ function ensureUpdatesDir(): void {
   }
 }
 
-/** 从请求中拼接绝对 URL */
-function buildAbsoluteUrl(request: FastifyRequest, filename: string): string {
-  // 优先读取 X-Forwarded-Proto / X-Forwarded-Host（反代场景）
-  const proto = (request.headers['x-forwarded-proto'] as string) || 'http'
-  const host = (request.headers['x-forwarded-host'] as string) || request.headers.host || 'localhost:3000'
-  return `${proto}://${host}/updates/${filename}`
-}
-
-// ---------------------------------------------------------------------------
-// 内存缓存：当前激活版本（类比 notification-rules 的 cachedRules）
-// ---------------------------------------------------------------------------
+/**
+ * 内存缓存：当前激活版本（类比 notification-rules 的 cachedRules）
+ */
 
 interface CachedUpdate {
   id: number
@@ -236,8 +226,9 @@ export async function appUpdateAdminRoutes(app: FastifyInstance): Promise<void> 
     fs.writeFileSync(filePath, apkBuffer)
     const apkSize = apkBuffer.length
 
-    // 生成绝对 URL
-    const apkUrl = buildAbsoluteUrl(request, safeName)
+    // 存相对路径（向后兼容 1.2.0 方式）：读取时 normalizeApkUrl 按请求方 Host 重写，
+    // 避免上传方 Host=localhost 时 DB 存死 localhost（手机下载失效）
+    const apkUrl = `/updates/${safeName}`
 
     // 事务：如果有同 version_code 的旧记录先 deactivate，再插入新记录并激活
     const result = db.transaction(() => {
