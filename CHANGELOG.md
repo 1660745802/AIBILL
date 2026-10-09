@@ -21,6 +21,21 @@
 - **后端接口与数据表暂时保留但标记 `deprecated`**：`/api/budgets/*` `/api/goals/*` `/api/subscriptions/*` `/api/memories/*` `/api/assets/snapshot|/trend`。`GET /api/stats/dashboard` 响应结构不变（那三个字段仍返回空数组），避免影响已发布客户端；旧 Web 路由 302 到 `/me` 而非 404
   - 依据：Android 侧 `BudgetApi` / `BudgetRepository` / `BudgetResponse` / Hilt 绑定四层数据链路齐备，但 `presentation/` 层**零引用**——即「数据层写全了，UI 入口从未存在」。标 deprecated 而非“保留”，是为了避免下一个读到代码的人误以为该功能还在被使用
 
+### Found（功能体检发现，待处理）
+
+功能取舍体检（`scripts/feature-triage.sh`）发现三个「0 行 ≠ 没用」的反例，详见 `docs/FEATURE-TRIAGE.md §7`：
+
+1. **`user_settings` 不是废弃旧表**：与 `settings` 同在 migration001 创建，用途不同（全局 KV vs 用户级偏好），
+   写入路径 `PUT /api/settings` 活跃且正确。0 行只是没人保存过偏好。**差点被误判成重构遗留而误删。**
+2. **`ai_memories` 表不能随 `/api/memories/*` 一起删**：被 AI 解析主流程活跃读写
+   （`ai.ts:150` 注入 prompt、`ai.ts:380-397` 自动学习、`ai.ts:530` AI 问答）。只下线路由，表保留。
+3. **AI 自动学习链路从未接通**（真实 bug）：`POST /api/ai/parse-feedback` 在 `app_logs` 中零记录，
+   `ai_parse_logs.user_modified` 1415 条全 0，导致管理面板「修正率」**恒为 0%**。
+   看上去像「用户从不修正」，实际是客户端没回传反馈：Android 端（91% 流量）完全未调用该接口，
+   Web 端受 `if (parseLogId.value)` 限制也未触发过。
+   **后果是误导性的**：管理者看到修正率 0% 会以为 AI 解析质量很好，结论完全相反。
+   修复方向在客户端（用户修正解析结果后回传），需要与 Android 端协同排期。
+
 ### Fixed
 - **SPA 深链 500**：`@fastify/static` 用 `decorateReply:false` 注册后 `reply.sendFile` 不存在，导致 `/quick` `/ledger` 等任何非根路径硬刷新返回 **HTTP 500**（`GET /favicon.ico` 同）。改为自行读文件流发送；`/favicon.ico` 改为 302 到图标
 - **改密后被静默踢下线**：`auth` store 定义了 `setAuth` 但未 return，`Settings.vue` 调用 `auth.setAuth()` 必抛 `TypeError`，新 token 写不进 localStorage。现已导出

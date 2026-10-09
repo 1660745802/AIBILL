@@ -18,6 +18,10 @@
 > | `/api/goals/*` | 已下线 | 无引用 |
 > | `/api/subscriptions/*` | 已下线 | 无引用 |
 > | `/api/memories/*` | 已下线 | 无引用 |
+>
+> ⚠️ **`/api/memories/*` 废弃 ≠ `ai_memories` 表可删**：该表被 AI 解析主流程活跃读写
+> （`ai.ts:150` 读记忆注入 prompt、`ai.ts:380-397` 解析修正后自动学习写入、`ai.ts:530` AI 问答读取）。
+> **只下线路由，表必须保留**，否则 AI 记账解析会报错。
 > | `/api/assets/snapshot`、`/api/assets/trend` | 已下线 | 无引用 |
 >
 > 同理，`GET /api/stats/dashboard` 的响应仍包含 `budget_progress` / `goals_top` /

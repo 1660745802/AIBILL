@@ -35,7 +35,7 @@ Web 前端已移除页面与导航入口；**接口与数据表暂时保留，�
 | 预算管理 | `/api/budgets/*` | Web 已下线；Android 有 `BudgetApi`/`Repository`/`DTO` 四层数据链路但** presentation 层零引用**（未做 UI 入口） |
 | 财务目标 | `/api/goals/*` | 两端均无引用 |
 | 订阅管理 | `/api/subscriptions/*` | 两端均无引用 |
-| AI 记忆 | `/api/memories/*` | 两端均无引用 |
+| AI 记忆 | `/api/memories/*` | 两端均无引用；**但 `ai_memories` 表被 AI 解析主流程使用，不可删表** |
 | 资产快照 | `/api/assets/snapshot`、`/api/assets/trend` | 两端均无引用 |
 
 > 为什么不直接删：一个客户端里「数据层写全了但 UI 没入口」很容易被误读成「功能存在只是没人用」。
