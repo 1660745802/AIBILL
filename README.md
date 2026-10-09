@@ -188,7 +188,7 @@ docker-compose up -d --build
 
 ## 🔒 安全特性
 
-- JWT（含 jti）30 天有效期，支持服务端撤销
+- JWT（含 token_version）永不过期，支持服务端撤销（改密/重置/禁用即失效）
 - AI API Key 服务端持有，前端不可见
 - 用户间数据完全隔离（强制 `user_id` 过滤）
 - 管理员不可查看其他用户明细

@@ -49,17 +49,18 @@ interface InviteCodeRow {
 }
 
 /**
- * 签发 JWT（30 天有效期，含 token_version 用于失效控制）
- * 
+ * 签发 JWT（永不过期，含 token_version 用于失效控制）
+ *
  * 失效策略：users.token_version 单调递增。JWT payload 含 ver。
  * 任意时刻改密 / 重置 / 禁用用户时，BUMP 该用户的 token_version，
  * 所有旧 JWT 在中间件校验时因 ver 不匹配而失效。
  * 不需要维护 jti 黑名单（O(1) 失效，无查询开销）。
+ *
+ * 注意：token 本身不设过期时间，用户不会被动要求重新登录；
+ * 需要强制某设备下线时，通过改密/重置 bump token_version 即可。
  */
 function signToken(userId: number, role: string, tokenVersion: number): string {
-  return jwt.sign({ userId, role, ver: tokenVersion } as JwtPayload, config.jwtSecret, {
-    expiresIn: '30d',
-  })
+  return jwt.sign({ userId, role, ver: tokenVersion } as JwtPayload, config.jwtSecret)
 }
 
 /**

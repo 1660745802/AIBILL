@@ -139,7 +139,7 @@
 
 ### 3.3 登录流程
 ```
-用户名 + 密码 → bcrypt 比对 → 签发 JWT（payload 含 jti，30 天有效）
+用户名 + 密码 → bcrypt 比对 → 签发 JWT（payload 含 ver，永不过期）
 前端存 localStorage → Authorization: Bearer <jwt>
 ```
 详见 [API.md §1 认证](API.md)。
