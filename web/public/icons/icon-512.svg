@@ -1,4 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#2563eb"/>
-  <text x="256" y="340" font-size="280" text-anchor="middle" fill="white" font-family="Arial">💰</text>
+  <rect width="512" height="512" rx="96" fill="#39434b"/>
+  <g stroke="#ffffff" stroke-width="18" stroke-linecap="round" fill="none">
+    <path d="M186 150v212M326 150v212M126 222h260M126 290h260"/>
+  </g>
 </svg>

@@ -1,6 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import api from '@/api/index'
+import { useConfirm } from '@/composables/useConfirm'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import SheetRow from '@/components/ui/SheetRow.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import Skeleton from '@/components/ui/Skeleton.vue'
+import Money from '@/components/ui/Money.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
 
 interface Transaction {
   id: number
@@ -15,11 +23,16 @@ interface Transaction {
   target_account_name?: string
 }
 
+const router = useRouter()
+const confirm = useConfirm()
+
 const transactions = ref<Transaction[]>([])
 const loading = ref(false)
 const total = ref(0)
 const page = ref(1)
 const pageSize = 20
+
+const totalPages = computed(() => Math.ceil(total.value / pageSize) || 1)
 
 onMounted(() => fetchData())
 
@@ -47,7 +60,12 @@ async function handleRestore(id: number) {
 }
 
 async function handlePermanentDelete(id: number) {
-  if (!confirm('永久删除后无法恢复，确定吗？')) return
+  const ok = await confirm({
+    title: '永久删除',
+    body: '这笔记录将被彻底移除，无法再恢复，也不会计入任何统计。',
+    danger: true,
+  })
+  if (!ok) return
   try {
     const { data } = await api.delete(`/transactions/${id}/permanent`)
     if (data.code === 0) {
@@ -56,8 +74,15 @@ async function handlePermanentDelete(id: number) {
   } catch { /* ignore */ }
 }
 
-function formatAmount(cents: number): string {
-  return (cents / 100).toFixed(2)
+function moneyTone(type: string) {
+  if (type === 'income') return 'income'
+  if (type === 'transfer') return 'info'
+  return 'expense'
+}
+function moneySign(type: string) {
+  if (type === 'income') return 'plus'
+  if (type === 'transfer') return 'none'
+  return 'minus'
 }
 
 function prevPage() {
@@ -69,87 +94,69 @@ function nextPage() {
 </script>
 
 <template>
-  <div class="pb-20 md:pb-4">
-    <!-- 标题 -->
-    <div class="bg-white px-4 py-3 mb-2">
-      <h2 class="text-base font-medium text-[color:var(--color-text-primary)]">🗑️ 回收站</h2>
-      <p class="text-xs text-gray-400 mt-0.5">已删除的交易可在此恢复或永久删除</p>
+  <div class="pb-24 md:pb-6">
+    <PageHeader
+      title="回收站"
+      :subtitle="total > 0 ? `${total} 条待清理 · 30 天后自动清除` : '删除的记录会在 30 天后自动清除'"
+    />
+
+    <!-- 加载态 -->
+    <div v-if="loading" class="sheet p-3">
+      <Skeleton variant="rows" :lines="4" />
     </div>
 
-    <!-- 加载中 -->
-    <div v-if="loading" class="text-center py-8 text-gray-400 text-sm">加载中...</div>
-
-    <!-- 空状态 -->
-    <div v-else-if="transactions.length === 0" class="text-center py-16 text-gray-400">
-      <div class="text-4xl mb-2">🗑️</div>
-      <div class="text-sm">回收站是空的</div>
-    </div>
+    <!-- 空态 -->
+    <EmptyState
+      v-else-if="transactions.length === 0"
+      icon="trash"
+      ruled
+      title="回收站是空的"
+      description="删除的交易会先放进这里，30 天内都能恢复。现在它空空如也。"
+    >
+      <button class="btn btn-primary" @click="router.push('/')">
+        <AppIcon name="pen" :size="15" />
+        去记一笔
+      </button>
+    </EmptyState>
 
     <!-- 列表 -->
-    <div v-else>
-      <div class="bg-white">
-        <div
-          v-for="tx in transactions"
-          :key="tx.id"
-          class="flex items-center justify-between px-4 py-3 border-b border-gray-50 last:border-0"
-        >
-          <div class="flex items-center gap-2 flex-1 min-w-0">
-            <span class="text-base">{{ tx.category_icon || '📦' }}</span>
-            <div class="min-w-0 flex-1">
-              <div class="text-sm text-[color:var(--color-text-primary)] truncate">
-                {{ tx.description || tx.category_name || '未分类' }}
-              </div>
-              <div class="text-xs text-gray-400">
-                {{ tx.date }}
-                <span v-if="tx.account_name" class="ml-1">· {{ tx.account_name }}</span>
-              </div>
+    <template v-else>
+      <div class="sheet">
+        <SheetRow v-for="tx in transactions" :key="tx.id">
+          <span class="tx-icon">{{ tx.category_icon || '📦' }}</span>
+          <div class="min-w-0 flex-1">
+            <div class="text-sm text-ink-1 truncate">
+              {{ tx.description || tx.category_name || '未分类' }}
+            </div>
+            <div class="text-[11px] text-ink-3 truncate">
+              删除于 {{ tx.deleted_at ? tx.deleted_at.slice(0, 10) : tx.date }}
+              <span v-if="tx.account_name"> · {{ tx.account_name }}</span>
             </div>
           </div>
-          <div class="flex items-center gap-2 ml-2 shrink-0">
-            <span
-              class="text-sm font-medium"
-              :class="{
-                'text-red-500': tx.type === 'expense',
-                'text-green-500': tx.type === 'income',
-                'text-blue-500': tx.type === 'transfer',
-              }"
-            >
-              {{ tx.type === 'income' ? '+' : '-' }}¥{{ formatAmount(tx.amount) }}
-            </span>
-            <button
-              @click="handleRestore(tx.id)"
-              class="text-xs px-2 py-1 text-blue-600 border border-blue-200 rounded hover:bg-blue-50"
-            >
-              恢复
-            </button>
-            <button
-              @click="handlePermanentDelete(tx.id)"
-              class="text-xs px-2 py-1 text-red-500 border border-red-200 rounded hover:bg-red-50"
-            >
-              永久删除
-            </button>
+          <Money
+            :value="tx.amount"
+            size="sm"
+            :tone="moneyTone(tx.type)"
+            :sign="moneySign(tx.type)"
+            class="shrink-0"
+          />
+          <div class="flex items-center gap-2 shrink-0">
+            <button class="btn btn-outline btn-sm" @click="handleRestore(tx.id)">恢复</button>
+            <button class="btn btn-danger btn-sm" @click="handlePermanentDelete(tx.id)">永久删除</button>
           </div>
-        </div>
+        </SheetRow>
       </div>
 
       <!-- 分页 -->
-      <div class="flex items-center justify-center gap-4 py-4">
-        <button
-          @click="prevPage"
-          :disabled="page <= 1"
-          class="px-3 py-1 text-sm border rounded disabled:opacity-30"
-        >
+      <div v-if="totalPages > 1" class="flex items-center justify-center gap-4 py-4">
+        <button class="btn btn-outline btn-sm" :disabled="page <= 1" @click="prevPage">
           上一页
         </button>
-        <span class="text-xs text-gray-500">{{ page }} / {{ Math.ceil(total / pageSize) || 1 }}</span>
-        <button
-          @click="nextPage"
-          :disabled="page * pageSize >= total"
-          class="px-3 py-1 text-sm border rounded disabled:opacity-30"
-        >
+        <span class="text-xs text-ink-3 amt">{{ page }} / {{ totalPages }}</span>
+        <button class="btn btn-outline btn-sm" :disabled="page * pageSize >= total" @click="nextPage">
           下一页
         </button>
       </div>
-    </div>
+    </template>
   </div>
 </template>

@@ -1,73 +1,94 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, computed, watch, onUnmounted, nextTick } from 'vue'
 import { Line, Doughnut } from 'vue-chartjs'
 import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  ArcElement,
-  Title,
-  Tooltip,
-  Legend,
-  Filler,
+  Chart as ChartJS, CategoryScale, LinearScale, PointElement,
+  LineElement, ArcElement, Tooltip, Legend, Filler,
 } from 'chart.js'
 import api from '@/api/index'
-import Skeleton from '@/components/Skeleton.vue'
-import EmptyState from '@/components/EmptyState.vue'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import PeriodNav from '@/components/ui/PeriodNav.vue'
+import SegmentedControl from '@/components/ui/SegmentedControl.vue'
+import LedgerLabel from '@/components/ui/LedgerLabel.vue'
+import StatTile from '@/components/ui/StatTile.vue'
+import Meter from '@/components/ui/Meter.vue'
+import SheetRow from '@/components/ui/SheetRow.vue'
+import Money from '@/components/ui/Money.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import Skeleton from '@/components/ui/Skeleton.vue'
 import EditTransactionModal from '@/components/EditTransactionModal.vue'
+import { useChartColors, tone, CATEGORY_PALETTE, baseScales } from '@/utils/chart'
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Title, Tooltip, Legend, Filler)
+ChartJS.register(
+  CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Tooltip, Legend, Filler,
+)
 
-// Tab state
-const activeTab = ref<'transactions' | 'stats'>('transactions')
+const { schemeTick } = useChartColors()
 
-// Shared month selector
+/* ── 周期 ── */
 const now = new Date()
 const year = ref(now.getFullYear())
 const month = ref(now.getMonth() + 1)
 
-function prevMonth() {
-  if (month.value === 1) { year.value--; month.value = 12 }
-  else month.value--
-  window.scrollTo({ top: 0, behavior: 'smooth' })
-}
-function nextMonth() {
-  if (month.value === 12) { year.value++; month.value = 1 }
-  else month.value++
+function onPeriodChange(y: number, m: number) {
+  year.value = y
+  month.value = m
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
-// ==================== Tab 1: Transactions ====================
+/* ── Tab ── */
+const activeTab = ref<'transactions' | 'stats'>('transactions')
+const TABS = [
+  { value: 'transactions', label: '流水' },
+  { value: 'stats', label: '统计' },
+]
+
+/* ── 流水 ── */
 interface Transaction {
-  id: number
-  type: string
-  amount: number
-  description: string
-  date: string
-  category_id: number | null
-  account_id: number | null
-  target_account_id: number | null
-  category_name: string
-  category_icon: string
-  account_name: string
-  target_account_name?: string
-  tags?: string
+  id: number; type: string; amount: number; description: string; date: string
+  category_id: number | null; account_id: number | null; target_account_id: number | null
+  category_name: string; category_icon: string; account_name: string
+  target_account_name?: string; tags?: string
 }
+
+/** tags 存的是 JSON 字符串（见 EditTransactionModal 的解析），直接渲染会显示成
+ *  #["a","b"]。这里拆成数组，最多显示 2 个，多余的收敛为 +N。 */
+function parseTags(raw?: string): string[] {
+  if (!raw) return []
+  try {
+    const v = JSON.parse(raw)
+    if (Array.isArray(v)) return v.filter((t) => typeof t === 'string' && t.trim())
+  } catch { /* 旧数据可能不是 JSON，按逗号兜底 */ }
+  return raw.split(/[,，]/).map((t) => t.trim()).filter(Boolean)
+}
+const visibleTags = (raw?: string) => {
+  const list = parseTags(raw)
+  return { first: list.slice(0, 2), more: Math.max(0, list.length - 2) }
+}
+
+/** 只有带时分秒的日期才显示时间，避免出现「餐饮 · 」这种悬空分隔符 */
+const hasTime = (d: string) => (d?.length ?? 0) > 10
 
 const transactions = ref<Transaction[]>([])
 const txLoading = ref(false)
 const txTotal = ref(0)
 const txPage = ref(1)
 const txPageSize = 20
-const txHasMore = computed(() => txPage.value * txPageSize < txTotal.value)
+const hasMore = computed(() => txPage.value * txPageSize < txTotal.value)
 
 const keyword = ref('')
 const filterType = ref('')
+const TYPE_FILTERS = [
+  { value: '', label: '全部' },
+  { value: 'expense', label: '支出' },
+  { value: 'income', label: '收入' },
+]
 
 const showEditModal = ref(false)
 const editingTransaction = ref<Transaction | null>(null)
+const sentinel = ref<HTMLElement | null>(null)
+let observer: IntersectionObserver | null = null
 
 async function fetchTransactions(append = false) {
   txLoading.value = true
@@ -77,47 +98,45 @@ async function fetchTransactions(append = false) {
     const endDate = `${year.value}-${String(month.value).padStart(2, '0')}-${String(endDay).padStart(2, '0')}`
 
     const params: Record<string, any> = {
-      page: txPage.value,
-      page_size: txPageSize,
-      start_date: startDate,
-      end_date: endDate,
+      page: txPage.value, page_size: txPageSize, start_date: startDate, end_date: endDate,
     }
     if (keyword.value) params.keyword = keyword.value
     if (filterType.value) params.type = filterType.value
 
     const { data } = await api.get('/transactions', { params })
     if (data.code === 0) {
-      if (append) {
-        transactions.value = [...transactions.value, ...data.data.items]
-      } else {
-        transactions.value = data.data.items
-      }
+      transactions.value = append ? [...transactions.value, ...data.data.items] : data.data.items
       txTotal.value = data.data.total
     }
-  } catch { /* ignore */ }
-  finally { txLoading.value = false }
+  } catch { /* ignore */ } finally { txLoading.value = false }
 }
 
-function handleSearch() {
-  txPage.value = 1
-  fetchTransactions()
-}
+function handleSearch() { txPage.value = 1; fetchTransactions() }
+function clearSearch() { keyword.value = ''; handleSearch() }
 
-function handleFilterType(type: string) {
-  filterType.value = type
+function setFilterType(t: string) {
+  filterType.value = t
   txPage.value = 1
   fetchTransactions()
 }
 
 function loadMore() {
+  if (txLoading.value || !hasMore.value) return
   txPage.value++
   fetchTransactions(true)
 }
 
-function handleRowClick(tx: Transaction) {
-  editingTransaction.value = tx
-  showEditModal.value = true
+/** 滚到底自动续页，不打断正在读账的人 */
+function setupObserver() {
+  observer?.disconnect()
+  if (!sentinel.value) return
+  observer = new IntersectionObserver(
+    (entries) => { if (entries[0]?.isIntersecting) loadMore() },
+    { rootMargin: '240px' },
+  )
+  observer.observe(sentinel.value)
 }
+onUnmounted(() => observer?.disconnect())
 
 function handleEditSaved() {
   showEditModal.value = false
@@ -126,34 +145,21 @@ function handleEditSaved() {
   fetchTransactions()
 }
 
-const groupedTransactions = computed(() => {
-  const groups: Record<string, Transaction[]> = {}
-  for (const tx of transactions.value) {
-    if (!groups[tx.date]) groups[tx.date] = []
-    groups[tx.date]!.push(tx)
-  }
-  return Object.entries(groups).sort(([a], [b]) => b.localeCompare(a))
+const grouped = computed(() => {
+  const map: Record<string, Transaction[]> = {}
+  for (const tx of transactions.value) (map[tx.date] ??= []).push(tx)
+  return Object.entries(map).sort(([a], [b]) => b.localeCompare(a))
 })
 
-function getDailyExpense(items: Transaction[]): number {
-  let total = 0
-  for (const tx of items) {
-    if (tx.type === 'expense') total += tx.amount
-  }
-  return total
+const dayExpense = (items: Transaction[]) =>
+  items.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
+
+function formatDate(d: string): string {
+  const dt = new Date(d)
+  return `${dt.getMonth() + 1}月${dt.getDate()}日 周${'日一二三四五六'[dt.getDay()]}`
 }
 
-function formatAmount(cents: number): string {
-  return (cents / 100).toFixed(2)
-}
-
-function formatDate(dateStr: string): string {
-  const d = new Date(dateStr)
-  const weekDays = ['日', '一', '二', '三', '四', '五', '六']
-  return `${d.getMonth() + 1}月${d.getDate()}日 周${weekDays[d.getDay()]}`
-}
-
-// ==================== Tab 2: Stats ====================
+/* ── 统计 ── */
 const summary = ref<any>(null)
 const categoryData = ref<any[]>([])
 const trendData = ref<any[]>([])
@@ -165,28 +171,24 @@ async function fetchSummary() {
     if (data.code === 0) summary.value = data.data
   } catch { /* ignore */ }
 }
-
 async function fetchCategory() {
   try {
-    const { data } = await api.get('/stats/by-category', { params: { year: year.value, month: month.value, type: viewType.value } })
-    if (data.code === 0) {
-      categoryData.value = data.data.items
-    }
+    const { data } = await api.get('/stats/by-category', {
+      params: { year: year.value, month: month.value, type: viewType.value },
+    })
+    if (data.code === 0) categoryData.value = data.data.items
   } catch { /* ignore */ }
 }
-
 async function fetchTrend() {
   try {
-    const { data } = await api.get('/stats/trend', { params: { year: year.value, month: month.value, period: 'daily', type: viewType.value } })
+    const { data } = await api.get('/stats/trend', {
+      params: { year: year.value, month: month.value, period: 'daily', type: viewType.value },
+    })
     if (data.code === 0) trendData.value = data.data.items
   } catch { /* ignore */ }
 }
+const fetchStats = () => Promise.all([fetchSummary(), fetchCategory(), fetchTrend()])
 
-async function fetchStats() {
-  await Promise.all([fetchSummary(), fetchCategory(), fetchTrend()])
-}
-
-// AI Analysis
 const aiSummary = ref('')
 const aiFullText = ref('')
 const aiLoading = ref(false)
@@ -197,348 +199,288 @@ async function generateAiSummary() {
   aiLoading.value = true
   aiGenerated.value = false
   try {
-    const { data } = await api.post('/stats/analysis', {
-      type: 'spending',
-      year: year.value,
-      month: month.value,
-    })
+    const { data } = await api.post('/stats/analysis', { type: 'spending', year: year.value, month: month.value })
     if (data.code === 0) {
       const text = data.data.analysis || data.data.content || ''
-      // First line as summary, rest as full text
       const lines = text.split('\n').filter((l: string) => l.trim())
       aiSummary.value = lines[0] || '暂无分析结果'
       aiFullText.value = text
       aiGenerated.value = true
     }
-  } catch { /* ignore */ }
-  finally { aiLoading.value = false }
+  } catch { /* ignore */ } finally { aiLoading.value = false }
 }
 
-// Chart computed data
-const trendChartData = computed(() => ({
-  labels: trendData.value.map((d) => d.date.slice(8)),
-  datasets: [{
-    label: viewType.value === 'expense' ? '支出' : '收入',
-    data: trendData.value.map((d) => d.total / 100),
-    borderColor: viewType.value === 'expense' ? '#ef4444' : '#22c55e',
-    backgroundColor: viewType.value === 'expense' ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)',
-    fill: true,
-    tension: 0.4,
-    pointRadius: 2,
-    pointHoverRadius: 5,
-  }],
+/* 图表：canvas 不认 CSS 变量，取计算值；配色方案变化时重算 */
+const trendChartData = computed(() => {
+  void schemeTick.value
+  const main = viewType.value === 'expense' ? tone.expense : tone.income
+  return {
+    labels: trendData.value.map((d) => String(d.date).slice(8)),
+    datasets: [{
+      label: viewType.value === 'expense' ? '支出' : '收入',
+      data: trendData.value.map((d) => d.total / 100),
+      borderColor: main,
+      backgroundColor: 'rgba(127,127,127,0.10)',
+      fill: true, tension: 0.38, borderWidth: 1.75,
+      pointRadius: 2, pointHoverRadius: 4, pointBackgroundColor: main, pointBorderWidth: 0,
+    }],
+  }
+})
+
+const trendChartOptions = computed(() => ({
+  responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { display: false }, tooltip: { displayColors: false } },
+  scales: baseScales(),
 }))
 
-const trendChartOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: { legend: { display: false } },
-  scales: {
-    y: { beginAtZero: true, ticks: { callback: (v: any) => `¥${v}` }, grid: { color: 'rgba(0,0,0,0.04)' } },
-    x: { ticks: { maxTicksLimit: 10 }, grid: { display: false } },
-  },
-}
+const doughnutChartData = computed(() => {
+  void schemeTick.value
+  return {
+    labels: categoryData.value.map((c) => c.name),
+    datasets: [{
+      data: categoryData.value.map((c) => c.total / 100),
+      backgroundColor: CATEGORY_PALETTE(),
+      borderWidth: 0,
+    }],
+  }
+})
 
-const doughnutChartData = computed(() => ({
-  labels: categoryData.value.map((c) => c.name),
-  datasets: [{
-    data: categoryData.value.map((c) => c.total / 100),
-    backgroundColor: [
-      '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4',
-      '#3b82f6', '#8b5cf6', '#ec4899', '#6b7280', '#14b8a6',
-      '#f59e0b', '#a855f7',
-    ],
-    borderWidth: 0,
-  }],
+const doughnutChartOptions = computed(() => ({
+  responsive: true, maintainAspectRatio: false, cutout: '64%',
+  plugins: { legend: { display: false }, tooltip: { displayColors: false } },
 }))
 
-const doughnutChartOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: { legend: { position: 'right' as const, labels: { boxWidth: 10, font: { size: 11 }, padding: 8 } } },
-  cutout: '60%',
-}
-
-// Watchers
+/* ── 监听 ── */
 watch([year, month], () => {
   txPage.value = 1
-  if (activeTab.value === 'transactions') {
-    fetchTransactions()
-  } else {
-    fetchStats()
-  }
-  // Reset AI state on month change
-  aiGenerated.value = false
-  aiSummary.value = ''
-  aiFullText.value = ''
-  aiExpanded.value = false
+  activeTab.value === 'transactions' ? fetchTransactions() : fetchStats()
+  aiGenerated.value = false; aiSummary.value = ''; aiFullText.value = ''; aiExpanded.value = false
 })
-
-watch(viewType, () => {
-  fetchCategory()
-  fetchTrend()
-})
-
+watch(viewType, () => { fetchCategory(); fetchTrend() })
 watch(activeTab, (tab) => {
-  if (tab === 'transactions' && transactions.value.length === 0) {
-    fetchTransactions()
-  } else if (tab === 'stats' && !summary.value) {
-    fetchStats()
-  }
+  if (tab === 'transactions' && transactions.value.length === 0) fetchTransactions()
+  else if (tab === 'stats' && !summary.value) fetchStats()
 })
+watch(filterType, () => nextTick(setupObserver))
 
-onMounted(() => {
-  fetchTransactions()
+onMounted(async () => {
+  await fetchTransactions()
+  nextTick(setupObserver)
 })
 </script>
 
 <template>
-  <div class="pb-20 md:pb-4">
-    <!-- Month Selector -->
-    <div class="flex items-center justify-between mb-4">
-      <button @click="prevMonth" class="w-8 h-8 flex items-center justify-center rounded-lg transition" style="color: var(--color-text-muted)" >◀</button>
-      <span class="text-sm font-semibold" style="color: var(--color-text-primary)">{{ year }}年{{ month }}月</span>
-      <button @click="nextMonth" class="w-8 h-8 flex items-center justify-center rounded-lg transition" style="color: var(--color-text-muted)">▶</button>
-    </div>
+  <div>
+    <PageHeader title="账本" :subtitle="`共 ${txTotal} 笔记录`">
+      <template #meta>
+        <PeriodNav :year="year" :month="month" @change="onPeriodChange" />
+      </template>
+    </PageHeader>
 
-    <!-- Tab Bar -->
-    <div class="mb-4">
-      <div class="flex rounded-lg p-1" style="background: var(--color-border-light)">
-        <button
-          @click="activeTab = 'transactions'"
-          class="flex-1 py-2 text-sm font-medium rounded-md transition-all"
-          :style="activeTab === 'transactions' ? 'background: var(--color-card-bg); color: var(--color-text-primary); box-shadow: 0 1px 3px rgba(0,0,0,0.05)' : 'color: var(--color-text-muted)'"
-        >
-          流水
-        </button>
-        <button
-          @click="activeTab = 'stats'"
-          class="flex-1 py-2 text-sm font-medium rounded-md transition-all"
-          :style="activeTab === 'stats' ? 'background: var(--color-card-bg); color: var(--color-text-primary); box-shadow: 0 1px 3px rgba(0,0,0,0.05)' : 'color: var(--color-text-muted)'"
-        >
-          图表
-        </button>
-      </div>
-    </div>
+    <SegmentedControl v-model="activeTab" :options="TABS" class="mb-5" />
 
-    <!-- Tab 1: Transactions -->
-    <div v-if="activeTab === 'transactions'">
-      <!-- Filters -->
-      <div class="card mb-3 space-y-3">
-        <!-- Type filter pills -->
-        <div class="flex gap-2">
+    <!-- ═══ 流水 ═══ -->
+    <template v-if="activeTab === 'transactions'">
+      <!-- 筛选栏 -->
+      <div class="surface p-3 mb-4 space-y-3">
+        <div class="flex gap-1.5">
           <button
-            v-for="opt in [{ label: '全部', value: '' }, { label: '支出', value: 'expense' }, { label: '收入', value: 'income' }]"
+            v-for="opt in TYPE_FILTERS"
             :key="opt.value"
-            @click="handleFilterType(opt.value)"
-            class="px-3 py-1.5 rounded-md text-xs font-medium transition-all"
-            :style="filterType === opt.value ? 'background: var(--color-primary-600); color: white' : 'background: var(--color-primary-50); color: var(--color-text-secondary)'"
-          >
-            {{ opt.label }}
-          </button>
+            class="chip"
+            :class="{ 'chip-active': filterType === opt.value }"
+            @click="setFilterType(opt.value)"
+          >{{ opt.label }}</button>
         </div>
-        <!-- Search -->
-        <div class="flex gap-2">
+        <div class="relative">
+          <AppIcon name="search" :size="15" class="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                   style="color: var(--color-ink-4)" />
           <input
             v-model="keyword"
-            type="text"
-            class="flex-1 px-3 py-1.5 rounded-lg text-sm"
-            style="border: 1px solid var(--color-border)"
-            placeholder="搜索描述..."
+            type="search"
+            class="field !pl-8 !pr-8"
+            placeholder="搜索描述、分类、标签"
             @keyup.enter="handleSearch"
+            @keydown.esc="clearSearch"
           />
-          <button @click="handleSearch" class="btn-primary text-xs !py-1.5">搜索</button>
-        </div>
-      </div>
-
-      <!-- Transaction List -->
-      <div v-if="txLoading && transactions.length === 0">
-        <Skeleton :lines="5" />
-      </div>
-
-      <div v-else-if="transactions.length === 0">
-        <EmptyState icon="📄" title="暂无交易记录" description="该月还没有记录" />
-      </div>
-
-      <div v-else>
-        <div v-for="[date, items] in groupedTransactions" :key="date" class="mb-3">
-          <div class="px-3 py-1.5 text-[11px] flex items-center justify-between" style="color: var(--color-text-muted)">
-            <span>{{ formatDate(date) }}</span>
-            <span class="amount-expense">-¥{{ formatAmount(getDailyExpense(items)) }}</span>
-          </div>
-          <div class="card !p-0 overflow-hidden">
-            <div
-              v-for="tx in items"
-              :key="tx.id"
-              @click="handleRowClick(tx)"
-              class="flex items-center justify-between px-4 py-3 cursor-pointer transition-colors hover:bg-gray-50"
-              :style="'border-bottom: 1px solid var(--color-border-light)'"
-            >
-              <div class="flex items-center gap-2.5 flex-1 min-w-0">
-                <span class="text-lg">{{ tx.category_icon || '📦' }}</span>
-                <div class="flex-1 min-w-0">
-                  <div class="text-sm text-gray-800 truncate">{{ tx.description || tx.category_name || '未分类' }}</div>
-                  <div class="text-xs text-gray-400 mt-0.5">{{ tx.category_name || '' }}<span v-if="tx.account_name"> · {{ tx.account_name }}</span></div>
-                </div>
-                <!-- PC only extra info -->
-                <span v-if="tx.tags" class="hidden md:inline text-[11px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{{ tx.tags }}</span>
-                <span class="hidden md:inline text-[11px] text-gray-300">{{ tx.date.slice(11, 16) }}</span>
-              </div>
-              <span
-                class="text-sm font-medium ml-3 shrink-0"
-                :class="{
-                  'text-red-500': tx.type === 'expense',
-                  'text-green-500': tx.type === 'income',
-                  'text-blue-500': tx.type === 'transfer',
-                }"
-              >
-                {{ tx.type === 'income' ? '+' : '-' }}¥{{ formatAmount(tx.amount) }}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Load more -->
-        <div v-if="txHasMore" class="px-4 py-4">
           <button
-            @click="loadMore"
-            :disabled="txLoading"
-            class="w-full py-2.5 text-sm text-gray-600 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 disabled:opacity-50 transition-colors"
+            v-if="keyword"
+            class="absolute right-2 top-1/2 -translate-y-1/2 p-1"
+            aria-label="清空搜索"
+            @click="clearSearch"
           >
-            {{ txLoading ? '加载中...' : '加载更多' }}
+            <AppIcon name="close" :size="13" style="color: var(--color-ink-4)" />
           </button>
         </div>
-        <div v-else class="text-center py-4 text-xs text-gray-400">已显示全部</div>
-      </div>
-    </div>
-
-    <!-- Tab 2: Stats -->
-    <div v-if="activeTab === 'stats'">
-      <!-- Summary Card -->
-      <div v-if="summary" class="mx-3 mb-3 p-4 bg-white rounded-xl shadow-sm">
-        <div class="grid grid-cols-3 gap-3 text-center">
-          <div>
-            <div class="text-xs text-gray-500">支出</div>
-            <div class="text-base font-bold text-red-500 mt-0.5">¥{{ formatAmount(summary.expense) }}</div>
-            <div v-if="summary.expense_change !== null" class="text-[10px] mt-0.5" :class="summary.expense_change > 0 ? 'text-red-400' : 'text-green-400'">
-              {{ summary.expense_change > 0 ? '↑' : '↓' }}{{ Math.abs(summary.expense_change) }}%
-            </div>
-          </div>
-          <div>
-            <div class="text-xs text-gray-500">收入</div>
-            <div class="text-base font-bold text-green-500 mt-0.5">¥{{ formatAmount(summary.income) }}</div>
-            <div v-if="summary.income_change !== null" class="text-[10px] mt-0.5" :class="summary.income_change > 0 ? 'text-green-400' : 'text-red-400'">
-              {{ summary.income_change > 0 ? '↑' : '↓' }}{{ Math.abs(summary.income_change) }}%
-            </div>
-          </div>
-          <div>
-            <div class="text-xs text-gray-500">结余</div>
-            <div class="text-base font-bold mt-0.5" :class="summary.balance >= 0 ? 'text-gray-700' : 'text-red-500'">
-              ¥{{ formatAmount(summary.balance) }}
-            </div>
-          </div>
-        </div>
       </div>
 
-      <!-- Expense/Income Toggle -->
-      <div class="mx-3 mb-3 flex gap-2">
-        <button
-          @click="viewType = 'expense'"
-          class="px-3 py-1.5 rounded-full text-xs font-medium transition-all"
-          :class="viewType === 'expense' ? 'bg-red-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-        >
-          支出
-        </button>
-        <button
-          @click="viewType = 'income'"
-          class="px-3 py-1.5 rounded-full text-xs font-medium transition-all"
-          :class="viewType === 'income' ? 'bg-green-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-        >
-          收入
-        </button>
+      <!-- 加载 / 空 / 列表 -->
+      <div v-if="txLoading && !transactions.length">
+        <div class="sheet p-4"><Skeleton variant="rows" :lines="6" /></div>
       </div>
 
-      <!-- Trend Line Chart -->
-      <div class="mx-3 mb-3 bg-white p-4 rounded-xl shadow-sm">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">{{ viewType === 'expense' ? '支出' : '收入' }}趋势</h3>
-        <div class="h-44">
-          <Line v-if="trendData.length > 0" :data="trendChartData" :options="trendChartOptions" />
-          <div v-else class="flex items-center justify-center h-full text-sm text-gray-400">暂无数据</div>
-        </div>
-      </div>
+      <EmptyState
+        v-else-if="!transactions.length"
+        ruled
+        icon="ledger"
+        :title="keyword || filterType ? '没有符合条件的记录' : `${year}年${month}月还没有记账`"
+        :description="keyword || filterType ? '换个关键词，或把筛选切回「全部」。' : '记一笔，这里就有账了。'"
+      >
+        <router-link v-if="!keyword && !filterType" to="/" class="btn btn-primary btn-sm">
+          <AppIcon name="pen" :size="13" />去记一笔
+        </router-link>
+      </EmptyState>
 
-      <!-- Category Doughnut Chart -->
-      <div class="mx-3 mb-3 bg-white p-4 rounded-xl shadow-sm">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">{{ viewType === 'expense' ? '支出' : '收入' }}分类</h3>
-        <div v-if="categoryData.length > 0" class="h-48">
-          <Doughnut :data="doughnutChartData" :options="doughnutChartOptions" />
-        </div>
-        <div v-else class="text-center py-8 text-sm text-gray-400">暂无数据</div>
-      </div>
-
-      <!-- Category Ranking -->
-      <div class="mx-3 mb-3 bg-white p-4 rounded-xl shadow-sm">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">{{ viewType === 'expense' ? '消费' : '收入' }}排行</h3>
-        <div v-if="categoryData.length === 0" class="text-center py-4 text-sm text-gray-400">暂无数据</div>
-        <div v-else class="space-y-2.5">
-          <div v-for="(cat, index) in categoryData" :key="cat.id" class="flex items-center gap-3">
-            <span class="text-xs text-gray-400 w-4 text-center">{{ index + 1 }}</span>
-            <span class="text-base">{{ cat.icon }}</span>
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center justify-between">
-                <span class="text-sm text-gray-800">{{ cat.name }}</span>
-                <span class="text-sm font-medium text-gray-700">¥{{ formatAmount(cat.total) }}</span>
-              </div>
-              <div class="mt-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                <div class="h-full rounded-full transition-all" :class="viewType === 'expense' ? 'bg-red-400' : 'bg-green-400'" :style="{ width: `${cat.percent}%` }"></div>
-              </div>
-            </div>
-            <span class="text-xs text-gray-400 w-10 text-right">{{ cat.percent }}%</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- AI Summary Card -->
-      <div class="mx-3 mb-3 p-[2px] rounded-xl bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400">
-        <div class="bg-white p-4 rounded-[10px]">
-          <div class="flex items-center gap-2 mb-2">
-            <span class="text-base">🤖</span>
-            <h3 class="text-sm font-medium text-gray-700">AI 总结</h3>
+      <div v-else class="space-y-5">
+        <section v-for="[date, items] in grouped" :key="date">
+          <div class="day-head">
+            <span class="amt">{{ formatDate(date) }}</span>
+            <span class="flex items-center gap-1.5">
+              <span class="text-[0.625rem]" style="color: var(--color-ink-4)">支出</span>
+              <Money :value="dayExpense(items)" sign="none" size="sm" tone="muted" />
+            </span>
           </div>
 
-          <div v-if="!aiGenerated && !aiLoading">
-            <p class="text-xs text-gray-400 mb-3">让 AI 分析你本月的消费情况</p>
-            <button
-              @click="generateAiSummary"
-              class="w-full py-2 text-sm font-medium text-white bg-gradient-to-r from-purple-500 to-blue-500 rounded-lg hover:from-purple-600 hover:to-blue-600 transition-all"
+          <div class="sheet">
+            <SheetRow
+              v-for="tx in items"
+              :key="tx.id"
+              clickable
+              @click="editingTransaction = tx; showEditModal = true"
             >
-              生成 AI 总结
-            </button>
+              <span class="tx-icon" aria-hidden="true">{{ tx.category_icon || '📦' }}</span>
+              <span class="min-w-0 flex-1">
+                <span class="flex items-center gap-1.5">
+                  <span class="text-[0.8125rem] truncate" style="color: var(--color-ink-1)">
+                    {{ tx.description || tx.category_name || '未分类' }}
+                  </span>
+                  <template v-if="tx.tags">
+                    <span v-for="t in visibleTags(tx.tags).first" :key="t" class="badge shrink-0">#{{ t }}</span>
+                    <span v-if="visibleTags(tx.tags).more" class="badge shrink-0">
+                      +{{ visibleTags(tx.tags).more }}
+                    </span>
+                  </template>
+                </span>
+                <span class="block text-[0.6875rem] truncate" style="color: var(--color-ink-3)">
+                  <span v-if="tx.category_name">{{ tx.category_name }}</span>
+                  <template v-if="tx.type === 'transfer' && tx.target_account_name">
+                    <span v-if="tx.category_name"> · </span>→ {{ tx.target_account_name }}
+                  </template>
+                  <template v-if="tx.account_name && tx.type !== 'transfer'">
+                    <span v-if="tx.category_name"> · </span>{{ tx.account_name }}
+                  </template>
+                  <template v-if="hasTime(tx.date)">
+                    <span v-if="tx.category_name"> · </span>
+                    <span class="hidden sm:inline amt">{{ tx.date.slice(11, 16) }}</span>
+                  </template>
+                </span>
+              </span>
+              <Money :value="tx.amount" :tone="tx.type === 'expense' ? 'expense' : tx.type === 'income' ? 'income' : 'info'" />
+            </SheetRow>
+          </div>
+        </section>
+
+        <!-- 自动续页哨兵 -->
+        <div ref="sentinel" class="h-px" aria-hidden="true" />
+        <p v-if="txLoading && transactions.length" class="text-center text-[0.6875rem] py-3" style="color: var(--color-ink-4)">
+          正在载入更多…
+        </p>
+        <p v-else-if="!hasMore" class="text-center text-[0.6875rem] py-3" style="color: var(--color-ink-4)">
+          本月共 {{ txTotal }} 笔，已全部显示
+        </p>
+      </div>
+    </template>
+
+    <!-- ═══ 统计 ═══ -->
+    <template v-else>
+      <!-- 本月三指标 -->
+      <div v-if="summary" class="grid grid-cols-3 gap-2.5 mb-5">
+        <StatTile label="支出" :delta="summary.expense_change" delta-invert>
+          <Money :value="summary.expense" sign="none" size="md" tone="expense" />
+        </StatTile>
+        <StatTile label="收入" :delta="summary.income_change">
+          <Money :value="summary.income" sign="none" size="md" tone="income" />
+        </StatTile>
+        <StatTile label="结余" :hint="`${summary.transaction_count ?? 0} 笔`">
+          <Money :value="summary.balance" size="md" :tone="summary.balance >= 0 ? 'neutral' : 'expense'" />
+        </StatTile>
+      </div>
+
+      <!-- 支出 / 收入 -->
+      <div class="flex items-center gap-2 mb-4">
+        <SegmentedControl
+          v-model="viewType"
+          :options="[{ value: 'expense', label: '支出' }, { value: 'income', label: '收入' }]"
+          size="sm"
+        />
+      </div>
+
+      <!-- 趋势 -->
+      <section class="surface p-4 mb-4">
+        <LedgerLabel>{{ viewType === 'expense' ? '支出' : '收入' }}趋势</LedgerLabel>
+        <div v-if="trendData.length" class="h-44 -ml-1">
+          <Line :data="trendChartData" :options="trendChartOptions" />
+        </div>
+        <EmptyState v-else compact icon="chart" title="暂无趋势数据" />
+      </section>
+
+      <!-- 分类 -->
+      <section v-if="categoryData.length" class="surface p-4 mb-4">
+        <LedgerLabel>{{ viewType === 'expense' ? '支出' : '收入' }}分类</LedgerLabel>
+        <div class="grid sm:grid-cols-[11rem_minmax(0,1fr)] gap-4 items-center">
+          <div class="h-40"><Doughnut :data="doughnutChartData" :options="doughnutChartOptions" /></div>
+          <ul class="space-y-2">
+            <li v-for="c in categoryData" :key="c.id" class="flex items-center gap-2">
+              <span class="tx-icon !w-5 !h-5 !text-xs" aria-hidden="true">{{ c.icon }}</span>
+              <span class="text-xs flex-1 truncate" style="color: var(--color-ink-2)">{{ c.name }}</span>
+              <Meter
+                :percent="c.percent"
+                :tone="viewType === 'expense' ? 'danger' : 'income'"
+                class="!w-16"
+              />
+              <Money :value="c.total" sign="none" size="sm" tone="muted" class="amt" />
+              <span class="text-[0.625rem] amt w-9 text-right" style="color: var(--color-ink-4)">{{ c.percent }}%</span>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- AI 总结 -->
+      <section class="ai-card">
+        <span class="ai-bar" aria-hidden="true" />
+        <div class="p-4">
+          <div class="flex items-center gap-1.5 mb-2.5">
+            <AppIcon name="spark" :size="14" />
+            <span class="text-[0.8125rem] font-semibold" style="color: var(--color-ink-1)">AI 总结</span>
           </div>
 
-          <div v-else-if="aiLoading" class="flex items-center justify-center py-4">
-            <div class="w-5 h-5 border-2 border-purple-300 border-t-purple-600 rounded-full animate-spin"></div>
-            <span class="ml-2 text-xs text-gray-400">AI 分析中...</span>
+          <template v-if="!aiGenerated && !aiLoading">
+            <p class="text-xs mb-3" style="color: var(--color-ink-3)">
+              让 AI 读一遍 {{ year }}年{{month}}月 的账，说说钱花在哪了。
+            </p>
+            <button class="btn btn-outline btn-block" @click="generateAiSummary">生成 AI 总结</button>
+          </template>
+
+          <div v-else-if="aiLoading" class="flex items-center gap-2 py-3">
+            <span class="inline-block w-3.5 h-3.5 rounded-full border-2 border-rule-strong border-t-ink-1 animate-spin" />
+            <span class="text-xs" style="color: var(--color-ink-3)">AI 正在读你的账…</span>
           </div>
 
-          <div v-else>
-            <p class="text-sm text-gray-700 leading-relaxed">{{ aiSummary }}</p>
-            <div v-if="aiExpanded" class="mt-3 pt-3 border-t border-gray-100">
-              <p class="text-xs text-gray-600 leading-relaxed whitespace-pre-line">{{ aiFullText }}</p>
+          <template v-else>
+            <p class="text-sm leading-relaxed" style="color: var(--color-ink-1)">{{ aiSummary }}</p>
+            <div v-if="aiExpanded" class="mt-3 pt-3 whitespace-pre-wrap text-xs leading-relaxed"
+                 style="border-top: 1px solid var(--color-rule-faint); color: var(--color-ink-2)">
+              {{ aiFullText }}
             </div>
-            <button
-              @click="aiExpanded = !aiExpanded"
-              class="mt-2 text-xs text-purple-500 hover:text-purple-700 font-medium transition-colors"
-            >
+            <button class="act mt-2" @click="aiExpanded = !aiExpanded">
               {{ aiExpanded ? '收起' : '查看详细分析' }}
             </button>
-          </div>
+          </template>
         </div>
-      </div>
-    </div>
+      </section>
+    </template>
   </div>
 
-  <!-- Edit Modal -->
   <EditTransactionModal
     :show="showEditModal"
     :transaction="editingTransaction"
@@ -546,3 +488,30 @@ onMounted(() => {
     @saved="handleEditSaved"
   />
 </template>
+
+<style scoped>
+.day-head {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.375rem 0.125rem;
+  font-size: 0.6875rem;
+  color: var(--color-ink-3);
+  background: var(--color-paper);
+}
+@media (min-width: 1024px) { .day-head { top: 0.5rem; } }
+
+.ai-card {
+  position: relative;
+  display: flex;
+  background: var(--color-paper-raised);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.ai-bar { width: 3px; background: var(--color-action); flex-shrink: 0; }
+</style>

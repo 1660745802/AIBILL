@@ -1,18 +1,15 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+/** 标签输入：回车或逗号提交，自动提示已有标签。 */
+import { ref, onMounted, computed } from 'vue'
 import api from '@/api/index'
+import AppIcon from '@/components/ui/AppIcon.vue'
 
-const props = defineProps<{
-  modelValue: string[]
-}>()
-
-const emit = defineEmits<{
-  'update:modelValue': [tags: string[]]
-}>()
+const props = defineProps<{ modelValue: string[] }>()
+const emit = defineEmits<{ 'update:modelValue': [tags: string[]] }>()
 
 const inputText = ref('')
 const allTags = ref<string[]>([])
-const showSuggestions = ref(false)
+const open = ref(false)
 
 onMounted(async () => {
   try {
@@ -21,77 +18,75 @@ onMounted(async () => {
   } catch { /* ignore */ }
 })
 
+const suggestions = computed(() =>
+  allTags.value
+    .filter((t) => !props.modelValue.includes(t))
+    .filter((t) => !inputText.value || t.includes(inputText.value))
+    .slice(0, 5),
+)
+
 function addTag(tag: string) {
-  const t = tag.trim()
-  if (!t || props.modelValue.includes(t)) return
+  const t = tag.trim().replace(/^#/, '')
+  if (!t || props.modelValue.includes(t)) { inputText.value = ''; open.value = false; return }
   emit('update:modelValue', [...props.modelValue, t])
   inputText.value = ''
-  showSuggestions.value = false
+  open.value = false
 }
 
 function removeTag(tag: string) {
   emit('update:modelValue', props.modelValue.filter((t) => t !== tag))
 }
 
-function handleKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter' || e.key === ',') {
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter' || e.key === ',' || e.key === '，') {
     e.preventDefault()
     addTag(inputText.value)
+  } else if (e.key === 'Backspace' && !inputText.value && props.modelValue.length) {
+    const last = props.modelValue[props.modelValue.length - 1]
+    if (last) removeTag(last)
   }
-}
-
-const filteredSuggestions = ref<string[]>([])
-function handleInput() {
-  showSuggestions.value = true
-  filteredSuggestions.value = allTags.value
-    .filter((t) => t.includes(inputText.value) && !props.modelValue.includes(t))
-    .slice(0, 5)
-}
-
-function hideSuggestions() {
-  window.setTimeout(() => { showSuggestions.value = false }, 150)
 }
 </script>
 
 <template>
   <div class="relative">
-    <!-- 已选标签 -->
-    <div v-if="modelValue.length > 0" class="flex flex-wrap gap-1 mb-1.5">
-      <span
-        v-for="tag in modelValue"
-        :key="tag"
-        class="inline-flex items-center gap-0.5 px-2 py-0.5 bg-blue-50 text-blue-600 text-xs rounded-full"
-      >
-        #{{ tag }}
-        <button @click="removeTag(tag)" class="text-blue-400 hover:text-blue-700 ml-0.5">&times;</button>
+    <div v-if="modelValue.length" class="flex flex-wrap gap-1.5 mb-1.5">
+      <span v-for="tag in modelValue" :key="tag" class="badge">
+        <span class="truncate max-w-[9rem]">{{ tag }}</span>
+        <button
+          type="button"
+          class="ml-0.5 opacity-50 hover:opacity-100 transition"
+          :aria-label="`移除标签 ${tag}`"
+          @click="removeTag(tag)"
+        >
+          <AppIcon name="close" :size="10" :stroke="2.4" />
+        </button>
       </span>
     </div>
 
-    <!-- 输入框 -->
     <input
       v-model="inputText"
       type="text"
-      class="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+      class="field"
       placeholder="输入标签，回车添加"
-      @keydown="handleKeydown"
-      @input="handleInput"
-      @focus="handleInput"
-      @blur="hideSuggestions"
+      @keydown="onKeydown"
+      @focus="open = true"
+      @blur="open = false"
     />
 
-    <!-- 建议列表 -->
-    <div
-      v-if="showSuggestions && filteredSuggestions.length > 0"
-      class="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-md shadow-sm max-h-32 overflow-y-auto"
+    <ul
+      v-if="open && suggestions.length"
+      class="absolute z-20 mt-1 w-full max-h-32 overflow-y-auto surface surface-flush py-1"
+      style="box-shadow: var(--shadow-pop)"
     >
-      <button
-        v-for="tag in filteredSuggestions"
-        :key="tag"
-        class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
-        @mousedown.prevent="addTag(tag)"
-      >
-        #{{ tag }}
-      </button>
-    </div>
+      <li v-for="tag in suggestions" :key="tag">
+        <button
+          type="button"
+          class="w-full text-left px-3 py-1.5 text-xs hover:bg-paper-hover transition-colors"
+          style="color: var(--color-ink-2)"
+          @mousedown.prevent="addTag(tag)"
+        >{{ tag }}</button>
+      </li>
+    </ul>
   </div>
 </template>

@@ -1,69 +1,20 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
+import { useConfirm } from '@/composables/useConfirm'
 import api from '@/api/index'
 import CategoryManager from '@/components/CategoryManager.vue'
 import AccountManager from '@/components/AccountManager.vue'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import Notice from '@/components/ui/Notice.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
 const toast = useToast()
-
-// AI 记忆
-interface Memory {
-  id: string
-  content: string
-  category: string
-  source: string
-  is_active: number
-  created_at: string
-}
-const showMemories = ref(false)
-const memories = ref<Memory[]>([])
-const newMemory = ref('')
-const memoriesCount = computed(() => memories.value.length)
-
-async function fetchMemories() {
-  try {
-    const { data } = await api.get('/memories')
-    if (data.code === 0) memories.value = data.data.items
-  } catch { /* ignore */ }
-}
-
-async function addMemory() {
-  if (!newMemory.value.trim()) return
-  try {
-    const { data } = await api.post('/memories', {
-      content: newMemory.value.trim(),
-      category: 'preference',
-    })
-    if (data.code === 0) {
-      memories.value.unshift(data.data)
-      newMemory.value = ''
-      toast.success('记忆已添加')
-    }
-  } catch { /* ignore */ }
-}
-
-async function toggleMemory(m: Memory) {
-  const newVal = m.is_active ? 0 : 1
-  try {
-    const { data } = await api.put(`/memories/${m.id}`, { is_active: newVal })
-    if (data.code === 0) m.is_active = newVal
-  } catch { /* ignore */ }
-}
-
-async function deleteMemory(id: string) {
-  try {
-    const { data } = await api.delete(`/memories/${id}`)
-    if (data.code === 0) {
-      memories.value = memories.value.filter((m) => m.id !== id)
-      toast.success('已删除')
-    }
-  } catch { /* ignore */ }
-}
+const confirm = useConfirm()
 
 // 修改密码
 const showPasswordForm = ref(false)
@@ -98,7 +49,12 @@ async function handleChangePassword() {
       oldPassword.value = ''
       newPassword.value = ''
       confirmNewPassword.value = ''
-      toast.success('密码修改成功')
+      // 改密会 bump token_version 使旧 token 失效，服务端已换发新 token。
+      // 必须立即写入 localStorage，否则下一次请求 401 → 被静默踢回登录页。
+      if (data.data?.token) {
+        auth.setAuth(data.data.token, auth.user!)
+      }
+      toast.success('密码修改成功，其他设备需重新登录')
     } else {
       passwordError.value = data.message
     }
@@ -109,11 +65,15 @@ async function handleChangePassword() {
   }
 }
 
-onMounted(async () => {
-  fetchMemories()
-})
+// 数据管理
+const showData = ref(false)
 
-function handleLogout() {
+async function handleLogout() {
+  const ok = await confirm({
+    title: '退出登录',
+    body: '退出后需要重新输入用户名和密码才能回到你的账本。',
+  })
+  if (!ok) return
   auth.logout()
   router.push('/login')
 }
@@ -139,163 +99,165 @@ function exportCsv() {
     URL.revokeObjectURL(url)
   }).catch(() => toast.error('导出失败'))
 }
+
+const initial = computed(() =>
+  (auth.user?.nickname || auth.user?.username || 'U').charAt(0).toUpperCase(),
+)
 </script>
 
-
 <template>
-  <div class="pb-20 md:pb-4">
-    <!-- 用户信息 -->
-    <div class="bg-white rounded-xl shadow-sm px-5 py-4 mb-3">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <div class="w-11 h-11 rounded-full bg-blue-100 flex items-center justify-center text-lg font-medium text-blue-600">
-            {{ (auth.user?.nickname || auth.user?.username || 'U').charAt(0).toUpperCase() }}
-          </div>
-          <div>
-            <div class="text-base font-semibold text-[color:var(--color-text-primary)]">
-              {{ auth.user?.nickname || auth.user?.username }}
-            </div>
-            <div class="text-xs text-gray-400">
-              @{{ auth.user?.username }}
-              <span v-if="auth.isAdmin" class="ml-1 text-blue-500">管理员</span>
-            </div>
-          </div>
+  <div class="pb-24 md:pb-6">
+    <PageHeader title="设置" subtitle="账户与数据" />
+
+    <!-- 用户块 -->
+    <div class="surface p-4 flex items-center gap-3 mb-6">
+      <div class="avatar">{{ initial }}</div>
+      <div class="flex-1 min-w-0">
+        <div class="text-sm font-semibold text-ink-1 truncate">
+          {{ auth.user?.nickname || auth.user?.username }}
         </div>
-        <button
-          @click="handleLogout"
-          class="px-3 py-1.5 text-sm text-red-500 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
-        >
-          退出登录
-        </button>
+        <div class="text-[11px] text-ink-3 truncate">@{{ auth.user?.username }}</div>
       </div>
+      <span v-if="auth.isAdmin" class="badge badge-ink">管理员</span>
     </div>
 
-    <!-- 修改密码 -->
-    <div class="bg-white rounded-xl shadow-sm px-5 py-4 mb-3">
-      <button
-        @click="showPasswordForm = !showPasswordForm"
-        class="w-full text-left flex items-center justify-between"
-      >
-        <div class="flex items-center gap-2">
-          <span class="text-lg">🔒</span>
-          <span class="text-sm font-semibold text-[color:var(--color-text-primary)]">修改密码</span>
-        </div>
-        <span class="text-xs text-gray-400">{{ showPasswordForm ? '▲' : '▼' }}</span>
-      </button>
-      <form v-if="showPasswordForm" @submit.prevent="handleChangePassword" class="mt-3 space-y-2">
-        <input
-          v-model="oldPassword"
-          type="password"
-          class="w-full px-3 py-2 border border-[color:var(--color-border)] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
-          placeholder="当前密码"
-        />
-        <input
-          v-model="newPassword"
-          type="password"
-          class="w-full px-3 py-2 border border-[color:var(--color-border)] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
-          placeholder="新密码（至少6位）"
-        />
-        <input
-          v-model="confirmNewPassword"
-          type="password"
-          class="w-full px-3 py-2 border border-[color:var(--color-border)] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
-          placeholder="确认新密码"
-        />
-        <div v-if="passwordError" class="text-xs text-red-500">{{ passwordError }}</div>
+    <div class="space-y-3">
+      <!-- 折叠区：修改密码 -->
+      <div class="surface surface-flush">
         <button
-          type="submit"
-          :disabled="passwordLoading"
-          class="w-full py-2 btn-primary disabled:opacity-50"
+          type="button"
+          class="fold-head"
+          :aria-expanded="showPasswordForm"
+          @click="showPasswordForm = !showPasswordForm"
         >
-          {{ passwordLoading ? '提交中...' : '确认修改' }}
-        </button>
-      </form>
-    </div>
-
-    <!-- 分类/账户管理 -->
-    <CategoryManager />
-    <AccountManager />
-
-    <!-- AI 记忆 -->
-    <div class="bg-white rounded-xl shadow-sm px-5 py-4 mb-3">
-      <button @click="showMemories = !showMemories" class="w-full text-left flex items-center justify-between">
-        <div class="flex items-center gap-2">
-          <span class="text-lg">💭</span>
-          <span class="text-sm font-semibold text-[color:var(--color-text-primary)]">AI 记忆</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <span v-if="memoriesCount > 0" class="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full">{{ memoriesCount }} 条</span>
-          <span class="text-xs text-gray-400">{{ showMemories ? '▲' : '▼' }}</span>
-        </div>
-      </button>
-      <div v-if="showMemories" class="mt-3 space-y-2">
-        <div
-          v-for="m in memories"
-          :key="m.id"
-          class="flex items-start justify-between p-2.5 bg-gray-50 rounded-lg"
-        >
-          <div class="flex-1 text-xs text-gray-700" :class="{ 'opacity-40 line-through': !m.is_active }">
-            {{ m.content }}
-          </div>
-          <div class="flex gap-2 ml-2 shrink-0">
-            <button @click="toggleMemory(m)" class="text-[10px] text-gray-400 hover:text-blue-500">
-              {{ m.is_active ? '停用' : '启用' }}
-            </button>
-            <button @click="deleteMemory(m.id)" class="text-[10px] text-red-400 hover:text-red-600">删除</button>
-          </div>
-        </div>
-        <div v-if="memories.length === 0" class="text-xs text-gray-400 text-center py-3">
-          AI 还没有记住任何偏好
-        </div>
-        <div class="flex gap-2">
-          <input
-            v-model="newMemory"
-            type="text"
-            placeholder="手动添加记忆..."
-            class="flex-1 px-3 py-1.5 border border-[color:var(--color-border)] rounded-lg text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none"
+          <span class="tx-icon text-ink-2"><AppIcon name="lock" :size="16" /></span>
+          <span class="flex-1 text-left text-sm font-semibold text-ink-1">修改密码</span>
+          <AppIcon
+            name="chevronDown"
+            :size="16"
+            class="chev-link transition-transform"
+            :class="showPasswordForm ? 'rotate-180' : ''"
           />
-          <button
-            @click="addMemory"
-            :disabled="!newMemory.trim()"
-            class="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg disabled:opacity-50"
-          >
-            添加
-          </button>
+        </button>
+        <div v-if="showPasswordForm" class="fold-body">
+          <form @submit.prevent="handleChangePassword" class="space-y-3">
+            <div>
+              <label class="field-label">当前密码</label>
+              <input v-model="oldPassword" type="password" class="field" placeholder="当前密码" />
+            </div>
+            <div>
+              <label class="field-label">新密码</label>
+              <input v-model="newPassword" type="password" class="field" placeholder="至少 6 位" />
+            </div>
+            <div>
+              <label class="field-label">确认新密码</label>
+              <input v-model="confirmNewPassword" type="password" class="field" placeholder="再次输入新密码" />
+            </div>
+            <Notice v-if="passwordError" tone="danger">{{ passwordError }}</Notice>
+            <button type="submit" :disabled="passwordLoading" class="btn btn-primary btn-block">
+              {{ passwordLoading ? '提交中…' : '确认修改' }}
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <!-- 折叠区：数据管理 -->
+      <div class="surface surface-flush">
+        <button
+          type="button"
+          class="fold-head"
+          :aria-expanded="showData"
+          @click="showData = !showData"
+        >
+          <span class="tx-icon text-ink-2"><AppIcon name="folder" :size="16" /></span>
+          <span class="flex-1 text-left text-sm font-semibold text-ink-1">数据管理</span>
+          <AppIcon
+            name="chevronDown"
+            :size="16"
+            class="chev-link transition-transform"
+            :class="showData ? 'rotate-180' : ''"
+          />
+        </button>
+        <div v-if="showData" class="fold-body">
+          <div class="sheet">
+            <button type="button" class="sheet-row sheet-row-click" @click="exportJson">
+              <span class="tx-icon text-ink-2"><AppIcon name="download" :size="16" /></span>
+              <div class="flex-1 min-w-0 text-left">
+                <p class="text-sm text-ink-1">导出 JSON</p>
+                <p class="text-[11px] text-ink-3">全量备份，含所有账户、交易与设置。</p>
+              </div>
+            </button>
+            <button type="button" class="sheet-row sheet-row-click" @click="exportCsv">
+              <span class="tx-icon text-ink-2"><AppIcon name="file" :size="16" /></span>
+              <div class="flex-1 min-w-0 text-left">
+                <p class="text-sm text-ink-1">导出 CSV</p>
+                <p class="text-[11px] text-ink-3">仅流水，可用 Excel 打开核对。</p>
+              </div>
+            </button>
+            <button type="button" class="sheet-row sheet-row-click" @click="router.push('/import')">
+              <span class="tx-icon text-ink-2"><AppIcon name="upload" :size="16" /></span>
+              <div class="flex-1 min-w-0 text-left">
+                <p class="text-sm text-ink-1">导入账单</p>
+                <p class="text-[11px] text-ink-3">从微信或支付宝的 CSV 账单一键导入。</p>
+              </div>
+              <AppIcon name="chevronRight" :size="16" class="chev-link" />
+            </button>
+            <button type="button" class="sheet-row sheet-row-click" @click="router.push('/trash')">
+              <span class="tx-icon text-ink-2"><AppIcon name="trash" :size="16" /></span>
+              <div class="flex-1 min-w-0 text-left">
+                <p class="text-sm text-ink-1">回收站</p>
+                <p class="text-[11px] text-ink-3">恢复误删的记录，30 天后自动清除。</p>
+              </div>
+              <AppIcon name="chevronRight" :size="16" class="chev-link" />
+            </button>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- 数据管理 -->
-    <div class="bg-white rounded-xl shadow-sm px-5 py-4 mb-3">
-      <h3 class="text-sm font-semibold text-[color:var(--color-text-primary)] mb-3 flex items-center gap-2">
-        <span class="text-lg">📂</span> 数据管理
-      </h3>
-      <div class="space-y-2">
-        <button
-          @click="exportJson"
-          class="w-full py-2 text-sm text-gray-700 border border-[color:var(--color-border)] rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
-        >
-          📦 导出 JSON（全量备份）
-        </button>
-        <button
-          @click="exportCsv"
-          class="w-full py-2 text-sm text-gray-700 border border-[color:var(--color-border)] rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
-        >
-          📄 导出 CSV（流水）
-        </button>
-        <button
-          @click="router.push('/import')"
-          class="w-full py-2 text-sm text-gray-700 border border-[color:var(--color-border)] rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
-        >
-          📥 导入账单
-        </button>
-        <button
-          @click="router.push('/trash')"
-          class="w-full py-2 text-sm text-gray-700 border border-[color:var(--color-border)] rounded-lg hover:bg-gray-50 text-left px-3 transition-colors"
-        >
-          🗑️ 回收站
-        </button>
-      </div>
+    <!-- 分类 / 账户管理：组件自带 sheet 容器与标题，直接用 -->
+    <div class="mt-6 space-y-6">
+      <CategoryManager />
+      <AccountManager />
     </div>
+
+    <!-- 退出登录：与列表区留 24px 间距 -->
+    <button class="btn btn-danger btn-block mt-6" @click="handleLogout">
+      <AppIcon name="logout" :size="16" />
+      退出登录
+    </button>
   </div>
 </template>
+
+<style scoped>
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-action);
+  color: var(--color-action-fg);
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+/* 折叠标题：整行可点，右侧 chevron 旋转 */
+.fold-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.875rem 1rem;
+  text-align: left;
+  transition: background-color 0.12s ease;
+}
+.fold-head:hover { background: var(--color-paper-hover); }
+.fold-body {
+  padding: 0 1rem 1rem;
+  border-top: 1px solid var(--color-rule-faint);
+  padding-top: 1rem;
+}
+</style>

@@ -19,25 +19,8 @@ export interface AssetOverview {
   }>
 }
 
-export interface TrendPoint {
-  snapshot_date: string
-  net_worth: number
-}
-
 export function getAssetsOverview() {
   return api.get<{ code: number; data: AssetOverview }>('/assets/overview')
-}
-
-export function getAssetsTrend(months = 6) {
-  return api.get<{ code: number; data: { trend: TrendPoint[]; months: number } }>(
-    '/assets/trend', { params: { months } }
-  )
-}
-
-export function createSnapshot() {
-  return api.post<{ code: number; data: { date: string; created: number }; message: string }>(
-    '/assets/snapshot'
-  )
 }
 
 export function updateAccountAsset(id: number, data: {

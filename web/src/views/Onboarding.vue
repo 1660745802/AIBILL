@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '@/api/index'
 import { generateUUID } from '@/utils/uuid'
+import Money from '@/components/ui/Money.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import LedgerLabel from '@/components/ui/LedgerLabel.vue'
+import Notice from '@/components/ui/Notice.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const router = useRouter()
 
@@ -38,8 +43,6 @@ const examplePhrases = [
   { text: '早餐8，咖啡18，地铁4', desc: '一次记多笔' },
   { text: '发工资 12000', desc: '记一笔收入' },
 ]
-
-const progressPercent = computed(() => ((step.value - 1) / (totalSteps - 1)) * 100)
 
 onMounted(async () => {
   try {
@@ -163,271 +166,314 @@ function finish() {
   router.push('/')
 }
 
-function formatAmount(cents: number): string {
-  return (cents / 100).toFixed(2)
-}
 </script>
 
 <template>
-  <div class="min-h-screen bg-gradient-to-b from-blue-50 via-white to-gray-50 flex flex-col">
-    <!-- 顶部栏 -->
-    <div class="flex items-center justify-between px-5 pt-5 pb-2">
-      <!-- 进度条 -->
-      <div class="flex-1 max-w-48">
-        <div class="h-1 bg-gray-200 rounded-full overflow-hidden">
-          <div
-            class="h-full bg-gradient-to-r from-blue-500 to-blue-600 rounded-full transition-all duration-500 ease-out"
-            :style="{ width: progressPercent + '%' }"
-          ></div>
-        </div>
-        <div class="text-[10px] text-gray-400 mt-1">{{ step }} / {{ totalSteps }}</div>
+  <div class="onb">
+    <!-- 步骤条 -->
+    <header class="onb-head">
+      <div class="steps w-40">
+        <span
+          v-for="i in totalSteps"
+          :key="i"
+          :class="step > i ? 'done' : step === i ? 'current' : ''"
+        />
       </div>
-      <button
-        @click="skip"
-        class="text-sm text-gray-400 hover:text-gray-600 px-3 py-1 rounded-lg hover:bg-gray-100 transition-colors"
-      >
+      <span class="text-[0.6875rem] amt shrink-0" style="color: var(--color-ink-3)">
+        {{ step }} / {{ totalSteps }}
+      </span>
+      <button class="act ml-1" @click="skip">
         {{ step === totalSteps ? '完成' : '跳过' }}
       </button>
-    </div>
+    </header>
 
-    <!-- 内容区域 -->
-    <div class="flex-1 flex flex-col items-center justify-center px-6 pb-24">
-      <!-- Step 1: 欢迎页 -->
-      <div v-if="step === 1" class="text-center max-w-sm w-full">
-        <div class="w-24 h-24 mx-auto mb-6 bg-gradient-to-br from-blue-400 to-blue-600 rounded-3xl flex items-center justify-center shadow-lg shadow-blue-200">
-          <span class="text-4xl">💰</span>
-        </div>
-        <h1 class="text-2xl font-bold text-gray-900 mb-2">欢迎使用 AI 记账</h1>
-        <p class="text-gray-500 mb-2">说句话就能记账，轻松管理个人财务</p>
-        <p class="text-sm text-gray-400 mb-8">只需 30 秒完成设置</p>
+    <!-- 步骤 1 · 欢迎 -->
+    <section v-if="step === 1" class="onb-body onb-center">
+      <span class="onb-mark" aria-hidden="true">账</span>
+      <h1 class="text-2xl font-semibold mt-5" style="color: var(--color-ink-1)">
+        欢迎使用财务工作台
+      </h1>
+      <p class="text-sm mt-2 max-w-xs leading-relaxed" style="color: var(--color-ink-2)">
+        说一句话就能记账。剩下的交给 AI。
+      </p>
+      <p class="text-xs mt-1.5" style="color: var(--color-ink-3)">设置大概 30 秒，随时可以改。</p>
 
-        <div class="space-y-3">
-          <button
-            @click="nextStep"
-            class="w-full py-3.5 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl font-medium shadow-md shadow-blue-200 hover:shadow-lg transition-shadow"
-          >
-            开始设置 →
-          </button>
-        </div>
+      <button class="btn btn-primary btn-lg w-full max-w-xs mt-8" @click="nextStep">
+        开始设置
+      </button>
 
-        <!-- 亮点 -->
-        <div class="mt-10 grid grid-cols-3 gap-4 text-center">
-          <div>
-            <div class="text-2xl mb-1">🎙️</div>
-            <div class="text-[11px] text-gray-500">自然语言记账</div>
-          </div>
-          <div>
-            <div class="text-2xl mb-1">📊</div>
-            <div class="text-[11px] text-gray-500">智能统计分析</div>
-          </div>
-          <div>
-            <div class="text-2xl mb-1">🔒</div>
-            <div class="text-[11px] text-gray-500">数据完全私有</div>
-          </div>
+      <dl class="mt-10 grid grid-cols-3 gap-4 w-full max-w-xs pt-6"
+          style="border-top: 1px solid var(--color-rule)">
+        <div v-for="c in [
+          { icon: 'spark', t: '一句话记账' },
+          { icon: 'chart', t: '自动统计' },
+          { icon: 'shield', t: '数据私有' },
+        ]" :key="c.t" class="text-center">
+          <AppIcon :name="c.icon" :size="18" class="mx-auto mb-1.5" style="color: var(--color-ink-3)" />
+          <dt class="text-[0.6875rem]" style="color: var(--color-ink-3)">{{ c.t }}</dt>
         </div>
+      </dl>
+    </section>
+
+    <!-- 步骤 2 · 选账户 -->
+    <section v-else-if="step === 2" class="onb-body">
+      <div class="onb-title">
+        <AppIcon name="wallet" :size="20" class="mx-auto mb-3" style="color: var(--color-ink-3)" />
+        <h2>选你常用的账户</h2>
+        <p>记账时会默认用它，少选一步</p>
       </div>
 
-      <!-- Step 2: 选择常用账户 -->
-      <div v-else-if="step === 2" class="w-full max-w-sm">
-        <div class="text-center mb-6">
-          <div class="w-14 h-14 mx-auto mb-3 bg-green-100 rounded-2xl flex items-center justify-center">
-            <span class="text-2xl">💳</span>
-          </div>
-          <h2 class="text-xl font-bold text-gray-900 mb-1">选择常用账户</h2>
-          <p class="text-sm text-gray-500">选一个默认账户，记账时可以少选一步</p>
-        </div>
-
-        <div class="space-y-2 mb-6">
-          <div
-            v-for="acc in accounts"
-            :key="acc.id"
-            @click="toggleAccount(acc.id)"
-            class="flex items-center justify-between p-3.5 bg-white rounded-xl border-2 cursor-pointer transition-all"
-            :class="selectedAccountIds.includes(acc.id) ? 'border-blue-400 shadow-sm' : 'border-gray-100 hover:border-gray-200'"
-          >
-            <div class="flex items-center gap-3">
-              <div
-                class="w-9 h-9 rounded-lg flex items-center justify-center text-lg"
-                :class="selectedAccountIds.includes(acc.id) ? 'bg-blue-50' : 'bg-gray-50'"
-              >{{ acc.icon }}</div>
-              <span class="text-sm font-medium text-gray-800">{{ acc.name }}</span>
-            </div>
-            <button
-              v-if="selectedAccountIds.includes(acc.id)"
-              @click.stop="setDefault(acc.id)"
-              class="text-xs px-2.5 py-1 rounded-full font-medium transition-colors"
-              :class="defaultAccountId === acc.id ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600'"
-            >
-              {{ defaultAccountId === acc.id ? '✓ 默认' : '设为默认' }}
-            </button>
-          </div>
-        </div>
-
-        <button
-          @click="confirmStep2"
-          class="w-full py-3.5 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl font-medium shadow-md shadow-blue-200"
+      <div class="w-full max-w-sm space-y-2">
+        <div
+          v-for="acc in accounts"
+          :key="acc.id"
+          class="pick-row"
+          :class="{ 'pick-row-on': selectedAccountIds.includes(acc.id) }"
+          role="checkbox"
+          :aria-checked="selectedAccountIds.includes(acc.id)"
+          tabindex="0"
+          @click="toggleAccount(acc.id)"
+          @keydown.enter.space.prevent="toggleAccount(acc.id)"
         >
-          继续
-        </button>
-      </div>
-
-      <!-- Step 3: 设置初始余额 -->
-      <div v-else-if="step === 3" class="w-full max-w-sm">
-        <div class="text-center mb-6">
-          <div class="w-14 h-14 mx-auto mb-3 bg-purple-100 rounded-2xl flex items-center justify-center">
-            <span class="text-2xl">💵</span>
-          </div>
-          <h2 class="text-xl font-bold text-gray-900 mb-1">设置初始余额</h2>
-          <p class="text-sm text-gray-500">不确定可以跳过，之后随时修改</p>
+          <span class="tx-icon" aria-hidden="true">{{ acc.icon }}</span>
+          <span class="flex-1 min-w-0">
+            <span class="block text-sm truncate" style="color: var(--color-ink-1)">{{ acc.name }}</span>
+          </span>
+          <span class="badge shrink-0">余额 {{ (acc.balance / 100).toFixed(0) }}</span>
+          <button
+            v-if="selectedAccountIds.includes(acc.id)"
+            class="chip shrink-0"
+            :class="{ 'chip-active': defaultAccountId === acc.id }"
+            @click.stop="setDefault(acc.id)"
+          >{{ defaultAccountId === acc.id ? '默认' : '设为默认' }}</button>
+          <span class="pick-tick" aria-hidden="true">
+            <AppIcon name="check" :size="12" :stroke="2.6" />
+          </span>
         </div>
 
-        <div class="space-y-2.5 mb-6">
+        <EmptyState v-if="!accounts.length" compact icon="wallet" title="还没有账户"
+                    description="可以先去设置里创建，或直接跳过这步" />
+      </div>
+
+      <button class="btn btn-primary btn-block w-full max-w-sm" @click="confirmStep2">
+        继续<template v-if="selectedAccountIds.length">（已选 {{ selectedAccountIds.length }} 个）</template>
+      </button>
+    </section>
+
+    <!-- 步骤 3 · 设余额 -->
+    <section v-else-if="step === 3" class="onb-body">
+      <div class="onb-title">
+        <AppIcon name="gauge" :size="20" class="mx-auto mb-3" style="color: var(--color-ink-3)" />
+        <h2>填一下当前余额</h2>
+        <p>不确定可以留空，之后随时能改</p>
+      </div>
+
+      <div class="w-full max-w-sm">
+        <EmptyState
+          v-if="!selectedAccountIds.length"
+          compact
+          icon="inbox"
+          title="还没有选择账户"
+          description="回到上一步勾选至少一个账户"
+        />
+
+        <div v-else class="sheet">
           <div
             v-for="acc in accounts.filter(a => selectedAccountIds.includes(a.id))"
             :key="acc.id"
-            class="flex items-center gap-3 bg-white p-3.5 rounded-xl border border-gray-100"
+            class="sheet-row"
           >
-            <div class="w-9 h-9 rounded-lg bg-gray-50 flex items-center justify-center text-lg shrink-0">{{ acc.icon }}</div>
-            <span class="text-sm text-gray-700 min-w-14 shrink-0">{{ acc.name }}</span>
-            <div class="flex-1 relative">
-              <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">¥</span>
+            <span class="tx-icon" aria-hidden="true">{{ acc.icon }}</span>
+            <span class="text-sm flex-1 min-w-0 truncate" style="color: var(--color-ink-1)">{{ acc.name }}</span>
+            <span class="relative w-28">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs pointer-events-none"
+                    style="color: var(--color-ink-4)">¥</span>
               <input
                 v-model="balances[acc.id]"
                 type="number"
                 step="0.01"
+                inputmode="decimal"
+                class="field !h-8 !pl-6 !text-right amt"
                 placeholder="0.00"
-                class="w-full pl-7 pr-3 py-2 border border-gray-200 rounded-lg text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
               />
-            </div>
+            </span>
           </div>
-          <p v-if="selectedAccountIds.length === 0" class="text-center text-sm text-gray-400 py-4">
-            没有选中的账户
-          </p>
         </div>
-
-        <button
-          @click="confirmStep3"
-          class="w-full py-3.5 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl font-medium shadow-md shadow-blue-200"
-        >
-          继续
-        </button>
       </div>
 
-      <!-- Step 4: 试记一笔 -->
-      <div v-else-if="step === 4" class="w-full max-w-sm">
-        <div v-if="!trialSuccess">
-          <div class="text-center mb-5">
-            <div class="w-14 h-14 mx-auto mb-3 bg-amber-100 rounded-2xl flex items-center justify-center">
-              <span class="text-2xl">✨</span>
-            </div>
-            <h2 class="text-xl font-bold text-gray-900 mb-1">试试 AI 记账</h2>
-            <p class="text-sm text-gray-500">用日常说话的方式输入，AI 帮你解析</p>
-          </div>
+      <button class="btn btn-primary btn-block w-full max-w-sm" @click="confirmStep3">继续</button>
+    </section>
 
-          <!-- 输入框 -->
-          <div class="relative mb-3">
-            <input
-              v-model="trialInput"
-              type="text"
-              placeholder="试试输入一笔..."
-              class="w-full px-4 py-3.5 bg-white border-2 border-gray-100 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-50 transition-all"
-              @keyup.enter="trialParse"
-            />
-          </div>
+    <!-- 步骤 4 · 试记一笔 -->
+    <section v-else-if="step === 4" class="onb-body">
+      <template v-if="!trialSuccess">
+        <div class="onb-title">
+          <AppIcon name="spark" :size="20" class="mx-auto mb-3" style="color: var(--color-ink-3)" />
+          <h2>试记一笔</h2>
+          <p>用平时说话的方式输入，AI 会拆好</p>
+        </div>
 
-          <!-- 示范短语（点击填入） -->
-          <div v-if="!trialParsed" class="mb-5">
-            <div class="text-[11px] text-gray-400 mb-2">💡 点击试试：</div>
-            <div class="grid grid-cols-2 gap-2">
-              <button
-                v-for="ex in examplePhrases"
-                :key="ex.text"
-                @click="useExample(ex.text)"
-                class="text-left px-3 py-2.5 bg-white border border-gray-100 rounded-xl hover:border-blue-200 hover:bg-blue-50 transition-all group"
-              >
-                <div class="text-sm text-gray-700 group-hover:text-blue-700 font-medium">{{ ex.text }}</div>
-                <div class="text-[10px] text-gray-400 mt-0.5">{{ ex.desc }}</div>
+        <div class="w-full max-w-sm">
+          <input
+            v-model="trialInput"
+            type="text"
+            class="field !h-12 !text-base"
+            placeholder="早餐8，咖啡18，地铁4"
+            @keyup.enter="trialParse"
+          />
+
+          <ul v-if="!trialParsed" class="grid grid-cols-2 gap-2 mt-3">
+            <li v-for="ex in examplePhrases" :key="ex.text">
+              <button class="w-full text-left surface px-3 py-2.5 hover:bg-paper-hover transition-colors"
+                      @click="useExample(ex.text)">
+                <span class="block text-[0.8125rem] truncate" style="color: var(--color-ink-1)">{{ ex.text }}</span>
+                <span class="block text-[0.6875rem] mt-0.5" style="color: var(--color-ink-3)">{{ ex.desc }}</span>
               </button>
-            </div>
-          </div>
+            </li>
+          </ul>
 
-          <!-- 解析按钮 -->
           <button
             v-if="!trialParsed"
-            @click="trialParse"
+            class="btn btn-primary btn-block mt-3"
             :disabled="trialLoading || !trialInput.trim()"
-            class="w-full py-3.5 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl font-medium shadow-md shadow-blue-200 disabled:opacity-50 disabled:shadow-none"
+            @click="trialParse"
           >
-            <span v-if="trialLoading" class="inline-flex items-center gap-2">
-              <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-              AI 解析中...
-            </span>
-            <span v-else>🤖 AI 解析</span>
+            <span v-if="trialLoading"
+                  class="inline-block w-3.5 h-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+            <AppIcon v-else name="spark" :size="14" />
+            {{ trialLoading ? 'AI 正在拆解…' : '让 AI 解析' }}
           </button>
 
-          <!-- 解析结果 -->
-          <div v-if="trialParsed" class="space-y-2 mb-4">
-            <div class="text-[11px] text-gray-400 mb-1">AI 为你解析出：</div>
-            <div
-              v-for="(item, idx) in trialParsed"
-              :key="idx"
-              class="flex items-center justify-between p-3.5 bg-white rounded-xl border border-gray-100"
-            >
-              <div class="flex items-center gap-3">
-                <div class="w-9 h-9 bg-gray-50 rounded-lg flex items-center justify-center text-lg">{{ item.category_icon || '📦' }}</div>
-                <div>
-                  <div class="text-sm font-medium text-gray-800">{{ item.description }}</div>
-                  <div class="text-[11px] text-gray-400">{{ item.category_name || item.type }} · {{ item.date }}</div>
-                </div>
-              </div>
-              <div class="text-base font-semibold" :class="item.type === 'income' ? 'text-green-600' : 'text-gray-800'">
-                {{ item.type === 'income' ? '+' : '-' }}¥{{ formatAmount(item.amount) }}
-              </div>
-            </div>
-
-            <div class="flex gap-2.5 mt-4">
-              <button
-                @click="confirmTrial"
-                :disabled="trialLoading"
-                class="flex-1 py-3.5 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl font-medium shadow-md shadow-blue-200 disabled:opacity-50"
-              >
-                {{ trialLoading ? '记录中...' : '✓ 确认记账' }}
-              </button>
-              <button
-                @click="trialParsed = null; trialInput = ''"
-                class="px-4 py-3.5 text-sm text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium"
-              >
-                重试
+          <template v-if="trialParsed">
+            <LedgerLabel class="mt-5">AI 为你拆出</LedgerLabel>
+            <ul class="sheet">
+              <li v-for="(item, idx) in trialParsed" :key="idx" class="sheet-row">
+                <span class="tx-icon" aria-hidden="true">{{ item.category_icon || '📦' }}</span>
+                <span class="min-w-0 flex-1">
+                  <span class="block text-[0.8125rem] truncate" style="color: var(--color-ink-1)">
+                    {{ item.description || item.category_name }}
+                  </span>
+                  <span class="block text-[0.6875rem] truncate" style="color: var(--color-ink-3)">
+                    {{ item.category_name || item.type }} · {{ item.date }}
+                  </span>
+                </span>
+                <Money :value="item.amount" :tone="item.type === 'income' ? 'income' : 'expense'" />
+              </li>
+            </ul>
+            <div class="flex gap-2 mt-3">
+              <button class="btn btn-outline flex-1" @click="trialParsed = null; trialInput = ''">换个说法</button>
+              <button class="btn btn-primary flex-[2]" :disabled="trialLoading" @click="confirmTrial">
+                {{ trialLoading ? '记录中…' : '确认入账' }}
               </button>
             </div>
-          </div>
+          </template>
 
-          <div v-if="trialError" class="mt-3 text-sm text-red-600 bg-red-50 border border-red-100 p-3 rounded-xl">
-            {{ trialError }}
-          </div>
+          <Notice v-if="trialError" tone="danger" class="mt-3">{{ trialError }}</Notice>
 
-          <!-- 跳过提示 -->
-          <p v-if="!trialParsed" class="text-center text-[11px] text-gray-400 mt-4">
+          <p v-if="!trialParsed" class="text-center text-[0.6875rem] mt-4" style="color: var(--color-ink-4)">
             也可以直接跳过，回首页再试
           </p>
         </div>
+      </template>
 
-        <!-- 试记成功 🎉 -->
-        <div v-else class="text-center">
-          <div class="w-20 h-20 mx-auto mb-5 bg-gradient-to-br from-green-400 to-emerald-500 rounded-full flex items-center justify-center shadow-lg shadow-green-200">
-            <span class="text-3xl">🎉</span>
-          </div>
-          <h2 class="text-2xl font-bold text-gray-900 mb-2">记账成功！</h2>
-          <p class="text-gray-500 mb-2">你已经学会使用 AI 记账了</p>
-          <p class="text-sm text-gray-400 mb-8">以后只需说句话，AI 帮你搞定一切</p>
-          <button
-            @click="finish"
-            class="w-full py-3.5 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl font-medium shadow-md shadow-blue-200"
-          >
-            开始使用 🚀
-          </button>
-        </div>
+      <!-- 成功 -->
+      <div v-else class="onb-center w-full max-w-sm">
+        <span class="onb-tick" aria-hidden="true">
+          <AppIcon name="check" :size="30" :stroke="2.4" />
+        </span>
+        <h2 class="text-xl font-semibold mt-5" style="color: var(--color-ink-1)">记好了</h2>
+        <p class="text-sm mt-2" style="color: var(--color-ink-2)">这笔已经进账，往后照这个方式记就行。</p>
+        <button class="btn btn-primary btn-lg w-full mt-8" @click="finish">开始使用</button>
       </div>
-    </div>
+    </section>
   </div>
 </template>
+
+<style scoped>
+.onb {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-paper);
+}
+.onb-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 1.25rem;
+  border-bottom: 3px double var(--color-rule-strong);
+}
+.onb-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  padding: 2rem 1.25rem 3rem;
+}
+.onb-center { justify-content: center; }
+.onb-title { text-align: center; }
+.onb-title h2 {
+  font-size: 1.125rem;
+  font-weight: 650;
+  color: var(--color-ink-1);
+}
+.onb-title p { font-size: 0.8125rem; color: var(--color-ink-3); margin-top: 0.25rem; }
+
+.onb-mark {
+  width: 4rem;
+  height: 4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--color-action);
+  color: var(--color-action-fg);
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+.onb-tick {
+  width: 4.5rem;
+  height: 4.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--color-income-soft);
+  border: 1px solid var(--color-income-line);
+  color: var(--color-income);
+}
+
+/* 可勾选行：墨色边框 + 右上角勾，不用蓝色填充 */
+.pick-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  background: var(--color-paper-raised);
+  cursor: pointer;
+  transition: border-color 0.14s ease, background-color 0.14s ease;
+}
+.pick-row:hover { border-color: var(--color-ink-4); }
+.pick-row-on { border-color: var(--color-ink-1); }
+.pick-tick {
+  width: 1.125rem;
+  height: 1.125rem;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-rule-strong);
+  border-radius: var(--radius-xs);
+  color: transparent;
+}
+.pick-row-on .pick-tick {
+  background: var(--color-action);
+  border-color: var(--color-action);
+  color: var(--color-action-fg);
+}
+</style>

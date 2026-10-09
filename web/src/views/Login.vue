@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import Notice from '@/components/ui/Notice.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -31,53 +32,128 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div class="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-    <div class="w-full max-w-sm">
-      <div class="text-center mb-8">
-        <h1 class="text-2xl font-bold text-gray-900">财务工作台</h1>
-        <p class="mt-2 text-sm text-gray-500">AI 驱动的个人财务管理</p>
+  <div class="min-h-screen lg:grid lg:grid-cols-[1fr_420px]">
+    <!-- 品牌面：桌面左栏，手机顶部 -->
+    <aside class="brand paper-ruled">
+      <div class="brand-inner">
+        <div class="brand-mark">¥</div>
+        <h1 class="brand-title">账本</h1>
+        <div class="brand-rule double-rule"></div>
+        <p class="brand-tagline">说一句话就记一笔账。<br />AI 驱动的个人财务工作台。</p>
       </div>
+    </aside>
 
-      <form @submit.prevent="handleLogin" class="bg-white shadow-md rounded-xl p-6 space-y-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">用户名</label>
-          <input
-            v-model="username"
-            type="text"
-            autocomplete="username"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            placeholder="请输入用户名"
-          />
+    <!-- 表单面 -->
+    <main class="form-face">
+      <div class="form-wrap">
+        <div class="mb-6">
+          <h2 class="text-lg font-[650] text-ink-1">登录</h2>
+          <p class="text-xs text-ink-3 mt-1">欢迎回来，继续记你的账。</p>
         </div>
 
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">密码</label>
-          <input
-            v-model="password"
-            type="password"
-            autocomplete="current-password"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            placeholder="请输入密码"
-          />
-        </div>
+        <Notice v-if="error" tone="danger" class="mb-4">{{ error }}</Notice>
 
-        <div v-if="error" class="text-sm text-red-600 bg-red-50 p-2 rounded">
-          {{ error }}
-        </div>
+        <form @submit.prevent="handleLogin" class="space-y-4">
+          <div>
+            <label class="field-label">用户名</label>
+            <input
+              v-model="username"
+              type="text"
+              autocomplete="username"
+              class="field"
+              placeholder="请输入用户名"
+            />
+          </div>
 
-        <button
-          type="submit"
-          :disabled="loading"
-          class="w-full py-2 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          {{ loading ? '登录中...' : '登录' }}
-        </button>
+          <div>
+            <label class="field-label">密码</label>
+            <input
+              v-model="password"
+              type="password"
+              autocomplete="current-password"
+              class="field"
+              placeholder="请输入密码"
+            />
+          </div>
 
-        <p class="text-center text-sm text-gray-500">
+          <button
+            type="submit"
+            :disabled="loading"
+            class="btn btn-primary btn-block btn-lg"
+          >
+            {{ loading ? '登录中…' : '登录' }}
+          </button>
+        </form>
+
+        <p class="text-center text-xs text-ink-3 mt-6">
           还没有账号？
-          <router-link to="/register" class="text-blue-600 hover:underline">注册</router-link>
+          <router-link to="/register" class="link ml-0.5">注册</router-link>
         </p>
-      </form>
-    </div>
+      </div>
+    </main>
   </div>
 </template>
+
+<style scoped>
+.brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2.5rem 1.5rem;
+  border-bottom: 1px solid var(--color-rule);
+}
+.brand-inner {
+  width: 100%;
+  max-width: 22rem;
+  text-align: center;
+}
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: var(--radius-md);
+  background: var(--color-action);
+  color: var(--color-action-fg);
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+}
+.brand-title {
+  font-size: 1.5rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--color-ink-1);
+}
+.brand-rule {
+  width: 3rem;
+  margin: 1rem auto;
+}
+.brand-tagline {
+  font-size: 0.8125rem;
+  color: var(--color-ink-3);
+  line-height: 1.7;
+}
+.form-face {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2.5rem 1.5rem;
+  background: var(--color-paper-raised);
+}
+.form-wrap {
+  width: 100%;
+  max-width: 20rem;
+}
+@media (min-width: 1024px) {
+  .brand {
+    border-bottom: 0;
+    border-right: 1px solid var(--color-rule);
+    padding: 3rem;
+  }
+  .brand-inner { text-align: left; }
+  .brand-rule { margin-left: 0; }
+  .brand-title { font-size: 2rem; }
+}
+</style>

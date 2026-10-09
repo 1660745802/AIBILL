@@ -70,6 +70,7 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     isAuthenticated,
     isAdmin,
+    setAuth,
     login,
     register,
     fetchUser,

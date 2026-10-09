@@ -1,11 +1,11 @@
 {
-  "name": "AI 记账",
+  "name": "财务工作台",
   "short_name": "记账",
-  "description": "说句话就能记账的 AI 财务工具",
+  "description": "一句话记账的个人财务工作台",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f9fafb",
-  "theme_color": "#2563eb",
+  "background_color": "#f3f5f6",
+  "theme_color": "#f3f5f6",
   "orientation": "portrait",
   "icons": [
     {

@@ -1,167 +1,605 @@
 @import 'tailwindcss';
 
-/* ═══════════════════════════════════════════
-   AI 记账 - 温暖专业主题
-   设计原则：暖灰底色 + 靛蓝主色 + 宽松间距
-   ═══════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════
+   账本纸 · Ledger Paper
+   一条主轴：结构由发丝线和表格行承载，不由卡片阴影承载。
+   颜色只表达含义（收/支/警/信息），不表达装饰。
+   ═══════════════════════════════════════════════════════════ */
 
 @theme {
-  /* 主色 - 靛蓝 (信赖/专业) */
-  --color-primary-50: #eef2ff;
-  --color-primary-100: #e0e7ff;
-  --color-primary-200: #c7d2fe;
-  --color-primary-300: #a5b4fc;
-  --color-primary-400: #818cf8;
-  --color-primary-500: #6366f1;
-  --color-primary-600: #4f46e5;
-  --color-primary-700: #4338ca;
-  --color-primary-800: #3730a3;
-  --color-primary-900: #312e81;
+  /* ── 墨 ink：文字层级（近黑，用于阅读，不用于大面积填充） ── */
+  --color-ink-1: #1c2226;   /* 标题 */
+  --color-ink-2: #4d565d;   /* 正文 */
+  --color-ink-3: #828b93;   /* 次要 */
+  --color-ink-4: #aeb5bb;   /* 极弱 */
 
-  /* 语义色 */
-  --color-income: #059669;
-  --color-expense: #dc2626;
-  --color-balance: #4f46e5;
+  /* ── 石 graphite：填充（按钮 / FAB / 品牌方块 / 选中条） ──
+     比文字用的墨色浅一档：大面积填充用近黑会压住版面，
+     石墨保留“笔”的联想但不会糊成一块。 */
+  --color-action: #39434b;
+  --color-action-hover: #2c343b;
+  --color-action-soft: #e4e8eb;
+  --color-action-fg: #ffffff;   /* 石墨底上的文字 */
+  --color-on-tone: #ffffff;     /* 语义色实底（收入/警示/支出）上的文字 */
 
-  /* 背景 */
-  --color-page-bg: #f8f7f4;
-  --color-card-bg: #ffffff;
-  --color-sidebar-bg: #faf9f7;
+  /* ── 纸 paper：表面层级 ── */
+  --color-paper: #f3f5f6;        /* 页面 */
+  --color-paper-raised: #ffffff; /* 浮层：弹窗、吸顶条、表格底 */
+  --color-paper-sunk: #e9edef;   /* 下沉：输入框、槽 */
+  --color-paper-hover: #eff2f4;  /* 行 hover */
 
-  /* 文字 */
-  --color-text-primary: #1f2937;
-  --color-text-secondary: #6b7280;
-  --color-text-muted: #9ca3af;
+  /* ── 线 rule：账本横线 ── */
+  --color-rule: #dce1e5;
+  --color-rule-strong: #c3cace;
+  --color-rule-faint: #ebeef0;
 
-  /* 边框 */
-  --color-border: #e8e5e0;
-  --color-border-light: #f3f0ec;
+  /* ── 账目语义（唯一的彩色） ── */
+  --color-expense: #c0392f;
+  --color-expense-soft: #fbeceb;
+  --color-expense-line: #f0c9c5;
+  --color-income: #1f7a54;
+  --color-income-soft: #e7f3ed;
+  --color-income-line: #b9dccb;
+  --color-warn: #a86312;
+  --color-warn-soft: #fbf2e1;
+  --color-warn-line: #ebd6ab;
+  --color-info: #2a5d8c;
+  --color-info-soft: #e9f0f6;
+  --color-info-line: #c3d7e7;
 
-  /* 圆角 */
-  --radius-card: 12px;
-  --radius-button: 8px;
-  --radius-badge: 6px;
+  /* ── 圆角：账本纸几乎不圆 ── */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 
-  /* 字体 */
-  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  --font-mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+  /* ── 字体 ── */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+
+  /* ── 阴影：只给浮层 ── */
+  --shadow-pop:
+    0 1px 2px rgb(20 23 26 / 0.06), 0 16px 40px -16px rgb(20 23 26 / 0.22);
+  --shadow-bar: 0 1px 0 rgb(20 23 26 / 0.04);
 }
 
-/* ─── 全局基础 ─── */
+/* ═══ 深色：同一套语义，换一张纸 ═══ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-ink-1: #eef1f3;
+    --color-ink-2: #c0c7cd;
+    --color-ink-3: #8a929a;
+    --color-ink-4: #646c74;
+    --color-action: #cfd6db;
+    --color-action-hover: #e2e7ea;
+    --color-action-soft: #262b30;
+    --color-action-fg: #15171a;   /* 深色下 action 变亮，文字必须跟着反过来 */
+    --color-on-tone: #15171a;
+    --color-paper: #15171a;
+    --color-paper-raised: #1c1f23;
+    --color-paper-sunk: #101215;
+    --color-paper-hover: #23272b;
+    --color-rule: #2a2e33;
+    --color-rule-strong: #3b4147;
+    --color-rule-faint: #212529;
+    --color-expense: #ff7d70;
+    --color-expense-soft: #2a1715;
+    --color-expense-line: #4d2622;
+    --color-income: #4fd3a0;
+    --color-income-soft: #0f231b;
+    --color-income-line: #1e4a37;
+    --color-warn: #efb257;
+    --color-warn-soft: #2a2013;
+    --color-warn-line: #4a3a1c;
+    --color-info: #79b3ea;
+    --color-info-soft: #131f2a;
+    --color-info-line: #23394c;
+    --shadow-pop:
+      0 1px 2px rgb(0 0 0 / 0.4), 0 16px 40px -16px rgb(0 0 0 / 0.7);
+  }
+}
+
+/* ═══════════════ 基础 ═══════════════ */
+* { -webkit-tap-highlight-color: transparent; }
+
 body {
-  background-color: var(--color-page-bg);
-  color: var(--color-text-primary);
+  background-color: var(--color-paper);
+  color: var(--color-ink-2);
   font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior-y: none;
 }
 
-/* ─── 卡片统一样式 ─── */
-.card {
-  background: var(--color-card-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  padding: 1rem;
+/* 数字：全站等宽数字，账目纵向对齐 */
+.amt {
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
+  letter-spacing: -0.015em;
+}
+.amt-hero {
+  font-variant-numeric: tabular-nums lining-nums;
+  letter-spacing: -0.045em;
+  font-weight: 600;
+  line-height: 1;
 }
 
-.card-hover {
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-.card-hover:hover {
-  border-color: var(--color-primary-200);
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.06);
-}
+::selection { background: var(--color-action); color: var(--color-action-fg); }
 
-/* ─── 金额样式 ─── */
-.amount-income { color: var(--color-income); }
-.amount-expense { color: var(--color-expense); }
-.amount-balance { color: var(--color-balance); }
-.amount-number {
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
-}
+/* ═══════════════ 表面 ═══════════════ */
 
-/* ─── 按钮 ─── */
-.btn-primary {
-  background-color: var(--color-primary-600);
-  color: white;
-  border-radius: var(--radius-button);
-  padding: 0.5rem 1rem;
-  font-size: 0.875rem;
-  font-weight: 500;
-  transition: background-color 0.15s, transform 0.1s;
+/* 纸面模块：一层底 + 一条发丝线，没有柔和阴影 */
+.surface {
+  background: var(--color-paper-raised);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
 }
-.btn-primary:hover { background-color: var(--color-primary-700); }
-.btn-primary:active { transform: scale(0.98); }
+.surface-flush { padding: 0; overflow: hidden; }
 
-.btn-secondary {
-  background-color: var(--color-primary-50);
-  color: var(--color-primary-700);
-  border-radius: var(--radius-button);
-  padding: 0.5rem 1rem;
-  font-size: 0.875rem;
-  font-weight: 500;
-  transition: background-color 0.15s;
+/* 账本表格：行之间只有线，没有框 */
+.sheet {
+  background: var(--color-paper-raised);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  overflow: hidden;
 }
-.btn-secondary:hover { background-color: var(--color-primary-100); }
-
-/* ─── 导航 ─── */
-.nav-item {
+.sheet-row {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.625rem 0.75rem;
-  border-radius: var(--radius-button);
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--color-text-secondary);
-  transition: all 0.15s;
+  padding: 0.6875rem 0.875rem;
+  border-top: 1px solid var(--color-rule-faint);
+  text-align: left;
+  width: 100%;
+  transition: background-color 0.12s ease;
 }
-.nav-item:hover {
-  background-color: var(--color-primary-50);
-  color: var(--color-text-primary);
+.sheet-row:first-child { border-top: 0; }
+.sheet-row-click { cursor: pointer; }
+.sheet-row-click:hover { background: var(--color-paper-hover); }
+.sheet-row-active { background: var(--color-paper-hover); }
+
+/* 分组小标题 + 右侧延伸的发丝线（账本栏头） */
+.ledger-label {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-3);
+  white-space: nowrap;
 }
-.nav-item-active {
-  background-color: var(--color-primary-50);
-  color: var(--color-primary-700);
+.ledger-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-rule);
+}
+.ledger-label-solid::after { display: none; }
+
+/* 账簿双线：页眉下方的会计式压边 */
+.double-rule {
+  border-bottom: 3px double var(--color-rule-strong);
 }
 
-/* ─── 进度条 ─── */
-.progress-bar {
-  height: 6px;
+/* 纸纹：横格，只在空账簿和输入区出现 */
+.paper-ruled {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 31px,
+    var(--color-rule-faint) 31px,
+    var(--color-rule-faint) 32px
+  );
+}
+
+/* ═══════════════ 按钮 ═══════════════ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  height: 2.125rem;
+  padding: 0 0.875rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease,
+    opacity 0.14s ease;
+}
+.btn:disabled { opacity: 0.42; cursor: not-allowed; }
+
+/* 主操作 = 石墨。品牌色不参与按钮，避免每个应用都长成紫色 */
+.btn-primary {
+  background: var(--color-action);
+  color: var(--color-action-fg);
+}
+.btn-primary:hover:not(:disabled) { background: var(--color-action-hover); }
+.btn-primary:active:not(:disabled) { transform: translateY(0.5px); }
+
+/* 次级 = 白纸 + 线 */
+.btn-outline {
+  background: var(--color-paper-raised);
+  color: var(--color-ink-2);
+  border-color: var(--color-rule-strong);
+}
+.btn-outline:hover:not(:disabled) {
+  background: var(--color-paper-hover);
+  border-color: var(--color-ink-3);
+}
+
+/* 三级 = 无框 */
+.btn-quiet { background: transparent; color: var(--color-ink-3); }
+.btn-quiet:hover:not(:disabled) {
+  background: var(--color-paper-hover);
+  color: var(--color-ink-1);
+}
+
+.btn-danger {
+  background: transparent;
+  color: var(--color-expense);
+  border-color: var(--color-expense-line);
+}
+.btn-danger:hover:not(:disabled) { background: var(--color-expense-soft); }
+
+.btn-sm { height: 1.75rem; padding: 0 0.5rem; font-size: 0.75rem; }
+.btn-lg { height: 2.75rem; padding: 0 1.25rem; font-size: 0.9375rem; }
+.btn-block { width: 100%; }
+.btn-icon { width: 2.125rem; padding: 0; }
+.btn-icon.btn-sm { width: 1.75rem; }
+
+/* ═══════════════ 表单 ═══════════════ */
+.field-label {
+  display: block;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--color-ink-3);
+  margin-bottom: 0.375rem;
+}
+.field {
+  width: 100%;
+  height: 2.375rem;
+  padding: 0 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-rule-strong);
+  background: var(--color-paper-raised);
+  color: var(--color-ink-1);
+  font-family: inherit;
+  font-size: 0.875rem;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+textarea.field { height: auto; padding: 0.625rem 0.75rem; resize: vertical; line-height: 1.55; }
+select.field {
+  appearance: none;
+  padding-right: 2rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237b838b' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.625rem center;
+  background-size: 14px;
+  cursor: pointer;
+}
+.field::placeholder { color: var(--color-ink-4); }
+.field:hover:not(:disabled) { border-color: var(--color-ink-4); }
+.field:focus,
+.field:focus-visible {
+  outline: none;
+  border-color: var(--color-action);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-action) 16%, transparent);
+}
+.field:disabled { background: var(--color-paper-sunk); color: var(--color-ink-4); cursor: not-allowed; }
+.field-invalid { border-color: var(--color-expense); }
+.field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-expense) 18%, transparent); }
+.field-hint { font-size: 0.6875rem; color: var(--color-ink-3); margin-top: 0.3125rem; }
+.field-error { font-size: 0.6875rem; color: var(--color-expense); margin-top: 0.3125rem; }
+
+/* ═══════════════ 标记 chip ═══════════════ */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  height: 1.625rem;
+  padding: 0 0.5rem;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--color-rule);
+  background: var(--color-paper-raised);
+  color: var(--color-ink-3);
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.13s ease;
+}
+.chip:hover { border-color: var(--color-ink-4); color: var(--color-ink-2); }
+.chip-active {
+  background: var(--color-action);
+  border-color: var(--color-action);
+  color: var(--color-action-fg);
+}
+.chip-active:hover { color: var(--color-action-fg); border-color: var(--color-action); }
+
+/* 静态徽标（非交互） */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.0625rem 0.375rem;
+  border-radius: var(--radius-xs);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  border: 1px solid var(--color-rule);
+  color: var(--color-ink-3);
+  background: var(--color-paper-sunk);
+  white-space: nowrap;
+}
+.badge-expense { color: var(--color-expense); background: var(--color-expense-soft); border-color: var(--color-expense-line); }
+.badge-income  { color: var(--color-income);  background: var(--color-income-soft);  border-color: var(--color-income-line); }
+.badge-warn    { color: var(--color-warn);    background: var(--color-warn-soft);    border-color: var(--color-warn-line); }
+.badge-info    { color: var(--color-info);    background: var(--color-info-soft);    border-color: var(--color-info-line); }
+.badge-ink     { color: var(--color-action-fg); background: var(--color-action); border-color: var(--color-action); }
+
+/* ═══════════════ 分段控件 ═══════════════ */
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--color-paper-sunk);
+  border: 1px solid var(--color-rule);
+}
+.segmented-item {
+  padding: 0.3125rem 0.75rem;
   border-radius: 3px;
-  background-color: var(--color-border-light);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-ink-3);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+.segmented-item:hover { color: var(--color-ink-1); }
+.segmented-item-active {
+  background: var(--color-paper-raised);
+  color: var(--color-ink-1);
+  box-shadow: 0 1px 2px rgb(20 23 26 / 0.08);
+}
+
+/* ═══════════════ 计量条 ═══════════════ */
+.meter {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--color-paper-sunk);
   overflow: hidden;
 }
-.progress-bar-fill {
+.meter-fill {
   height: 100%;
-  border-radius: 3px;
-  transition: width 0.5s ease;
+  border-radius: 999px;
+  transition: width 0.55s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* ─── 页面标题 ─── */
-.page-title {
-  font-size: 1.25rem;
-  font-weight: 700;
-  color: var(--color-text-primary);
-  letter-spacing: -0.01em;
+/* ═══════════════ 金额语义 ═══════════════ */
+.amt-expense { color: var(--color-expense); }
+.amt-income { color: var(--color-income); }
+.amt-neutral { color: var(--color-ink-1); }
+.amt-muted { color: var(--color-ink-3); }
+
+/* 涨跌 */
+.delta-up { color: var(--color-expense); }
+.delta-down { color: var(--color-income); }
+
+/* ═══════════════ 提示条 ═══════════════ */
+.notice {
+  display: flex;
+  gap: 0.625rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-rule);
+  background: var(--color-paper-sunk);
+  font-size: 0.8125rem;
+  color: var(--color-ink-2);
+  align-items: flex-start;
 }
-.page-subtitle {
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
-  margin-top: 0.125rem;
+.notice-warn { background: var(--color-warn-soft); border-color: var(--color-warn-line); color: var(--color-warn); }
+.notice-danger { background: var(--color-expense-soft); border-color: var(--color-expense-line); color: var(--color-expense); }
+.notice-info { background: var(--color-info-soft); border-color: var(--color-info-line); color: var(--color-info); }
+.notice-success { background: var(--color-income-soft); border-color: var(--color-income-line); color: var(--color-income); }
+
+/* ═══════════════ 骨架 ═══════════════ */
+.skeleton {
+  background: var(--color-paper-sunk);
+  border-radius: var(--radius-xs);
+  animation: pulse 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
-/* ─── 过渡 ─── */
-.fade-enter-active, .fade-leave-active { transition: opacity 0.15s ease; }
+/* ═══════════════ 焦点可见性 ═══════════════ */
+:focus-visible {
+  outline: 2px solid var(--color-action);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* ═══════════════ 动效 ═══════════════ */
+.fade-enter-active, .fade-leave-active { transition: opacity 0.16s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
-/* ─── 安全区 (iPhone 底部) ─── */
-.safe-area-bottom {
-  padding-bottom: env(safe-area-inset-bottom, 0);
+.rise-enter-active { transition: opacity 0.26s ease, transform 0.26s cubic-bezier(0.22, 1, 0.36, 1); }
+.rise-leave-active { transition: opacity 0.16s ease; }
+.rise-enter-from { opacity: 0; transform: translateY(10px); }
+.rise-leave-to { opacity: 0; }
+
+/* 抽屉：移动端从底部升起 */
+.sheet-enter-active, .sheet-leave-active { transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease; }
+.sheet-enter-from, .sheet-leave-to { transform: translateY(100%); opacity: 0.6; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
-/* ─── 滚动条美化 ─── */
-::-webkit-scrollbar { width: 4px; }
-::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
-::-webkit-scrollbar-track { background: transparent; }
+/* ═══════════════ 滚动条 ═══════════════ */
+.scroll-thin { scrollbar-width: thin; scrollbar-color: var(--color-rule-strong) transparent; }
+.scroll-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: var(--color-rule-strong); border-radius: 3px; }
+.scroll-thin::-webkit-scrollbar-track { background: transparent; }
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* ═══════════════ 账目行内元素 ═══════════════ */
+
+/* 分类/账户图标方块：emoji 是用户数据，保留；外框统一 */
+.tx-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex-shrink: 0;
+  border-radius: var(--radius-xs);
+  background: var(--color-paper-sunk);
+  font-size: 0.9375rem;
+  line-height: 1;
+}
+.tx-icon-lg { width: 2.25rem; height: 2.25rem; font-size: 1.125rem; }
+
+/* 竖向发丝线分隔 */
+.rule-y {
+  width: 1px;
+  align-self: stretch;
+  background: var(--color-rule);
+}
+
+/* 键值行：左标签右值 */
+.kv {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4375rem 0;
+  border-top: 1px solid var(--color-rule-faint);
+  font-size: 0.8125rem;
+}
+.kv:first-child { border-top: 0; }
+.kv-k { color: var(--color-ink-3); flex-shrink: 0; }
+.kv-v { color: var(--color-ink-1); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+
+/* 链接：墨色下划线，不用彩色 */
+.link {
+  color: var(--color-ink-1);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--color-rule-strong);
+  transition: text-decoration-color 0.13s;
+}
+.link:hover { text-decoration-color: var(--color-ink-1); }
+.link-quiet { color: var(--color-ink-3); }
+.link-quiet:hover { color: var(--color-ink-1); }
+
+/* 跳转行尾箭头 */
+.chev-link { color: var(--color-ink-4); flex-shrink: 0; }
+.chev-link:hover { color: var(--color-ink-2); }
+
+/* 文本按钮（行内） */
+.act {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-ink-3);
+  padding: 0.25rem 0.375rem;
+  margin: -0.25rem -0.375rem;
+  border-radius: var(--radius-xs);
+  transition: color 0.13s, background-color 0.13s;
+}
+.act:hover { color: var(--color-ink-1); background: var(--color-paper-hover); }
+.act-danger { color: var(--color-expense); }
+.act-danger:hover { color: var(--color-expense); background: var(--color-expense-soft); }
+
+/* 开关 */
+.switch {
+  position: relative;
+  width: 2.5rem;
+  height: 1.5rem;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--color-rule-strong);
+  transition: background-color 0.18s ease;
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  background: var(--color-action-fg);
+  box-shadow: 0 1px 2px rgb(20 23 26 / 0.25);
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.switch-on { background: var(--color-action); }
+.switch-on::after { transform: translateX(1rem); }
+
+/* 段落区块间距 */
+.stack > * + * { margin-top: var(--stack-gap, 1.25rem); }
+
+/* 横向滚动容器 */
+.scroll-x {
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.scroll-x::-webkit-scrollbar { display: none; }
+
+/* 分区主块（净资产、合计、收据） */
+.ledger-block {
+  position: relative;
+  background: var(--color-paper-raised);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.ledger-block > .lb-inner { position: relative; z-index: 1; padding: 1.125rem 1.25rem; }
+
+/* 收据：双线压边 + 纸纹 */
+.receipt {
+  background: var(--color-paper-raised);
+  border: 1px solid var(--color-rule);
+  border-top: 3px double var(--color-rule-strong);
+  border-bottom: 3px double var(--color-rule-strong);
+  border-radius: 2px;
+}
+
+/* 步骤条 */
+.steps { display: flex; gap: 4px; }
+.steps > span {
+  flex: 1;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-rule);
+  transition: background-color 0.3s ease;
+}
+.steps > span.done { background: var(--color-action); }
+.steps > span.current { background: var(--color-ink-3); }
+
+/* 等宽：邀请码、日志、JSON */
+.mono {
+  font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.75rem;
+}
+
+/* ═══════════════ 安全区 ═══════════════ */
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }

@@ -1,61 +1,51 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+/**
+ * 记账：把一句话交给 AI，拆成多笔账。
+ * 这是整个产品唯一"用力"的地方——它是主动作，也是差异点。
+ */
+import { ref, onMounted, computed, nextTick } from 'vue'
 import api from '@/api/index'
 import { useToast } from '@/composables/useToast'
 import { generateUUID } from '@/utils/uuid'
 import ConfirmCards from '@/components/ConfirmCards.vue'
 import ManualForm from '@/components/ManualForm.vue'
-import TodayList from '@/components/TodayList.vue'
+import EditTransactionModal from '@/components/EditTransactionModal.vue'
+import Money from '@/components/ui/Money.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import Notice from '@/components/ui/Notice.vue'
+import SheetRow from '@/components/ui/SheetRow.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
 
-// 状态
 const input = ref('')
+const textarea = ref<HTMLTextAreaElement | null>(null)
 const loading = ref(false)
 const confirming = ref(false)
 const error = ref('')
 const parsedItems = ref<any[]>([])
-const originalParsedItems = ref<any[]>([]) // AI 原始解析结果（用于对比修正）
-const parseLogId = ref<number | null>(null) // 解析日志 ID
+const originalParsedItems = ref<any[]>([])
+const parseLogId = ref<number | null>(null)
 const showManual = ref(false)
 const summary = ref({ expense: 0, income: 0 })
 const todayTransactions = ref<any[]>([])
+const editing = ref<any | null>(null)
 
-// 快捷短语
-const quickPhrases = ['午饭', '晚饭', '早餐', '打车', '咖啡', '地铁']
+const QUICK_PHRASES = ['午饭', '早饭', '咖啡', '打车', '地铁', '买菜', '晚饭', '零食']
 
-function appendPhrase(phrase: string) {
-  if (input.value.trim()) {
-    input.value += `，${phrase}`
-  } else {
-    input.value = phrase
-  }
-}
-
-// 预算警告
-interface BudgetWarning {
-  category_name: string
-  status: 'warning' | 'exceeded'
-  percent: number
-  spent: number
-  amount: number
-}
-const budgetWarnings = ref<BudgetWarning[]>([])
-const showBudgetWarning = ref(false)
-// 本月摘要
 const balance = computed(() => summary.value.income - summary.value.expense)
+const todayTotal = computed(() =>
+  todayTransactions.value
+    .filter((t) => t.type === 'expense')
+    .reduce((s, t) => s + t.amount, 0),
+)
 
-onMounted(() => {
-  fetchSummary()
-  fetchToday()
-})
+onMounted(() => { fetchSummary(); fetchToday() })
 
 async function fetchSummary() {
   try {
     const { data } = await api.get('/stats/summary')
-    if (data.code === 0) {
-      summary.value = { expense: data.data.expense, income: data.data.income }
-    }
+    if (data.code === 0) summary.value = { expense: data.data.expense, income: data.data.income }
   } catch { /* ignore */ }
 }
 
@@ -65,19 +55,37 @@ async function fetchToday() {
     const { data } = await api.get('/transactions', {
       params: { start_date: today, end_date: today, page_size: 50 },
     })
-    if (data.code === 0) {
-      todayTransactions.value = data.data.items
-    }
+    if (data.code === 0) todayTransactions.value = data.data.items
   } catch { /* ignore */ }
 }
 
+/** 输入框随内容长高，3–8 行 */
+function autoGrow() {
+  const el = textarea.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = Math.min(Math.max(el.scrollHeight, 88), 200) + 'px'
+}
+
+function appendPhrase(phrase: string) {
+  input.value = input.value.trim() ? `${input.value.trim()}，${phrase}` : phrase
+  nextTick(autoGrow)
+  textarea.value?.focus()
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault()
+    handleAiParse()
+  }
+}
+
 async function handleAiParse() {
-  if (!input.value.trim()) return
+  if (!input.value.trim() || loading.value) return
   error.value = ''
   loading.value = true
   parsedItems.value = []
   parseLogId.value = null
-  originalParsedItems.value = []
 
   try {
     const { data } = await api.post('/ai/parse', { input: input.value }, { timeout: 90000 })
@@ -86,18 +94,29 @@ async function handleAiParse() {
       originalParsedItems.value = JSON.parse(JSON.stringify(data.data.items))
       parseLogId.value = data.data.parse_log_id || null
     } else {
-      // AI 失败，切手动
-      error.value = data.message || 'AI 无法解析'
-      showManual.value = true
-      toast.warning('已切换到手动模式')
+      failToManual(data.message || 'AI 没听出账目')
     }
   } catch (e: any) {
-    error.value = e.response?.data?.message || 'AI 请求失败'
-    showManual.value = true
-    toast.warning('已切换到手动模式')
+    failToManual(e.response?.data?.message || 'AI 请求失败')
   } finally {
     loading.value = false
   }
+}
+
+/** AI 失败不是终点：就地降级到手动，而不是弹个 Toast 让人干瞪眼 */
+function failToManual(msg: string) {
+  error.value = `${msg}，已切到手动记账`
+  showManual.value = true
+  toast.warning('已切换到手动模式')
+}
+
+function resetComposer() {
+  parsedItems.value = []
+  originalParsedItems.value = []
+  parseLogId.value = null
+  input.value = ''
+  error.value = ''
+  nextTick(() => { if (textarea.value) textarea.value.style.height = '88px' })
 }
 
 async function handleConfirm(items: any[]) {
@@ -121,25 +140,16 @@ async function handleConfirm(items: any[]) {
 
     await api.post('/transactions', { items: payload })
 
-    // 发送 AI 解析反馈（异步，不阻塞主流程）
     if (parseLogId.value) {
       const modified = JSON.stringify(items) !== JSON.stringify(originalParsedItems.value)
       api.post('/ai/parse-feedback', {
-        parse_log_id: parseLogId.value,
-        final_items: items,
-        modified,
-      }).catch(() => { /* 反馈失败不影响用户 */ })
+        parse_log_id: parseLogId.value, final_items: items, modified,
+      }).catch(() => {})
     }
 
-    // 重置状态
-    parsedItems.value = []
-    originalParsedItems.value = []
-    parseLogId.value = null
-    input.value = ''
+    resetComposer()
     toast.success(`已记 ${items.length} 笔`)
-    fetchSummary()
-    fetchToday()
-    await checkBudgetWarnings()
+    await Promise.all([fetchSummary(), fetchToday()])
   } catch (e: any) {
     error.value = e.response?.data?.message || '保存失败'
   } finally {
@@ -147,163 +157,122 @@ async function handleConfirm(items: any[]) {
   }
 }
 
-function handleCancel() {
-  parsedItems.value = []
-  originalParsedItems.value = []
-  parseLogId.value = null
-}
-
 async function handleManualSubmit(item: any) {
   try {
-    const payload = [{
-      client_id: generateUUID(),
-      client_type: 'web',
-      source: 'manual',
-      type: item.type,
-      amount: item.amount,
-      category_id: item.category_id,
-      account_id: item.account_id || undefined,
-      target_account_id: item.target_account_id || undefined,
-      description: item.description,
-      date: item.date,
-      tags: item.tags || undefined,
-    }]
-
-    await api.post('/transactions', { items: payload })
+    await api.post('/transactions', {
+      items: [{
+        client_id: generateUUID(),
+        client_type: 'web',
+        source: 'manual',
+        type: item.type,
+        amount: item.amount,
+        category_id: item.category_id,
+        account_id: item.account_id || undefined,
+        target_account_id: item.target_account_id || undefined,
+        description: item.description,
+        date: item.date,
+        tags: item.tags || undefined,
+      }],
+    })
     showManual.value = false
-    input.value = ''
+    resetComposer()
     toast.success('记账成功')
-    fetchSummary()
-    fetchToday()
-    await checkBudgetWarnings()
+    await Promise.all([fetchSummary(), fetchToday()])
   } catch (e: any) {
     error.value = e.response?.data?.message || '保存失败'
   }
 }
 
-async function checkBudgetWarnings() {
-  try {
-    const { data } = await api.get('/budgets')
-    if (data.code === 0) {
-      const warnings: BudgetWarning[] = []
-      for (const b of data.data.items) {
-        if (b.status === 'warning' || b.status === 'exceeded') {
-          warnings.push({
-            category_name: b.category_name,
-            status: b.status,
-            percent: b.percent,
-            spent: b.spent,
-            amount: b.amount,
-          })
-        }
-      }
-      if (warnings.length > 0) {
-        budgetWarnings.value = warnings
-        showBudgetWarning.value = true
-      }
-    }
-  } catch { /* ignore */ }
-}
-
-function formatAmount(cents: number): string {
-  return (cents / 100).toFixed(2)
+function openManual() {
+  showManual.value = true
+  error.value = ''
 }
 </script>
 
 <template>
-  <div class="pb-20 md:pb-4">
-    <!-- 预算超支提醒 -->
-    <div v-if="showBudgetWarning && budgetWarnings.length > 0" class="mb-3 space-y-2">
-      <div
-        v-for="(w, idx) in budgetWarnings"
-        :key="idx"
-        class="card flex items-center justify-between py-2.5 px-3"
-        :style="w.status === 'exceeded' ? 'border-color: #fecaca; background: #fef2f2' : 'border-color: #fde68a; background: #fffbeb'"
-      >
-        <span class="text-sm" v-if="w.status === 'warning'" style="color: var(--color-text-primary)">
-          ⚠️ {{ w.category_name }}预算已用{{ w.percent }}%
-        </span>
-        <span class="text-sm" v-else style="color: var(--color-expense)">
-          🔴 {{ w.category_name }}已超支 ¥{{ formatAmount(w.spent - w.amount) }}
-        </span>
-        <button
-          @click="budgetWarnings.splice(idx, 1); if (budgetWarnings.length === 0) showBudgetWarning = false"
-          class="text-xs opacity-40 hover:opacity-100 ml-2"
-        >✕</button>
+  <div class="space-y-5">
+    <!-- 报头：本月三数 -->
+    <header class="quick-masthead">
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-[0.6875rem] font-semibold tracking-[0.06em]" style="color: var(--color-ink-3)">本月支出</span>
+        <Money :value="summary.expense" sign="none" size="sm" tone="expense" />
       </div>
-    </div>
+      <span class="rule-y" aria-hidden="true" />
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-[0.6875rem] font-semibold tracking-[0.06em]" style="color: var(--color-ink-3)">收入</span>
+        <Money :value="summary.income" sign="none" size="sm" tone="income" />
+      </div>
+      <span class="rule-y" aria-hidden="true" />
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-[0.6875rem] font-semibold tracking-[0.06em]" style="color: var(--color-ink-3)">结余</span>
+        <Money :value="balance" :sign="balance < 0 ? 'auto' : 'none'" size="sm"
+               :tone="balance >= 0 ? 'neutral' : 'expense'" />
+      </div>
+    </header>
 
-    <!-- 本月摘要 -->
-    <div class="grid grid-cols-3 gap-3 mb-4">
-      <div class="card text-center cursor-pointer" @click="$router.push('/ledger')">
-        <p class="text-[11px] mb-1" style="color: var(--color-text-muted)">本月支出</p>
-        <p class="text-base font-semibold amount-number amount-expense">¥{{ formatAmount(summary.expense) }}</p>
-      </div>
-      <div class="card text-center">
-        <p class="text-[11px] mb-1" style="color: var(--color-text-muted)">本月收入</p>
-        <p class="text-base font-semibold amount-number amount-income">¥{{ formatAmount(summary.income) }}</p>
-      </div>
-      <div class="card text-center">
-        <p class="text-[11px] mb-1" style="color: var(--color-text-muted)">结余</p>
-        <p class="text-base font-semibold amount-number amount-balance">¥{{ formatAmount(balance) }}</p>
-      </div>
-    </div>
+    <!-- ═══ 输入区 ═══ -->
+    <section class="ledger-block">
+      <div class="paper-ruled absolute inset-0" aria-hidden="true" />
+      <div class="lb-inner relative">
+        <span class="ledger-label ledger-label-solid text-[0.6875rem] font-semibold tracking-[0.06em]"
+              style="color: var(--color-ink-3)">说一句话</span>
 
-    <!-- AI 输入区 -->
-    <div class="card mb-4">
-      <form @submit.prevent="handleAiParse" class="flex gap-2">
-        <input
+        <textarea
+          ref="textarea"
           v-model="input"
-          type="text"
-          class="flex-1 px-3 py-2.5 rounded-lg text-sm"
-          style="border: 1px solid var(--color-border); background: var(--color-page-bg)"
-          placeholder="说点什么就能记账... 如：午饭32，打车15"
+          rows="3"
+          class="composer mt-3"
+          placeholder="午饭 32，打车 15"
           :disabled="loading"
+          @input="autoGrow"
+          @keydown="onKeydown"
         />
-        <button
-          type="submit"
-          :disabled="loading || !input.trim()"
-          class="btn-primary whitespace-nowrap disabled:opacity-50"
-        >
-          {{ loading ? '...' : '记账' }}
-        </button>
-        <button
-          type="button"
-          @click="showManual = true"
-          class="btn-secondary whitespace-nowrap"
-        >
-          手动
-        </button>
-      </form>
 
-      <!-- 快捷短语 -->
-      <div class="flex gap-2 overflow-x-auto pb-1 mt-3">
-        <button
-          v-for="phrase in quickPhrases"
-          :key="phrase"
-          type="button"
-          @click="appendPhrase(phrase)"
-          class="px-3 py-1 rounded-md text-xs font-medium whitespace-nowrap transition"
-          style="background: var(--color-primary-50); color: var(--color-primary-700)"
-        >
-          {{ phrase }}
-        </button>
+        <div class="flex items-center justify-between gap-3 mt-3">
+          <div class="flex items-center gap-2 min-w-0">
+            <button
+              class="btn btn-primary"
+              :disabled="loading || !input.trim()"
+              @click="handleAiParse"
+            >
+              <span
+                v-if="loading"
+                class="inline-block w-3.5 h-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin"
+              />
+              <AppIcon v-else name="spark" :size="14" />
+              {{ loading ? 'AI 正在拆解…' : '解析' }}
+            </button>
+            <button class="btn btn-outline" @click="openManual">手动</button>
+          </div>
+          <span v-if="!loading" class="text-[0.625rem] shrink-0" style="color: var(--color-ink-4)">
+            <span class="amt">{{ input.length }}</span> 字 · Enter 提交
+          </span>
+        </div>
+
+        <!-- 快捷短语 -->
+        <div class="scroll-x flex gap-1.5 mt-3 -mb-1 pb-1">
+          <button
+            v-for="p in QUICK_PHRASES"
+            :key="p"
+            type="button"
+            class="chip shrink-0"
+            @click="appendPhrase(p)"
+          >{{ p }}</button>
+        </div>
       </div>
+    </section>
 
-      <div v-if="error" class="mt-3 text-sm p-2.5 rounded-lg" style="color: var(--color-expense); background: #fef2f2; border: 1px solid #fecaca">
-        {{ error }}
-      </div>
-    </div>
+    <Notice v-if="error" tone="danger" @close="error = ''">{{ error }}</Notice>
 
-    <!-- 确认卡片 -->
+    <!-- 解析结果 -->
     <ConfirmCards
-      v-if="parsedItems.length > 0"
+      v-if="parsedItems.length"
       :items="parsedItems"
       @confirm="handleConfirm"
-      @cancel="handleCancel"
+      @cancel="resetComposer"
     />
 
-    <!-- 手动记账表单 -->
+    <!-- 手动表单 -->
     <ManualForm
       v-if="showManual"
       :initial-description="input"
@@ -312,6 +281,87 @@ function formatAmount(cents: number): string {
     />
 
     <!-- 今日流水 -->
-    <TodayList :transactions="todayTransactions" @refresh="fetchToday" />
+    <section class="sheet">
+      <header class="flex items-center justify-between px-3.5 py-2.5"
+              style="border-bottom: 1px solid var(--color-rule); background: var(--color-paper-sunk)">
+        <span class="ledger-label ledger-label-solid text-[0.6875rem] font-semibold tracking-[0.06em]"
+              style="color: var(--color-ink-3)">今日流水</span>
+        <span v-if="todayTotal" class="text-[0.6875rem] amt" style="color: var(--color-ink-3)">
+          支出 <Money :value="todayTotal" sign="none" size="sm" tone="muted" />
+        </span>
+      </header>
+
+      <EmptyState
+        v-if="!todayTransactions.length"
+        compact
+        ruled
+        icon="pen"
+        title="今天还没有记账"
+        description="在上面写一句话，比如「午饭 32，打车 15」"
+      />
+
+      <template v-else>
+        <SheetRow
+          v-for="tx in todayTransactions"
+          :key="tx.id"
+          clickable
+          @click="editing = tx"
+        >
+          <span class="tx-icon" aria-hidden="true">{{ tx.category_icon || '📦' }}</span>
+          <span class="min-w-0 flex-1">
+            <span class="block text-[0.8125rem] truncate" style="color: var(--color-ink-1)">
+              {{ tx.description || tx.category_name || '未分类' }}
+            </span>
+            <span class="block text-[0.6875rem] truncate" style="color: var(--color-ink-3)">
+              {{ tx.category_name }}<template v-if="tx.account_name"> · {{ tx.account_name }}</template>
+            </span>
+          </span>
+          <Money :value="tx.amount" :tone="tx.type === 'expense' ? 'expense' : 'income'" />
+        </SheetRow>
+      </template>
+    </section>
+
+    <EditTransactionModal
+      :show="!!editing"
+      :transaction="editing"
+      @close="editing = null"
+      @saved="editing = null; fetchToday(); fetchSummary()"
+    />
   </div>
 </template>
+
+<style scoped>
+.quick-masthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  background: var(--color-paper-raised);
+}
+
+.composer {
+  width: 100%;
+  min-height: 5.5rem;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--color-rule-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-paper-raised);
+  color: var(--color-ink-1);
+  font-family: inherit;
+  font-size: 1rem;
+  line-height: 1.55;
+  resize: none;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.composer::placeholder { color: var(--color-ink-4); }
+.composer:focus,
+.composer:focus-visible {
+  outline: none;
+  border-color: var(--color-ink-1);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-action) 14%, transparent);
+}
+.composer:disabled { background: var(--color-paper-sunk); color: var(--color-ink-4); }
+</style>

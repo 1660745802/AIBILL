@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted, computed } from 'vue'
 import api from '@/api/index'
 import TagInput from '@/components/TagInput.vue'
+import BaseModal from '@/components/ui/BaseModal.vue'
+import Money from '@/components/ui/Money.vue'
 
 interface Transaction {
   id: number
@@ -15,15 +17,8 @@ interface Transaction {
   tags?: string
 }
 
-const props = defineProps<{
-  show: boolean
-  transaction: Transaction | null
-}>()
-
-const emit = defineEmits<{
-  close: []
-  saved: []
-}>()
+const props = defineProps<{ show: boolean; transaction: Transaction | null }>()
+const emit = defineEmits<{ close: []; saved: [] }>()
 
 const type = ref<'expense' | 'income' | 'transfer'>('expense')
 const amount = ref('')
@@ -41,56 +36,47 @@ const accounts = ref<any[]>([])
 
 onMounted(async () => {
   try {
-    const [catRes, accRes] = await Promise.all([
-      api.get('/categories'),
-      api.get('/accounts'),
-    ])
+    const [catRes, accRes] = await Promise.all([api.get('/categories'), api.get('/accounts')])
     if (catRes.data.code === 0) categories.value = catRes.data.data.items
     if (accRes.data.code === 0) accounts.value = accRes.data.data.items
   } catch { /* ignore */ }
 })
 
 watch(() => props.transaction, (tx) => {
-  if (tx) {
-    type.value = tx.type as 'expense' | 'income' | 'transfer'
-    amount.value = (tx.amount / 100).toFixed(2)
-    description.value = tx.description || ''
-    date.value = tx.date
-    categoryId.value = tx.category_id
-    accountId.value = tx.account_id
-    targetAccountId.value = tx.target_account_id
-    error.value = ''
-    // 解析 tags（JSON 字符串 → 数组）
-    try {
-      tags.value = tx.tags ? JSON.parse(tx.tags) : []
-    } catch { tags.value = [] }
-  }
+  if (!tx) return
+  type.value = tx.type as 'expense' | 'income' | 'transfer'
+  amount.value = (tx.amount / 100).toFixed(2)
+  description.value = tx.description || ''
+  date.value = tx.date
+  categoryId.value = tx.category_id
+  accountId.value = tx.account_id
+  targetAccountId.value = tx.target_account_id
+  error.value = ''
+  try { tags.value = tx.tags ? JSON.parse(tx.tags) : [] } catch { tags.value = [] }
 }, { immediate: true })
 
-function filteredCategories() {
-  return categories.value.filter((c: any) => c.type === type.value)
-}
+const filteredCategories = computed(() => categories.value.filter((c: any) => c.type === type.value))
+const amountCents = computed(() => Math.round((parseFloat(amount.value) || 0) * 100))
+
+const TYPES = [
+  { value: 'expense', label: '支出' },
+  { value: 'income', label: '收入' },
+  { value: 'transfer', label: '转账' },
+] as const
 
 async function handleSave() {
   if (!props.transaction) return
-  const amountCents = Math.round(parseFloat(amount.value) * 100)
-  if (!amountCents || amountCents <= 0) {
-    error.value = '请输入有效金额'
-    return
-  }
-
-  saving.value = true
   error.value = ''
-
+  if (amountCents.value <= 0) { error.value = '金额要大于 0'; return }
+  saving.value = true
   try {
     const payload: Record<string, any> = {
       type: type.value,
-      amount: amountCents,
+      amount: amountCents.value,
       description: description.value,
       date: date.value,
       tags: tags.value,
     }
-
     if (type.value === 'transfer') {
       payload.category_id = null
       payload.target_account_id = targetAccountId.value
@@ -98,17 +84,11 @@ async function handleSave() {
       payload.category_id = categoryId.value
       payload.target_account_id = null
     }
-
-    if (accountId.value) {
-      payload.account_id = accountId.value
-    }
+    if (accountId.value) payload.account_id = accountId.value
 
     const { data } = await api.put(`/transactions/${props.transaction.id}`, payload)
-    if (data.code === 0) {
-      emit('saved')
-    } else {
-      error.value = data.message || '保存失败'
-    }
+    if (data.code === 0) emit('saved')
+    else error.value = data.message || '保存失败'
   } catch (e: any) {
     error.value = e.response?.data?.message || '保存失败'
   } finally {
@@ -118,130 +98,95 @@ async function handleSave() {
 </script>
 
 <template>
-  <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center">
-    <!-- 遮罩 -->
-    <div class="absolute inset-0 bg-black/40" @click="emit('close')"></div>
-
-    <!-- 弹窗 -->
-    <div class="relative bg-white rounded-lg w-[90%] max-w-md mx-4 p-5 max-h-[85vh] overflow-y-auto">
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="text-base font-medium text-gray-800">编辑交易</h3>
-        <button @click="emit('close')" class="text-gray-400 hover:text-gray-600 text-lg">✕</button>
+  <BaseModal :show="show" title="编辑交易" size="md" :footer="true" @close="emit('close')">
+    <form class="space-y-3" @submit.prevent="handleSave">
+      <div class="flex gap-1.5" role="group" aria-label="交易类型">
+        <button
+          v-for="t in TYPES"
+          :key="t.value"
+          type="button"
+          class="chip flex-1 justify-center"
+          :class="{ 'chip-active': type === t.value }"
+          @click="type = t.value"
+        >{{ t.label }}</button>
       </div>
 
-      <form @submit.prevent="handleSave" class="space-y-3">
-        <!-- 类型选择 -->
-        <div class="flex gap-2">
-          <button
-            v-for="t in [{ value: 'expense', label: '支出' }, { value: 'income', label: '收入' }, { value: 'transfer', label: '转账' }]"
-            :key="t.value"
-            type="button"
-            @click="type = t.value as any"
-            class="flex-1 py-1.5 text-sm rounded-md border transition-colors"
-            :class="type === t.value ? 'bg-blue-600 text-white border-blue-600' : 'text-gray-600 border-gray-300 hover:bg-gray-50'"
-          >
-            {{ t.label }}
-          </button>
-        </div>
+      <label class="block">
+        <span class="field-label">金额（元）</span>
+        <input
+          v-model="amount"
+          type="number" step="0.01" min="0.01" inputmode="decimal"
+          class="field !h-11 !text-lg font-semibold amt"
+        />
+      </label>
 
-        <!-- 金额 -->
-        <div>
-          <label class="text-xs text-gray-500">金额（元）</label>
-          <input
-            v-model="amount"
-            type="number"
-            step="0.01"
-            min="0.01"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 mt-0.5"
-            placeholder="金额"
-          />
-        </div>
-
-        <!-- 分类（非转账时显示） -->
-        <div v-if="type !== 'transfer'">
-          <label class="text-xs text-gray-500">分类</label>
-          <select
-            v-model="categoryId"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mt-0.5"
-          >
-            <option :value="null">选择分类</option>
-            <option v-for="cat in filteredCategories()" :key="cat.id" :value="cat.id">
+      <div class="grid grid-cols-2 gap-3">
+        <label v-if="type !== 'transfer'" class="block">
+          <span class="field-label">分类</span>
+          <select v-model="categoryId" class="field">
+            <option :value="null">未分类</option>
+            <option v-for="cat in filteredCategories" :key="cat.id" :value="cat.id">
               {{ cat.icon }} {{ cat.name }}
             </option>
           </select>
-        </div>
-
-        <!-- 账户 -->
-        <div>
-          <label class="text-xs text-gray-500">{{ type === 'transfer' ? '来源账户' : '账户' }}</label>
-          <select
-            v-model="accountId"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mt-0.5"
-          >
-            <option :value="null">选择账户</option>
+        </label>
+        <label class="block">
+          <span class="field-label">{{ type === 'transfer' ? '转出账户' : '账户' }}</span>
+          <select v-model="accountId" class="field">
+            <option :value="null">未指定</option>
             <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
               {{ acc.icon }} {{ acc.name }}
             </option>
           </select>
-        </div>
+        </label>
+      </div>
 
-        <!-- 目标账户（转账时） -->
-        <div v-if="type === 'transfer'">
-          <label class="text-xs text-gray-500">目标账户</label>
-          <select
-            v-model="targetAccountId"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mt-0.5"
-          >
-            <option :value="null">选择目标账户</option>
-            <option v-for="acc in accounts.filter(a => a.id !== accountId)" :key="acc.id" :value="acc.id">
-              {{ acc.icon }} {{ acc.name }}
-            </option>
-          </select>
-        </div>
+      <label v-if="type === 'transfer'" class="block">
+        <span class="field-label">转入账户</span>
+        <select v-model="targetAccountId" class="field">
+          <option :value="null">未指定</option>
+          <option
+            v-for="acc in accounts.filter(a => a.id !== accountId)"
+            :key="acc.id" :value="acc.id"
+          >{{ acc.icon }} {{ acc.name }}</option>
+        </select>
+      </label>
 
-        <!-- 描述 -->
-        <div>
-          <label class="text-xs text-gray-500">描述</label>
-          <input
-            v-model="description"
-            type="text"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mt-0.5"
-            placeholder="备注（选填）"
-          />
-        </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label class="block">
+          <span class="field-label">描述</span>
+          <input v-model="description" type="text" class="field" placeholder="选填" />
+        </label>
+        <label class="block">
+          <span class="field-label">日期</span>
+          <input v-model="date" type="date" class="field" />
+        </label>
+      </div>
 
-        <!-- 日期 -->
-        <div>
-          <label class="text-xs text-gray-500">日期</label>
-          <input
-            v-model="date"
-            type="date"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mt-0.5"
-          />
-        </div>
+      <label class="block">
+        <span class="field-label">标签</span>
+        <TagInput v-model="tags" />
+      </label>
 
-        <!-- 标签 -->
-        <div>
-          <label class="text-xs text-gray-500">标签</label>
-          <div class="mt-0.5">
-            <TagInput v-model="tags" />
-          </div>
-        </div>
+      <p v-if="error" class="field-error">{{ error }}</p>
 
-        <!-- 错误提示 -->
-        <div v-if="error" class="text-sm text-red-600 bg-red-50 p-2 rounded">
-          {{ error }}
-        </div>
+      <p v-if="amountCents > 0" class="text-right text-xs amt" style="color: var(--color-ink-3)">
+        保存为 <Money
+          :value="amountCents"
+          sign="none"
+          size="sm"
+          :tone="type === 'income' ? 'income' : type === 'transfer' ? 'info' : 'expense'"
+        />
+      </p>
+    </form>
 
-        <!-- 保存按钮 -->
-        <button
-          type="submit"
-          :disabled="saving || !amount || parseFloat(amount) <= 0"
-          class="w-full py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
-        >
-          {{ saving ? '保存中...' : '保存' }}
+    <template #footer>
+      <div class="flex gap-2">
+        <button class="btn btn-outline flex-1" :disabled="saving" @click="emit('close')">取消</button>
+        <button class="btn btn-primary flex-[2]" :disabled="saving" @click="handleSave">
+          {{ saving ? '保存中…' : '保存修改' }}
         </button>
-      </form>
-    </div>
-  </div>
+      </div>
+    </template>
+  </BaseModal>
 </template>

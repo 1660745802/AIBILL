@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import api from '@/api/index'
+import Money from '@/components/ui/Money.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
 
 const accounts = ref<any[]>([])
 const showAdd = ref(false)
@@ -49,13 +51,14 @@ async function toggleAccount(id: number, currentActive: number) {
   } catch { /* ignore */ }
 }
 
-// 编辑账户
+// 行内展开编辑
 const editingId = ref<number | null>(null)
 const editName = ref('')
 const editIcon = ref('')
 const editBalance = ref('')
 
 function startEdit(acc: any) {
+  if (editingId.value === acc.id) { editingId.value = null; return }
   editingId.value = acc.id
   editName.value = acc.name
   editIcon.value = acc.icon
@@ -75,27 +78,24 @@ async function saveEdit() {
     await fetchAccounts()
   } catch { /* ignore */ }
 }
-
-function formatBalance(cents: number): string {
-  return (cents / 100).toFixed(2)
-}
 </script>
 
 <template>
-  <div class="bg-white px-4 py-4 mb-2">
-    <div class="flex items-center justify-between mb-3">
-      <h3 class="text-sm font-medium text-gray-700">账户管理</h3>
-      <button @click="showAdd = !showAdd" class="text-xs text-blue-600 hover:text-blue-800">
+  <div class="sheet">
+    <!-- 头部 -->
+    <div class="flex items-center justify-between px-3.5 py-2.5 border-b border-rule-faint">
+      <span class="text-xs font-semibold text-ink-2">账户管理</span>
+      <button @click="showAdd = !showAdd" class="act">
         {{ showAdd ? '取消' : '+ 添加' }}
       </button>
     </div>
 
-    <!-- 添加表单 -->
-    <div v-if="showAdd" class="space-y-2 mb-3 p-2 bg-gray-50 rounded">
+    <!-- 添加表单（纸下沉底） -->
+    <div v-if="showAdd" class="px-3.5 py-3 bg-paper-sunk border-b border-rule-faint space-y-2">
       <div class="flex gap-2">
-        <input v-model="newIcon" class="w-10 px-1 py-1 border border-gray-300 rounded text-center text-sm" maxlength="4" />
-        <input v-model="newName" class="flex-1 px-2 py-1 border border-gray-300 rounded text-sm" placeholder="账户名称" />
-        <select v-model="newType" class="px-2 py-1 border border-gray-300 rounded text-xs">
+        <input v-model="newIcon" class="field w-12 text-center" maxlength="4" />
+        <input v-model="newName" class="field flex-1" placeholder="账户名称" />
+        <select v-model="newType" class="field w-24">
           <option value="wechat">微信</option>
           <option value="alipay">支付宝</option>
           <option value="bank">银行卡</option>
@@ -105,58 +105,52 @@ function formatBalance(cents: number): string {
         </select>
       </div>
       <div class="flex gap-2">
-        <input v-model="newBalance" type="number" step="0.01" class="flex-1 px-2 py-1 border border-gray-300 rounded text-sm" placeholder="初始余额（选填）" />
-        <button @click="addAccount" :disabled="loading || !newName.trim()" class="px-3 py-1 bg-blue-600 text-white text-xs rounded disabled:opacity-50">
-          保存
-        </button>
+        <input v-model="newBalance" type="number" step="0.01" class="field flex-1 amt" placeholder="初始余额（选填）" />
+        <button @click="addAccount" :disabled="loading || !newName.trim()" class="btn btn-primary btn-sm">保存</button>
       </div>
     </div>
 
     <!-- 账户列表 -->
-    <div class="space-y-2">
+    <template v-for="acc in accounts" :key="acc.id">
       <div
-        v-for="acc in accounts"
-        :key="acc.id"
-        class="py-2 border-b border-gray-50 last:border-0"
-        :class="{ 'opacity-40': !acc.is_active }"
+        class="sheet-row sheet-row-click"
+        :class="[editingId === acc.id ? 'sheet-row-active' : '', !acc.is_active ? 'opacity-45' : '']"
+        role="button"
+        tabindex="0"
+        @click="startEdit(acc)"
+        @keydown.enter="startEdit(acc)"
       >
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2 flex-1 cursor-pointer" @click="startEdit(acc)">
-            <span class="text-base">{{ acc.icon }}</span>
-            <div>
-              <div class="text-sm text-gray-800">{{ acc.name }}</div>
-              <div class="text-xs text-gray-400">余额 ¥{{ formatBalance(acc.current_balance ?? acc.initial_balance) }}</div>
-            </div>
-          </div>
-          <div class="flex gap-1.5">
-            <button
-              @click="startEdit(acc)"
-              class="text-xs px-2 py-0.5 rounded border text-gray-500 border-gray-200"
-            >
-              编辑
-            </button>
-            <button
-              @click="toggleAccount(acc.id, acc.is_active)"
-              class="text-xs px-2 py-0.5 rounded border"
-              :class="acc.is_active ? 'text-red-400 border-red-200' : 'text-green-500 border-green-200'"
-            >
-              {{ acc.is_active ? '停用' : '启用' }}
-            </button>
+        <span class="tx-icon">{{ acc.icon }}</span>
+        <div class="min-w-0 flex-1">
+          <div class="text-sm font-medium text-ink-1 truncate" :class="!acc.is_active ? 'line-through' : ''">{{ acc.name }}</div>
+          <div class="text-[11px] text-ink-3">
+            余额 <Money :value="acc.current_balance ?? acc.initial_balance" size="sm" :tone="(acc.current_balance ?? acc.initial_balance) < 0 ? 'expense' : 'muted'" />
           </div>
         </div>
-        <!-- 编辑表单 -->
-        <div v-if="editingId === acc.id" class="mt-2 p-2 bg-gray-50 rounded space-y-2">
-          <div class="flex gap-2">
-            <input v-model="editName" class="flex-1 px-2 py-1 border border-gray-300 rounded text-sm" placeholder="账户名称" />
-            <input v-model="editIcon" class="w-10 px-1 py-1 border border-gray-300 rounded text-center text-sm" maxlength="4" />
-          </div>
-          <div class="flex gap-2">
-            <input v-model="editBalance" type="number" step="0.01" class="flex-1 px-2 py-1 border border-gray-300 rounded text-sm" placeholder="当前余额（元）" />
-            <button @click="saveEdit" class="px-3 py-1 bg-blue-600 text-white text-xs rounded">保存</button>
-            <button @click="editingId = null" class="px-3 py-1 text-gray-500 text-xs border border-gray-300 rounded">取消</button>
-          </div>
+        <button
+          @click.stop="toggleAccount(acc.id, acc.is_active)"
+          class="act shrink-0"
+          :class="acc.is_active ? 'act-danger' : ''"
+        >{{ acc.is_active ? '停用' : '启用' }}</button>
+        <AppIcon :name="editingId === acc.id ? 'chevronUp' : 'chevronDown'" :size="15" class="text-ink-4 shrink-0" />
+      </div>
+
+      <!-- 行内展开编辑：纸下沉底 -->
+      <div v-if="editingId === acc.id" class="px-3.5 py-3 bg-paper-sunk border-t border-rule-faint space-y-2">
+        <div class="flex gap-2">
+          <input v-model="editIcon" class="field w-12 text-center" maxlength="4" />
+          <input v-model="editName" class="field flex-1" placeholder="账户名称" />
+        </div>
+        <div class="flex gap-2">
+          <input v-model="editBalance" type="number" step="0.01" class="field flex-1 amt" placeholder="当前余额（元）" />
+          <button @click.stop="editingId = null" class="btn btn-quiet btn-sm">取消</button>
+          <button @click.stop="saveEdit" class="btn btn-primary btn-sm">保存</button>
         </div>
       </div>
+    </template>
+
+    <div v-if="!accounts.length" class="px-3.5 py-6 text-center text-xs text-ink-4">
+      还没有账户，用上方「添加」新建一个。
     </div>
   </div>
 </template>

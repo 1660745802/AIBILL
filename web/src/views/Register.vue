@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import Notice from '@/components/ui/Notice.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -43,84 +44,161 @@ async function handleRegister() {
 </script>
 
 <template>
-  <div class="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-    <div class="w-full max-w-sm">
-      <div class="text-center mb-8">
-        <h1 class="text-2xl font-bold text-gray-900">💰 注册账号</h1>
-        <p class="mt-2 text-sm text-gray-500">需要邀请码才能注册</p>
+  <div class="min-h-screen lg:grid lg:grid-cols-[1fr_420px]">
+    <!-- 品牌面 -->
+    <aside class="brand paper-ruled">
+      <div class="brand-inner">
+        <div class="brand-mark">¥</div>
+        <h1 class="brand-title">账本</h1>
+        <div class="brand-rule double-rule"></div>
+        <p class="brand-tagline">加入这本账。<br />需要邀请码才能注册。</p>
       </div>
+    </aside>
 
-      <form @submit.prevent="handleRegister" class="bg-white shadow-md rounded-xl p-6 space-y-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">邀请码 *</label>
-          <input
-            v-model="inviteCode"
-            type="text"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            placeholder="请输入邀请码"
-          />
+    <!-- 表单面 -->
+    <main class="form-face">
+      <div class="form-wrap">
+        <div class="mb-6">
+          <h2 class="text-lg font-[650] text-ink-1">注册账号</h2>
+          <p class="text-xs text-ink-3 mt-1">需要邀请码才能注册。</p>
         </div>
 
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">用户名 *</label>
-          <input
-            v-model="username"
-            type="text"
-            autocomplete="username"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            placeholder="3-20个字符，字母数字下划线"
-          />
-        </div>
+        <Notice v-if="error" tone="danger" class="mb-4">{{ error }}</Notice>
 
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">昵称</label>
-          <input
-            v-model="nickname"
-            type="text"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            placeholder="选填，用于显示"
-          />
-        </div>
+        <form @submit.prevent="handleRegister" class="space-y-4">
+          <!-- 邀请码：门槛，排第一位 -->
+          <div>
+            <label class="field-label">邀请码 *</label>
+            <input
+              v-model="inviteCode"
+              type="text"
+              class="field"
+              placeholder="请输入邀请码"
+            />
+            <p class="field-hint">没有邀请码无法注册，请向管理员索取。</p>
+          </div>
 
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">密码 *</label>
-          <input
-            v-model="password"
-            type="password"
-            autocomplete="new-password"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            placeholder="至少6个字符"
-          />
-        </div>
+          <div>
+            <label class="field-label">用户名 *</label>
+            <input
+              v-model="username"
+              type="text"
+              autocomplete="username"
+              class="field"
+              placeholder="3-20个字符，字母数字下划线"
+            />
+          </div>
 
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">确认密码 *</label>
-          <input
-            v-model="confirmPassword"
-            type="password"
-            autocomplete="new-password"
-            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            placeholder="再次输入密码"
-          />
-        </div>
+          <div>
+            <label class="field-label">昵称</label>
+            <input
+              v-model="nickname"
+              type="text"
+              class="field"
+              placeholder="选填，用于显示"
+            />
+          </div>
 
-        <div v-if="error" class="text-sm text-red-600 bg-red-50 p-2 rounded">
-          {{ error }}
-        </div>
+          <div>
+            <label class="field-label">密码 *</label>
+            <input
+              v-model="password"
+              type="password"
+              autocomplete="new-password"
+              class="field"
+              placeholder="至少6个字符"
+            />
+          </div>
 
-        <button
-          type="submit"
-          :disabled="loading"
-          class="w-full py-2 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          {{ loading ? '注册中...' : '注册' }}
-        </button>
+          <div>
+            <label class="field-label">确认密码 *</label>
+            <input
+              v-model="confirmPassword"
+              type="password"
+              autocomplete="new-password"
+              class="field"
+              placeholder="再次输入密码"
+            />
+          </div>
 
-        <p class="text-center text-sm text-gray-500">
+          <button
+            type="submit"
+            :disabled="loading"
+            class="btn btn-primary btn-block btn-lg"
+          >
+            {{ loading ? '注册中…' : '注册' }}
+          </button>
+        </form>
+
+        <p class="text-center text-xs text-ink-3 mt-6">
           已有账号？
-          <router-link to="/login" class="text-blue-600 hover:underline">登录</router-link>
+          <router-link to="/login" class="link ml-0.5">登录</router-link>
         </p>
-      </form>
-    </div>
+      </div>
+    </main>
   </div>
 </template>
+
+<style scoped>
+.brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2.5rem 1.5rem;
+  border-bottom: 1px solid var(--color-rule);
+}
+.brand-inner {
+  width: 100%;
+  max-width: 22rem;
+  text-align: center;
+}
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: var(--radius-md);
+  background: var(--color-action);
+  color: var(--color-action-fg);
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+}
+.brand-title {
+  font-size: 1.5rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--color-ink-1);
+}
+.brand-rule {
+  width: 3rem;
+  margin: 1rem auto;
+}
+.brand-tagline {
+  font-size: 0.8125rem;
+  color: var(--color-ink-3);
+  line-height: 1.7;
+}
+.form-face {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2.5rem 1.5rem;
+  background: var(--color-paper-raised);
+}
+.form-wrap {
+  width: 100%;
+  max-width: 20rem;
+}
+@media (min-width: 1024px) {
+  .brand {
+    border-bottom: 0;
+    border-right: 1px solid var(--color-rule);
+    padding: 3rem;
+  }
+  .brand-inner { text-align: left; }
+  .brand-rule { margin-left: 0; }
+  .brand-title { font-size: 2rem; }
+}
+</style>

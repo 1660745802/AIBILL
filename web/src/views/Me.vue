@@ -2,91 +2,126 @@
 import { computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useRouter } from 'vue-router'
+import { useConfirm } from '@/composables/useConfirm'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import LedgerLabel from '@/components/ui/LedgerLabel.vue'
+import SheetRow from '@/components/ui/SheetRow.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
+const confirm = useConfirm()
 
-const sections = computed(() => [
-  {
-    title: '财务管理',
-    items: [
-      { path: '/assets', label: '资产全景', icon: '💰', desc: '净资产与账户管理' },
-      { path: '/goals', label: '财务目标', icon: '🎯', desc: '储蓄和还贷追踪' },
-      { path: '/budget', label: '预算管理', icon: '📊', desc: '月度预算与警报' },
-      { path: '/subscriptions', label: '订阅管理', icon: '🔁', desc: '周期性支出追踪' },
-    ],
-  },
-  {
-    title: '工具',
-    items: [
-      { path: '/ai', label: 'AI 助手', icon: '🤖', desc: '智能问答与分析' },
-      { path: '/import', label: '导入数据', icon: '📥', desc: '微信/支付宝账单' },
-      { path: '/trash', label: '回收站', icon: '🗑️', desc: '已删除的记录' },
-    ],
-  },
-  {
-    title: '系统',
-    items: [
-      { path: '/settings', label: '设置', icon: '⚙️', desc: '账户与偏好设置' },
-      ...(auth.isAdmin ? [{ path: '/admin', label: '管理面板', icon: '🛡️', desc: '用户与系统管理' }] : []),
-    ],
-  },
-])
+interface NavItem {
+  path: string
+  label: string
+  icon: string
+  desc: string
+}
 
-function handleLogout() {
-  if (confirm('确定退出登录？')) {
-    auth.logout()
-    router.push('/login')
-  }
+const sections = computed<{ title: string; items: NavItem[] }[]>(() => {
+  const groups: { title: string; items: NavItem[] }[] = [
+    {
+      title: '财务管理',
+      items: [
+        { path: '/assets', label: '资产全景', icon: 'wallet', desc: '各账户余额与净资产' },
+      ],
+    },
+    {
+      title: '工具',
+      items: [
+        { path: '/ai', label: 'AI 助手', icon: 'spark', desc: '智能问答与分析' },
+        { path: '/import', label: '导入数据', icon: 'upload', desc: '微信/支付宝账单' },
+        { path: '/trash', label: '回收站', icon: 'trash', desc: '已删除的记录' },
+      ],
+    },
+    {
+      title: '系统',
+      items: [
+        { path: '/settings', label: '设置', icon: 'settings', desc: '账户与偏好设置' },
+        // 「管理面板」仅 admin 可见；非 admin 时系统分组仍有「设置」，不会留空分组
+        ...(auth.isAdmin
+          ? [{ path: '/admin', label: '管理面板', icon: 'shield', desc: '用户与系统管理' }]
+          : []),
+      ],
+    },
+  ]
+  return groups
+})
+
+const initial = computed(() =>
+  (auth.user?.nickname || auth.user?.username || '?')[0]?.toUpperCase(),
+)
+
+async function handleLogout() {
+  const ok = await confirm({
+    title: '退出登录',
+    body: '退出后需要重新输入用户名和密码才能回到你的账本。',
+  })
+  if (!ok) return
+  auth.logout()
+  router.push('/login')
 }
 </script>
 
 <template>
-  <div class="pb-20 md:pb-4">
-    <!-- 用户信息 -->
-    <div class="card mb-5 flex items-center gap-3">
-      <div class="w-11 h-11 rounded-full flex items-center justify-center text-white font-bold" style="background: var(--color-primary-500)">
-        {{ (auth.user?.nickname || auth.user?.username || '?')[0]?.toUpperCase() }}
+  <div class="pb-24 md:pb-6">
+    <PageHeader title="我的" subtitle="账户、工具与系统设置" />
+
+    <!-- 用户块 -->
+    <div class="surface p-4 flex items-center gap-3 mb-6">
+      <div class="avatar">{{ initial }}</div>
+      <div class="flex-1 min-w-0">
+        <h2 class="text-sm font-semibold text-ink-1 truncate">
+          {{ auth.user?.nickname || auth.user?.username }}
+        </h2>
+        <p class="text-[11px] text-ink-3 truncate">@{{ auth.user?.username }}</p>
       </div>
-      <div class="flex-1">
-        <h2 class="text-sm font-semibold" style="color: var(--color-text-primary)">{{ auth.user?.nickname || auth.user?.username }}</h2>
-        <p class="text-[11px]" style="color: var(--color-text-muted)">@{{ auth.user?.username }}</p>
-      </div>
-      <router-link to="/settings" class="text-xs" style="color: var(--color-primary-600)">设置 →</router-link>
+      <span v-if="auth.isAdmin" class="badge badge-ink">管理员</span>
     </div>
 
-    <!-- 功能分组 -->
-    <div class="space-y-4">
-      <div v-for="section in sections" :key="section.title">
-        <h3 class="text-[11px] font-medium uppercase tracking-wider px-1 mb-2" style="color: var(--color-text-muted)">{{ section.title }}</h3>
-        <div class="card !p-0 overflow-hidden">
-          <router-link
-            v-for="(item, i) in section.items"
+    <!-- 分组列表 -->
+    <div class="space-y-6">
+      <section v-for="section in sections" :key="section.title">
+        <LedgerLabel>{{ section.title }}</LedgerLabel>
+        <div class="sheet">
+          <SheetRow
+            v-for="item in section.items"
             :key="item.path"
-            :to="item.path"
-            class="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-gray-50"
-            :style="i > 0 ? 'border-top: 1px solid var(--color-border-light)' : ''"
+            clickable
+            @click="router.push(item.path)"
           >
-            <span class="text-lg w-7 text-center">{{ item.icon }}</span>
-            <div class="flex-1">
-              <p class="text-sm font-medium" style="color: var(--color-text-primary)">{{ item.label }}</p>
-              <p class="text-[11px]" style="color: var(--color-text-muted)">{{ item.desc }}</p>
+            <span class="tx-icon text-ink-2"><AppIcon :name="item.icon" :size="16" /></span>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium text-ink-1 truncate">{{ item.label }}</p>
+              <p class="text-[11px] text-ink-3 truncate">{{ item.desc }}</p>
             </div>
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="color: var(--color-text-muted)">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-            </svg>
-          </router-link>
+            <AppIcon name="chevronRight" :size="16" class="chev-link" />
+          </SheetRow>
         </div>
-      </div>
+      </section>
     </div>
 
-    <!-- 退出 -->
-    <button
-      @click="handleLogout"
-      class="w-full mt-6 py-2.5 text-sm font-medium rounded-xl transition"
-      style="color: var(--color-expense); background: #fef2f2; border: 1px solid #fecaca"
-    >
+    <!-- 退出登录：与列表行留 24px 间距 -->
+    <button class="btn btn-danger btn-block mt-6" @click="handleLogout">
+      <AppIcon name="logout" :size="16" />
       退出登录
     </button>
   </div>
 </template>
+
+<style scoped>
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-action);
+  color: var(--color-action-fg);
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+</style>

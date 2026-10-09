@@ -5,6 +5,14 @@
 > **响应格式**: 统一 `{ code: 0, data: <T>, message: "" }`
 > **路由总数**: 80（基于 `server/src/routes/*.ts` 2026-09 重构）
 
+> ⚠️ **兼容性说明（2026-10）**
+> 以下接口在 Web 前端已下线（页面与导航入口移除），但**后端实现与数据表全部保留**，
+> 供已发布的移动 App 继续调用，请勿删除：
+> `/api/budgets/*`、`/api/goals/*`、`/api/subscriptions/*`、`/api/memories/*`、
+> `/api/assets/snapshot`、`/api/assets/trend`。
+> 同样，`GET /api/stats/dashboard` 的响应仍包含 `budget_progress` / `goals_top` /
+> `subscriptions_overview` 字段（值为空数组），以保证响应结构不变。
+
 ---
 
 ## 0. 通用规则
@@ -99,8 +107,10 @@
 ### PUT `/api/auth/password`
 ```json
 { "old_password": "...", "new_password": "newpass123" }
+// Response
+{ "code": 0, "data": { "token": "<新 token>" }, "message": "密码修改成功" }
 ```
-改密成功后**自动撤销该用户所有现存 token**（写入 `jwt_revocations`）。
+改密成功后**自动撤销该用户所有现存 token**（`users.token_version` 自增），并**为当前设备换发新 token**（客户端应立即写入 localStorage）；其他设备需重新登录。
 
 ### GET `/api/settings`
 返回合并后的设置（用户覆盖 > 全局）。普通用户**看不到 AI Key**。
@@ -124,7 +134,7 @@
 // Response
 { "code": 0, "data": { "created": [...], "duplicates": [...] }, "message": "" }
 ```
-幂等：同 `user_id + client_id` 不入库，挪到 `duplicates`。
+幂等：同 `user_id + client_id` 不入库，挪到 `duplicates`。批量上限 **200** 条/请求（CSV 导入按 100 条分片提交）。
 
 ### GET `/api/transactions`
 支持 `page` / `page_size` / `start_date` / `end_date` / `type` / `category_id` / `account_id` / `keyword` / `tag`。
@@ -229,6 +239,12 @@
 ### GET `/api/stats/dashboard`
 聚合首页仪表盘：本月收支 + 净资产 + 趋势 + 分类饼图 + 预算进度 + 异常提醒。
 
+**净资产口径**（与 `/api/assets/overview` 完全一致，见 `lib/assets.ts`）：
+- `total_assets` = 所有余额 ≥ 0 的账户余额之和
+- `total_liabilities` = 所有余额 < 0 的账户的绝对值之和（信用卡欠款、活期透支都算）
+- `net_worth.total` = `total_assets − total_liabilities` = 所有账户余额之和
+- `asset_type` 只用于 `asset_breakdown` 展示分组，不参与债务计算
+
 ### POST `/api/stats/analysis`
 ```json
 { "dimension": "overall | spending | forecast", "months": 4 }
@@ -256,9 +272,20 @@
 ```json
 { "content": "CSV文件全部文本...", "source": "wechat | alipay" }
 // Response
-{ "code": 0, "data": { "parsed": [...], "total": 50, "skipped": 3, "errors": 1 }, "message": "" }
+{ "code": 0, "data": {
+    "parsed": [{
+      "type": "expense", "amount": 3250, "description": "外卖订单",
+      "date": "2026-09-20", "source_detail": "微信-美团",
+      "category_id": 12, "category_name": "餐饮", "category_icon": "🍜",
+      "category_auto": true,   // true = 由商户关键词规则自动预填，用户可在预览中改
+      "duplicate": false       // true = 与已有记录（同 user+type+amount+date+description）重复
+    }],
+    "total": 250, "skipped": 0, "errors": 1, "duplicates": 3
+  }, "message": "" }
 ```
-**只解析不直接入库**，前端预览确认后组装 items 调 `POST /api/transactions`。
+**只解析不直接入库**，前端预览确认后组装 items 调 `POST /api/transactions`（建议 100 条/批）。
+- 分类按商户关键词预填（如「美团→餐饮」「滴滴→交通」），命中不了则归入「其他」；用户删除对应分类时自动回退到「其他」。
+- 重复检测同时对比**已有记录**与**同一批次内部**；回收站（已软删除）中的记录不计入重复。
 
 ### GET `/api/export/json`
 返回 JSON 文件下载（Content-Disposition: attachment）。含 transactions + categories + accounts + budgets。
@@ -271,7 +298,8 @@
 ## 8. 资产 `/api/assets/*`（财务工作台）
 
 ### GET `/api/assets/overview`
-返回 `{ net_assets, total_assets, total_liabilities, distribution: [...], accounts: [...] }`。**单条聚合 SQL**（已修 N+1）。
+返回 `{ net_worth, total_assets, total_liabilities, by_type: [...], accounts: [...] }`。**单条聚合 SQL**（已修 N+1）。
+净资产口径与 `/api/stats/dashboard` 一致：负余额计负债，正余额计资产（详见上方 dashboard 小节）。
 
 ### GET `/api/assets/trend?months=6`
 净资产历史趋势（基于 `asset_snapshots`）。

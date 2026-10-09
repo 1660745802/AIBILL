@@ -2,13 +2,37 @@
 import { ref, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
+import { useConfirm } from '@/composables/useConfirm'
 import api from '@/api/index'
+import BaseModal from '@/components/ui/BaseModal.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import Money from '@/components/ui/Money.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
 
 const auth = useAuthStore()
 const toast = useToast()
+const confirm = useConfirm()
+
+type TabKey = 'overview' | 'users' | 'codes' | 'ai' | 'quality' | 'logs' | 'rules'
 
 // Tab navigation
-const activeTab = ref<'overview' | 'users' | 'codes' | 'ai' | 'quality' | 'logs' | 'rules'>('overview')
+const activeTab = ref<TabKey>('overview')
+
+const navItems: { key: TabKey; label: string; short: string; icon: string }[] = [
+  { key: 'overview', label: '概览', short: '概览', icon: 'overview' },
+  { key: 'users', label: '用户管理', short: '用户', icon: 'users' },
+  { key: 'codes', label: '邀请码', short: '邀请码', icon: 'ticket' },
+  { key: 'ai', label: 'AI 设置', short: 'AI', icon: 'spark' },
+  { key: 'quality', label: '解析质量', short: '质量', icon: 'search' },
+  { key: 'logs', label: '系统日志', short: '日志', icon: 'list' },
+  { key: 'rules', label: '通知规则', short: '规则', icon: 'code' },
+]
+
+function switchTab(key: TabKey) {
+  activeTab.value = key
+  if (key === 'logs') fetchAppLogs()
+  if (key === 'rules') fetchNotifRules()
+}
 
 // 系统概览
 const systemStats = ref<any>(null)
@@ -43,6 +67,7 @@ const savingRule = ref(false)
 // 邀请码生成
 const newCodeMaxUses = ref(1)
 const generating = ref(false)
+const copiedCodeId = ref<number | null>(null)
 
 // 用户详情/操作
 const showUserDetail = ref<any>(null)
@@ -84,8 +109,25 @@ async function generateCode() {
   finally { generating.value = false }
 }
 
+async function copyCode(code: any) {
+  try {
+    await navigator.clipboard.writeText(code.code)
+    copiedCodeId.value = code.id
+    setTimeout(() => {
+      if (copiedCodeId.value === code.id) copiedCodeId.value = null
+    }, 1500)
+  } catch {
+    toast.error('复制失败，请手动选择')
+  }
+}
+
 async function revokeCode(id: number) {
-  if (!confirm('确定作废此邀请码？')) return
+  if (!(await confirm({
+    title: '作废邀请码',
+    body: '作废后该邀请码立即失效，已注册用户不受影响。',
+    danger: true,
+    confirmText: '作废',
+  }))) return
   try {
     await api.delete(`/admin/invite-codes/${id}`)
     await fetchAdminData()
@@ -100,6 +142,10 @@ async function toggleUser(id: number, currentActive: number) {
 }
 
 async function viewUserDetail(userId: number) {
+  if (showUserDetail.value?.id === userId) {
+    showUserDetail.value = null
+    return
+  }
   try {
     const { data } = await api.get(`/admin/users/${userId}/stats`)
     if (data.code === 0) {
@@ -129,7 +175,11 @@ async function resetPassword() {
 }
 
 async function deleteUser(id: number, username: string) {
-  if (!confirm(`确定删除用户 ${username}？此操作将清除该用户所有数据且不可恢复！`)) return
+  if (!(await confirm({
+    title: '删除用户',
+    body: `用户「${username}」及其全部交易、预算、订阅等数据将被永久清除，无法恢复。`,
+    danger: true,
+  }))) return
   try {
     const { data } = await api.delete(`/admin/users/${id}`)
     if (data.code === 0) {
@@ -200,14 +250,19 @@ function formatLocalTime(utcStr: string | null | undefined): string {
   return `${m}-${day} ${h}:${min}`
 }
 
-function statusLabel(status: string): string {
-  const map: Record<string, string> = { success: '✅ 成功', empty: '⚠️ 空结果', error: '❌ 错误', timeout: '⏱️ 超时' }
-  return map[status] || status
+const PARSE_STATUS: Record<string, { label: string; chipActive: string; badge: string }> = {
+  success: { label: '成功', chipActive: 'qa-chip-income', badge: 'badge-income' },
+  empty: { label: '空结果', chipActive: 'qa-chip-warn', badge: 'badge-warn' },
+  error: { label: '错误', chipActive: 'qa-chip-expense', badge: 'badge-expense' },
+  timeout: { label: '超时', chipActive: 'qa-chip-warn', badge: 'badge-warn' },
 }
 
-function statusColor(status: string): string {
-  const map: Record<string, string> = { success: 'text-green-600', empty: 'text-yellow-600', error: 'text-red-600', timeout: 'text-orange-600' }
-  return map[status] || 'text-gray-600'
+function statusLabel(status: string): string {
+  return PARSE_STATUS[status]?.label || status
+}
+
+function statusBadge(status: string): string {
+  return PARSE_STATUS[status]?.badge || 'badge'
 }
 
 // === 系统概览 ===
@@ -245,6 +300,11 @@ async function fetchAppLogs(page = 1) {
     }
   } catch { /* ignore */ }
   finally { loadingAppLogs.value = false }
+}
+
+function logLevelBadge(level: string): string {
+  const map: Record<string, string> = { info: 'badge-info', warn: 'badge-warn', error: 'badge-expense' }
+  return map[level] || 'badge'
 }
 
 // === 通知规则 ===
@@ -336,685 +396,780 @@ function closeUserTransactions() {
   viewingUserId.value = null
   userTransactions.value = []
 }
-
-function formatAmount(cents: number): string {
-  return (cents / 100).toFixed(2)
-}
 </script>
 
-
 <template>
-  <div class="pb-20 md:pb-4">
-    <!-- 管理面板：左侧菜单 + 右侧内容 -->
-    <div class="flex flex-col md:flex-row gap-0 md:gap-5">
-      <!-- 左侧菜单 (PC 显示为固定侧栏，移动端显示为横向滚动) -->
-      <aside class="hidden md:block md:w-44 lg:w-48 shrink-0">
-        <div class="sticky top-6">
-          <h1 class="page-title mb-1">管理面板</h1>
-          <p class="page-subtitle mb-4">系统管理和监控</p>
-          <nav class="space-y-0.5">
+  <div>
+    <div class="flex flex-col md:flex-row md:gap-6">
+      <!-- ≥md：左侧 192px sticky 子导航 -->
+      <aside class="hidden md:block shrink-0" style="width: 192px">
+        <div class="admin-nav">
+          <h1 class="page-title mb-0.5">管理面板</h1>
+          <p class="text-xs text-ink-3 mb-4">系统管理与监控</p>
+          <nav class="flex flex-col">
             <button
-              v-for="tab in [
-                { key: 'overview', label: '概览', icon: '📋' },
-                { key: 'users', label: '用户管理', icon: '👥' },
-                { key: 'codes', label: '邀请码', icon: '🎟️' },
-                { key: 'ai', label: 'AI 设置', icon: '🤖' },
-                { key: 'quality', label: '解析质量', icon: '🔍' },
-                { key: 'logs', label: '系统日志', icon: '📜' },
-                { key: 'rules', label: '通知规则', icon: '📱' },
-              ]"
-              :key="tab.key"
-              @click="activeTab = tab.key as any; tab.key === 'logs' && fetchAppLogs(); tab.key === 'rules' && fetchNotifRules()"
-              class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2"
-              :style="activeTab === tab.key
-                ? 'background: var(--color-primary-50); color: var(--color-primary-700)'
-                : 'color: var(--color-text-secondary)'"
+              v-for="item in navItems"
+              :key="item.key"
+              type="button"
+              class="admin-nav-item"
+              :class="activeTab === item.key ? 'admin-nav-item-active' : ''"
+              @click="switchTab(item.key)"
             >
-              <span class="text-sm">{{ tab.icon }}</span>
-              <span>{{ tab.label }}</span>
+              <AppIcon :name="item.icon" :size="16" />
+              <span>{{ item.label }}</span>
             </button>
           </nav>
         </div>
       </aside>
 
-      <!-- 移动端：横向 Tab (仅 md 以下显示) -->
+      <!-- <md：横向滚动 chip -->
       <div class="md:hidden mb-4">
         <h1 class="page-title mb-3">管理面板</h1>
-        <div class="flex gap-1.5 overflow-x-auto pb-1">
+        <div class="scroll-x flex gap-2 pb-1">
           <button
-            v-for="tab in [
-              { key: 'overview', label: '概览' },
-              { key: 'users', label: '用户' },
-              { key: 'codes', label: '邀请码' },
-              { key: 'ai', label: 'AI' },
-              { key: 'quality', label: '质量' },
-              { key: 'logs', label: '日志' },
-              { key: 'rules', label: '规则' },
-            ]"
-            :key="tab.key"
-            @click="activeTab = tab.key as any; tab.key === 'logs' && fetchAppLogs(); tab.key === 'rules' && fetchNotifRules()"
-            class="px-3 py-1.5 rounded-md text-xs font-medium transition whitespace-nowrap"
-            :style="activeTab === tab.key
-              ? 'background: var(--color-primary-600); color: white'
-              : 'background: var(--color-primary-50); color: var(--color-text-secondary)'"
-          >{{ tab.label }}</button>
+            v-for="item in navItems"
+            :key="item.key"
+            type="button"
+            class="chip shrink-0"
+            :class="activeTab === item.key ? 'chip-active' : ''"
+            @click="switchTab(item.key)"
+          >{{ item.short }}</button>
         </div>
       </div>
 
       <!-- 右侧内容区 -->
       <div class="flex-1 min-w-0">
 
-    <!-- Tab 0: 系统概览 -->
-    <div v-if="activeTab === 'overview'" class="space-y-3">
-      <div v-if="systemStats" class="grid grid-cols-2 gap-3">
-        <div class="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl p-4 text-center">
-          <div class="text-2xl font-bold text-blue-700">{{ systemStats.totalUsers }}</div>
-          <div class="text-xs text-blue-500 mt-1">注册用户</div>
-        </div>
-        <div class="bg-gradient-to-br from-green-50 to-green-100 rounded-xl p-4 text-center">
-          <div class="text-2xl font-bold text-green-700">{{ systemStats.activeUsers }}</div>
-          <div class="text-xs text-green-500 mt-1">活跃用户</div>
-        </div>
-        <div class="bg-gradient-to-br from-purple-50 to-purple-100 rounded-xl p-4 text-center">
-          <div class="text-2xl font-bold text-purple-700">{{ systemStats.totalTransactions }}</div>
-          <div class="text-xs text-purple-500 mt-1">总交易笔数</div>
-        </div>
-        <div class="bg-gradient-to-br from-amber-50 to-amber-100 rounded-xl p-4 text-center">
-          <div class="text-2xl font-bold text-amber-700">{{ systemStats.todayLogs }}</div>
-          <div class="text-xs text-amber-500 mt-1">今日日志</div>
-        </div>
-      </div>
+        <!-- ───── 概览 ───── -->
+        <div v-if="activeTab === 'overview'" class="space-y-6">
+          <div v-if="systemStats" class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div class="admin-stat" style="border-top-color: var(--color-info)">
+              <div class="admin-stat-num">{{ systemStats.totalUsers }}</div>
+              <div class="admin-stat-label">注册用户</div>
+            </div>
+            <div class="admin-stat" style="border-top-color: var(--color-income)">
+              <div class="admin-stat-num">{{ systemStats.activeUsers }}</div>
+              <div class="admin-stat-label">活跃用户</div>
+            </div>
+            <div class="admin-stat" style="border-top-color: var(--color-action)">
+              <div class="admin-stat-num">{{ systemStats.totalTransactions }}</div>
+              <div class="admin-stat-label">总交易笔数</div>
+            </div>
+            <div class="admin-stat" style="border-top-color: var(--color-warn)">
+              <div class="admin-stat-num">{{ systemStats.todayLogs }}</div>
+              <div class="admin-stat-label">今日日志</div>
+            </div>
+          </div>
 
-      <!-- 用户列表快览 -->
-      <div class="bg-white rounded-xl border border-gray-100 p-4">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">用户一览</h3>
-        <div class="space-y-2">
-          <div v-for="u in users" :key="u.id" class="flex items-center justify-between text-sm">
-            <div class="flex items-center gap-2">
-              <span class="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center text-xs">{{ (u.nickname || u.username)?.[0] }}</span>
-              <div>
-                <span class="text-gray-800">{{ u.nickname || u.username }}</span>
-                <span v-if="u.role === 'admin'" class="ml-1 text-[10px] bg-blue-100 text-blue-600 px-1 rounded">管理员</span>
+          <!-- 用户一览 -->
+          <section>
+            <div class="ledger-label mb-3">用户一览</div>
+            <div class="sheet">
+              <div v-for="u in users" :key="u.id" class="sheet-row">
+                <span class="admin-avatar">{{ (u.nickname || u.username)?.[0]?.toUpperCase() }}</span>
+                <div class="flex-1 min-w-0">
+                  <span class="text-sm text-ink-1">{{ u.nickname || u.username }}</span>
+                  <span v-if="u.role === 'admin'" class="badge badge-ink ml-1.5">管理员</span>
+                </div>
+                <span class="text-xs text-ink-3 amt">{{ u.transaction_count }} 笔</span>
               </div>
             </div>
-            <span class="text-xs text-gray-400">{{ u.transaction_count }} 笔</span>
-          </div>
-        </div>
-      </div>
+          </section>
 
-      <!-- 最近解析质量 -->
-      <div v-if="parseStats" class="bg-white rounded-xl border border-gray-100 p-4">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">AI 解析质量（近30天）</h3>
-        <div class="grid grid-cols-3 gap-2 text-center">
-          <div>
-            <div class="text-lg font-semibold text-gray-800">{{ parseStats.overview.total }}</div>
-            <div class="text-[10px] text-gray-400">总调用</div>
-          </div>
-          <div>
-            <div class="text-lg font-semibold text-green-600">{{ parseStats.overview.success_rate }}%</div>
-            <div class="text-[10px] text-gray-400">成功率</div>
-          </div>
-          <div>
-            <div class="text-lg font-semibold text-orange-600">{{ parseStats.modification?.modification_rate || 0 }}%</div>
-            <div class="text-[10px] text-gray-400">修正率</div>
-          </div>
+          <!-- AI 解析质量快览 -->
+          <section v-if="parseStats">
+            <div class="ledger-label mb-3">AI 解析质量（近 30 天）</div>
+            <div class="grid grid-cols-3 gap-3">
+              <div class="admin-stat" style="border-top-color: var(--color-action)">
+                <div class="admin-stat-num">{{ parseStats.overview.total }}</div>
+                <div class="admin-stat-label">总调用</div>
+              </div>
+              <div class="admin-stat" style="border-top-color: var(--color-income)">
+                <div class="admin-stat-num">{{ parseStats.overview.success_rate }}%</div>
+                <div class="admin-stat-label">成功率</div>
+              </div>
+              <div class="admin-stat" style="border-top-color: var(--color-warn)">
+                <div class="admin-stat-num">{{ parseStats.modification?.modification_rate || 0 }}%</div>
+                <div class="admin-stat-label">修正率</div>
+              </div>
+            </div>
+          </section>
         </div>
-      </div>
-    </div>
 
-    <!-- Tab 1: 用户管理 -->
-    <div v-if="activeTab === 'users'" class="space-y-3">
-      <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-          <span class="text-lg">👥</span>
-          <h3 class="text-sm font-semibold text-gray-800">用户管理</h3>
-          <span class="text-xs text-gray-400 ml-auto">{{ users.length }} 人</span>
-        </div>
-        <div class="px-3 py-3">
-          <div class="space-y-1">
-            <div
-              v-for="u in users"
-              :key="u.id"
-              class="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 rounded-lg hover:bg-gray-50 transition-colors"
-            >
-              <div class="flex items-center gap-3 cursor-pointer flex-1 min-w-0" @click="viewUserDetail(u.id)">
-                <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-sm font-medium text-blue-600">
-                  {{ (u.nickname || u.username)[0].toUpperCase() }}
-                </div>
-                <div>
-                  <div class="text-sm font-medium text-gray-800">
+        <!-- ───── 用户管理 ───── -->
+        <div v-if="activeTab === 'users'">
+          <div class="flex items-center justify-between mb-3">
+            <span class="ledger-label">用户管理</span>
+            <span class="text-xs text-ink-3">共 {{ users.length }} 人</span>
+          </div>
+          <div class="sheet">
+            <template v-for="u in users" :key="u.id">
+              <div class="sheet-row sheet-row-click flex-wrap" @click="viewUserDetail(u.id)">
+                <span class="admin-avatar">{{ (u.nickname || u.username)[0].toUpperCase() }}</span>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm font-medium text-ink-1">
                     {{ u.nickname || u.username }}
-                    <span v-if="u.role === 'admin'" class="ml-1 text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full">管理员</span>
+                    <span v-if="u.role === 'admin'" class="badge badge-ink ml-1">管理员</span>
                   </div>
-                  <div class="text-xs text-gray-400">{{ u.transaction_count }} 笔 · {{ formatLocalTime(u.created_at) }}</div>
+                  <div class="text-xs text-ink-3">{{ u.transaction_count }} 笔 · {{ formatLocalTime(u.created_at) }}</div>
+                </div>
+                <div class="flex items-center gap-1.5 shrink-0" @click.stop>
+                  <button type="button" class="act" @click="fetchUserTransactions(u.id)">账单</button>
+                  <button
+                    v-if="u.id !== auth.user?.id"
+                    type="button"
+                    class="act"
+                    :class="u.is_active ? 'act-danger' : ''"
+                    @click="toggleUser(u.id, u.is_active)"
+                  >{{ u.is_active ? '禁用' : '启用' }}</button>
+                  <span v-else class="text-xs text-ink-4">当前</span>
+                  <AppIcon name="chevronDown" :size="15" class="chev-link" :style="showUserDetail?.id === u.id ? 'transform: rotate(180deg)' : ''" />
                 </div>
               </div>
-              <div class="flex items-center gap-1.5 shrink-0">
-                <button
-                  @click.stop="fetchUserTransactions(u.id)"
-                  class="text-xs px-2 py-1 rounded-lg font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
-                >账单</button>
-                <button
-                  v-if="u.id !== auth.user?.id"
-                  @click="toggleUser(u.id, u.is_active)"
-                  class="text-xs px-2.5 py-1 rounded-lg font-medium transition-colors"
-                  :class="u.is_active ? 'text-red-600 bg-red-50 hover:bg-red-100' : 'text-green-600 bg-green-50 hover:bg-green-100'"
-                >
-                  {{ u.is_active ? '禁用' : '启用' }}
-                </button>
-                <span v-else class="text-xs text-gray-300">当前</span>
-              </div>
-            </div>
-          </div>
 
-          <!-- 用户详情弹出层 -->
-          <div v-if="showUserDetail" class="mt-3 border-t border-gray-100 pt-4">
-            <div class="flex items-center justify-between mb-3">
-              <h4 class="text-sm font-semibold text-gray-700">📋 {{ showUserDetail.nickname || showUserDetail.username }} 的信息</h4>
-              <button @click="showUserDetail = null" class="text-xs text-gray-400 hover:text-gray-600">✕ 关闭</button>
-            </div>
-            <div v-if="userStats" class="grid grid-cols-3 gap-3 mb-4">
-              <div class="bg-gray-50 rounded-lg p-2.5 text-center">
-                <div class="text-lg font-semibold text-gray-800">{{ userStats.total_transactions }}</div>
-                <div class="text-[10px] text-gray-400">总笔数</div>
+              <!-- 行内展开详情 -->
+              <div v-if="showUserDetail?.id === u.id" class="admin-detail">
+                <div v-if="userStats" class="grid grid-cols-3 gap-3 mb-4">
+                  <div class="admin-mini">
+                    <div class="admin-mini-num amt">{{ userStats.total_transactions }}</div>
+                    <div class="admin-stat-label">总笔数</div>
+                  </div>
+                  <div class="admin-mini">
+                    <Money :value="userStats.total_expense" size="md" tone="expense" sign="none" absolute />
+                    <div class="admin-stat-label">总支出</div>
+                  </div>
+                  <div class="admin-mini">
+                    <Money :value="userStats.total_income" size="md" tone="income" sign="none" absolute />
+                    <div class="admin-stat-label">总收入</div>
+                  </div>
+                </div>
+                <div class="space-y-2">
+                  <div class="flex flex-col sm:flex-row gap-2">
+                    <input
+                      v-model="newPasswordInput"
+                      type="text"
+                      class="field flex-1"
+                      placeholder="输入新密码（≥6 位）"
+                    />
+                    <button
+                      type="button"
+                      class="btn btn-outline"
+                      @click="resetPasswordId = u.id; resetPassword()"
+                    >
+                      <AppIcon name="key" :size="15" />
+                      重置密码
+                    </button>
+                  </div>
+                  <button
+                    v-if="u.id !== auth.user?.id"
+                    type="button"
+                    class="btn btn-danger btn-block"
+                    @click="deleteUser(u.id, u.username)"
+                  >
+                    <AppIcon name="trash" :size="15" />
+                    删除用户（不可恢复）
+                  </button>
+                </div>
               </div>
-              <div class="bg-gray-50 rounded-lg p-2.5 text-center">
-                <div class="text-lg font-semibold text-red-500">¥{{ (userStats.total_expense / 100).toFixed(0) }}</div>
-                <div class="text-[10px] text-gray-400">总支出</div>
-              </div>
-              <div class="bg-gray-50 rounded-lg p-2.5 text-center">
-                <div class="text-lg font-semibold text-green-500">¥{{ (userStats.total_income / 100).toFixed(0) }}</div>
-                <div class="text-[10px] text-gray-400">总收入</div>
-              </div>
-            </div>
-            <div class="space-y-2">
-              <div class="flex flex-col sm:flex-row gap-2">
-                <input
-                  v-model="newPasswordInput"
-                  type="text"
-                  class="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                  placeholder="输入新密码（≥6位）"
-                />
-                <button
-                  @click="resetPasswordId = showUserDetail.id; resetPassword()"
-                  class="px-3 py-1.5 text-sm font-medium text-orange-600 bg-orange-50 rounded-lg hover:bg-orange-100 transition-colors whitespace-nowrap"
-                >
-                  🔑 重置密码
-                </button>
-              </div>
-              <button
-                v-if="showUserDetail.id !== auth.user?.id"
-                @click="deleteUser(showUserDetail.id, showUserDetail.username)"
-                class="w-full py-2 text-sm font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors"
-              >
-                🗑️ 删除用户（不可恢复）
-              </button>
-            </div>
+            </template>
           </div>
         </div>
-      </div>
-    </div>
 
-    <!-- Tab 2: 邀请码管理 -->
-    <div v-if="activeTab === 'codes'" class="space-y-3">
-      <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-          <span class="text-lg">🎟️</span>
-          <h3 class="text-sm font-semibold text-gray-800">邀请码管理</h3>
-        </div>
-        <div class="px-3 py-3">
-          <div class="flex flex-wrap items-center gap-3 mb-4">
-            <div class="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
+        <!-- ───── 邀请码 ───── -->
+        <div v-if="activeTab === 'codes'">
+          <div class="ledger-label mb-3">邀请码</div>
+
+          <div class="surface p-3 mb-4 flex flex-wrap items-center gap-3">
+            <div class="flex items-center gap-2">
               <input
                 v-model.number="newCodeMaxUses"
                 type="number"
                 min="1"
                 max="100"
-                class="w-14 px-2 py-1 border border-gray-200 rounded-md text-sm text-center focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                class="field w-16 text-center"
               />
-              <span class="text-xs text-gray-500">次可用</span>
+              <span class="text-xs text-ink-3">次可用</span>
             </div>
             <button
-              @click="generateCode"
+              type="button"
+              class="btn btn-primary"
               :disabled="generating"
-              class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-sm"
+              @click="generateCode"
             >
-              {{ generating ? '生成中...' : '✨ 生成邀请码' }}
+              <AppIcon name="plus" :size="15" />
+              {{ generating ? '生成中…' : '生成邀请码' }}
             </button>
           </div>
-          <div class="space-y-2 max-h-48 overflow-y-auto">
-            <div
-              v-for="code in inviteCodes"
-              :key="code.id"
-              class="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 bg-gray-50 rounded-lg"
-            >
-              <div class="flex items-center gap-3">
-                <span class="font-mono text-sm font-semibold text-gray-800 bg-white px-2 py-0.5 rounded border border-gray-200">{{ code.code }}</span>
-                <span class="text-xs text-gray-400">已用 {{ code.used_count }}/{{ code.max_uses }}</span>
+
+          <div v-if="inviteCodes.length > 0" class="sheet">
+            <div v-for="code in inviteCodes" :key="code.id" class="sheet-row">
+              <code class="admin-code">{{ code.code }}</code>
+              <span class="text-xs text-ink-3 amt">已用 {{ code.used_count }}/{{ code.max_uses }}</span>
+              <div class="ml-auto flex items-center gap-1.5">
+                <button type="button" class="act" @click="copyCode(code)">
+                  {{ copiedCodeId === code.id ? '已复制' : '复制' }}
+                </button>
+                <button
+                  v-if="code.used_count < code.max_uses"
+                  type="button"
+                  class="act act-danger"
+                  @click="revokeCode(code.id)"
+                >作废</button>
+                <span v-else class="text-xs text-ink-4">已用完</span>
               </div>
-              <button
-                v-if="code.used_count < code.max_uses"
-                @click="revokeCode(code.id)"
-                class="text-xs px-2.5 py-1 text-red-500 bg-red-50 rounded-md hover:bg-red-100 transition-colors"
-              >
-                作废
-              </button>
-              <span v-else class="text-xs px-2.5 py-1 text-gray-400 bg-gray-100 rounded-md">已用完</span>
-            </div>
-            <div v-if="inviteCodes.length === 0" class="text-center py-4 text-xs text-gray-400">
-              暂无邀请码，点击上方按钮生成
             </div>
           </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Tab 3: AI 设置 -->
-    <div v-if="activeTab === 'ai'" class="space-y-3">
-      <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-          <span class="text-lg">🤖</span>
-          <h3 class="text-sm font-semibold text-gray-800">AI 模型配置</h3>
-        </div>
-        <div class="px-5 py-4 space-y-4">
-          <div>
-            <label class="text-xs font-medium text-gray-600 mb-1 block">API 地址</label>
-            <input
-              v-model="globalSettings.ai_base_url"
-              type="text"
-              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none transition-shadow"
-              placeholder="https://api.openai.com/v1"
-            />
-          </div>
-          <div>
-            <label class="text-xs font-medium text-gray-600 mb-1 block">API Key</label>
-            <input
-              v-model="globalSettings.ai_api_key"
-              type="password"
-              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none transition-shadow"
-              placeholder="sk-..."
-            />
-          </div>
-          <div>
-            <label class="text-xs font-medium text-gray-600 mb-1 block">模型名称</label>
-            <input
-              v-model="globalSettings.ai_model"
-              type="text"
-              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none transition-shadow"
-              placeholder="gpt-4o-mini"
-            />
-          </div>
-          <button
-            @click="saveSettings"
-            class="w-full py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+          <EmptyState
+            v-else
+            icon="ticket"
+            title="还没有邀请码"
+            description="生成邀请码分享给朋友，他们凭码即可注册。"
+            compact
           >
-            💾 保存设置
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Tab 4: 质量监控 -->
-    <div v-if="activeTab === 'quality'" class="space-y-3">
-      <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <span class="text-lg">🔍</span>
-            <h3 class="text-sm font-semibold text-gray-800">AI 解析质量</h3>
-          </div>
-          <select
-            v-model="parseLogsFilter.days"
-            @change="fetchParseStats(); fetchParseLogs(1)"
-            class="px-2 py-1 border border-gray-200 rounded-lg text-xs text-gray-600 bg-gray-50 focus:outline-none"
-          >
-            <option value="7">近 7 天</option>
-            <option value="30">近 30 天</option>
-            <option value="90">近 90 天</option>
-            <option value="365">近一年</option>
-          </select>
+            <button type="button" class="btn btn-primary" @click="generateCode">
+              <AppIcon name="plus" :size="15" />
+              生成第一个
+            </button>
+          </EmptyState>
         </div>
 
-        <div class="px-3 py-3">
-          <!-- 指标卡片 -->
-          <div v-if="parseStats" class="grid grid-cols-4 gap-2 mb-4">
-            <div class="rounded-xl bg-gradient-to-br from-blue-50 to-blue-100 p-3 text-center">
-              <div class="text-xl font-bold text-blue-700">{{ parseStats.overview.total }}</div>
-              <div class="text-[10px] text-blue-500 mt-0.5">总调用</div>
+        <!-- ───── AI 设置 ───── -->
+        <div v-if="activeTab === 'ai'">
+          <div class="ledger-label mb-3">AI 模型配置</div>
+          <div class="surface p-4 space-y-4">
+            <div>
+              <label class="field-label">API 地址</label>
+              <input v-model="globalSettings.ai_base_url" type="text" class="field" placeholder="https://api.openai.com/v1" />
             </div>
-            <div class="rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100 p-3 text-center">
-              <div class="text-xl font-bold text-emerald-700">{{ parseStats.overview.success_rate }}%</div>
-              <div class="text-[10px] text-emerald-500 mt-0.5">成功率</div>
+            <div>
+              <label class="field-label">API Key</label>
+              <input v-model="globalSettings.ai_api_key" type="password" class="field" placeholder="sk-..." />
             </div>
-            <div class="rounded-xl bg-gradient-to-br from-violet-50 to-violet-100 p-3 text-center">
-              <div class="text-xl font-bold text-violet-700">{{ formatDuration(parseStats.overview.avg_duration_ms) }}</div>
-              <div class="text-[10px] text-violet-500 mt-0.5">平均耗时</div>
+            <div>
+              <label class="field-label">模型名称</label>
+              <input v-model="globalSettings.ai_model" type="text" class="field" placeholder="gpt-4o-mini" />
             </div>
-            <div class="rounded-xl bg-gradient-to-br from-amber-50 to-amber-100 p-3 text-center">
-              <div class="text-xl font-bold text-amber-700">{{ parseStats.modification.modification_rate }}%</div>
-              <div class="text-[10px] text-amber-500 mt-0.5">修正率</div>
+            <button type="button" class="btn btn-primary btn-block" @click="saveSettings">保存设置</button>
+          </div>
+        </div>
+
+        <!-- ───── 解析质量 ───── -->
+        <div v-if="activeTab === 'quality'">
+          <div class="flex items-center justify-between gap-3 mb-3">
+            <span class="ledger-label ledger-label-solid">AI 解析质量</span>
+            <select
+              v-model="parseLogsFilter.days"
+              class="field w-auto"
+              @change="fetchParseStats(); fetchParseLogs(1)"
+            >
+              <option value="7">近 7 天</option>
+              <option value="30">近 30 天</option>
+              <option value="90">近 90 天</option>
+              <option value="365">近一年</option>
+            </select>
+          </div>
+
+          <!-- 指标格 -->
+          <div v-if="parseStats" class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+            <div class="admin-stat" style="border-top-color: var(--color-action)">
+              <div class="admin-stat-num">{{ parseStats.overview.total }}</div>
+              <div class="admin-stat-label">总调用</div>
+            </div>
+            <div class="admin-stat" style="border-top-color: var(--color-income)">
+              <div class="admin-stat-num">{{ parseStats.overview.success_rate }}%</div>
+              <div class="admin-stat-label">成功率</div>
+            </div>
+            <div class="admin-stat" style="border-top-color: var(--color-info)">
+              <div class="admin-stat-num">{{ formatDuration(parseStats.overview.avg_duration_ms) }}</div>
+              <div class="admin-stat-label">平均耗时</div>
+            </div>
+            <div class="admin-stat" style="border-top-color: var(--color-warn)">
+              <div class="admin-stat-num">{{ parseStats.modification.modification_rate }}%</div>
+              <div class="admin-stat-label">修正率</div>
             </div>
           </div>
 
-          <!-- 状态筛选 -->
-          <div class="flex gap-1.5 mb-3 overflow-x-auto pb-1">
+          <!-- 状态筛选 chip -->
+          <div class="scroll-x flex gap-2 mb-3 pb-1">
             <button
+              type="button"
+              class="chip shrink-0"
+              :class="parseLogsFilter.status === '' ? 'chip-active' : ''"
               @click="parseLogsFilter.status = ''; fetchParseLogs(1)"
-              class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-              :class="parseLogsFilter.status === '' ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
             >全部</button>
             <button
+              type="button"
+              class="chip shrink-0"
+              :class="parseLogsFilter.status === 'success' ? 'qa-chip-income' : ''"
               @click="parseLogsFilter.status = 'success'; fetchParseLogs(1)"
-              class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-              :class="parseLogsFilter.status === 'success' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'"
-            >✓ 成功</button>
+            >成功</button>
             <button
+              type="button"
+              class="chip shrink-0"
+              :class="parseLogsFilter.status === 'empty' ? 'qa-chip-warn' : ''"
               @click="parseLogsFilter.status = 'empty'; fetchParseLogs(1)"
-              class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-              :class="parseLogsFilter.status === 'empty' ? 'bg-yellow-500 text-white' : 'bg-yellow-50 text-yellow-700 hover:bg-yellow-100'"
-            >○ 空结果</button>
+            >空结果</button>
             <button
+              type="button"
+              class="chip shrink-0"
+              :class="parseLogsFilter.status === 'error' ? 'qa-chip-expense' : ''"
               @click="parseLogsFilter.status = 'error'; fetchParseLogs(1)"
-              class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-              :class="parseLogsFilter.status === 'error' ? 'bg-red-600 text-white' : 'bg-red-50 text-red-700 hover:bg-red-100'"
-            >✕ 错误</button>
+            >错误</button>
             <button
+              type="button"
+              class="chip shrink-0"
+              :class="parseLogsFilter.status === 'timeout' ? 'qa-chip-warn' : ''"
               @click="parseLogsFilter.status = 'timeout'; fetchParseLogs(1)"
-              class="px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap"
-              :class="parseLogsFilter.status === 'timeout' ? 'bg-orange-600 text-white' : 'bg-orange-50 text-orange-700 hover:bg-orange-100'"
-            >⏱ 超时</button>
+            >超时</button>
           </div>
 
           <!-- 日志列表 -->
-          <div class="space-y-2 max-h-96 overflow-y-auto">
-            <div v-if="loadingParseLogs" class="flex items-center justify-center py-8">
-              <div class="w-5 h-5 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin"></div>
-              <span class="ml-2 text-xs text-gray-400">加载中...</span>
-            </div>
-            <div v-else-if="parseLogs.length === 0" class="text-center py-8 text-xs text-gray-400">
-              暂无解析记录
-            </div>
-            <div
+          <div v-if="loadingParseLogs" class="text-center py-8 text-xs text-ink-3">加载中…</div>
+          <EmptyState
+            v-else-if="parseLogs.length === 0"
+            icon="search"
+            title="暂无解析记录"
+            description="当用户用自然语言记账时，这里会记录每次 AI 解析的输入与结果。"
+            compact
+          />
+          <div v-else class="sheet">
+            <button
               v-for="log in parseLogs"
               :key="log.id"
+              type="button"
+              class="sheet-row sheet-row-click items-start text-left"
               @click="viewParseDetail(log)"
-              class="group border border-gray-100 rounded-xl p-3 cursor-pointer hover:border-blue-200 hover:shadow-sm transition-all"
             >
-              <div class="flex items-start justify-between gap-2">
-                <div class="flex-1 min-w-0">
-                  <div class="text-sm text-gray-800 truncate leading-snug">{{ log.raw_input }}</div>
-                  <div class="flex items-center gap-2 mt-1.5">
-                    <span
-                      class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
-                      :class="{
-                        'bg-emerald-50 text-emerald-700': log.status === 'success',
-                        'bg-yellow-50 text-yellow-700': log.status === 'empty',
-                        'bg-red-50 text-red-700': log.status === 'error',
-                        'bg-orange-50 text-orange-700': log.status === 'timeout',
-                      }"
-                    >{{ statusLabel(log.status) }}</span>
-                    <span class="text-[10px] text-gray-400">{{ log.username }}</span>
-                    <span class="text-[10px] text-gray-400">{{ formatDuration(log.duration_ms) }}</span>
-                    <span v-if="log.user_modified" class="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 text-[10px] font-medium">已修正</span>
-                  </div>
-                </div>
-                <div class="text-[10px] text-gray-300 group-hover:text-blue-400 shrink-0 pt-0.5">
-                  {{ formatLocalTime(log.created_at) }} ›
+              <div class="flex-1 min-w-0">
+                <div class="text-sm text-ink-1 truncate">{{ log.raw_input }}</div>
+                <div class="flex items-center gap-2 mt-1.5 flex-wrap">
+                  <span class="badge" :class="statusBadge(log.status)">{{ statusLabel(log.status) }}</span>
+                  <span class="text-xs text-ink-3">{{ log.username }}</span>
+                  <span class="text-xs text-ink-3 amt">{{ formatDuration(log.duration_ms) }}</span>
+                  <span v-if="log.user_modified" class="badge badge-warn">已修正</span>
                 </div>
               </div>
-            </div>
+              <div class="text-xs text-ink-4 shrink-0 pt-0.5 amt">{{ formatLocalTime(log.created_at) }}</div>
+            </button>
           </div>
 
           <!-- 分页 -->
-          <div v-if="parseLogsPagination.total_pages > 1" class="flex items-center justify-between mt-4 pt-3 border-t border-gray-100">
-            <span class="text-[10px] text-gray-400">共 {{ parseLogsPagination.total }} 条</span>
+          <div v-if="parseLogsPagination.total_pages > 1" class="flex items-center justify-between mt-4 pt-3 border-t border-rule">
+            <span class="text-xs text-ink-3 amt">共 {{ parseLogsPagination.total }} 条</span>
             <div class="flex items-center gap-1">
               <button
+                type="button"
+                class="btn btn-outline btn-sm btn-icon"
                 :disabled="parseLogsPagination.page <= 1"
                 @click="fetchParseLogs(parseLogsPagination.page - 1)"
-                class="w-7 h-7 flex items-center justify-center rounded-lg text-xs border border-gray-200 disabled:opacity-30 hover:bg-gray-50"
-              >‹</button>
-              <span class="px-2 text-xs text-gray-600">{{ parseLogsPagination.page }} / {{ parseLogsPagination.total_pages }}</span>
+              ><AppIcon name="chevronLeft" :size="14" /></button>
+              <span class="px-2 text-xs text-ink-2 amt">{{ parseLogsPagination.page }} / {{ parseLogsPagination.total_pages }}</span>
               <button
+                type="button"
+                class="btn btn-outline btn-sm btn-icon"
                 :disabled="parseLogsPagination.page >= parseLogsPagination.total_pages"
                 @click="fetchParseLogs(parseLogsPagination.page + 1)"
-                class="w-7 h-7 flex items-center justify-center rounded-lg text-xs border border-gray-200 disabled:opacity-30 hover:bg-gray-50"
-              >›</button>
+              ><AppIcon name="chevronRight" :size="14" /></button>
             </div>
           </div>
         </div>
-      </div>
-    </div>
 
-    <!-- 解析日志详情弹窗 -->
-    <div
-      v-if="showParseDetail"
-      class="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center"
-      @click.self="closeParseDetail"
-    >
-      <div class="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
-        <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0">
-          <div>
-            <h3 class="text-base font-semibold text-gray-800">解析详情</h3>
-            <span class="text-[10px] text-gray-400">#{{ showParseDetail.id }} · {{ formatLocalTime(showParseDetail.created_at) }}</span>
-          </div>
-          <button @click="closeParseDetail" class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors">✕</button>
-        </div>
-
-        <div class="overflow-y-auto flex-1 px-5 py-4 space-y-4">
-          <div class="flex items-center gap-3 p-3 rounded-xl bg-gray-50">
-            <span class="text-sm font-medium" :class="statusColor(showParseDetail.status)">{{ statusLabel(showParseDetail.status) }}</span>
-            <span class="text-[11px] text-gray-500">用户 {{ showParseDetail.username }} · 耗时 {{ formatDuration(showParseDetail.duration_ms) }}</span>
-            <span v-if="showParseDetail.user_modified" class="text-[11px] text-amber-600 font-medium">· 已修正</span>
+        <!-- ───── 系统日志 ───── -->
+        <div v-if="activeTab === 'logs'">
+          <div class="ledger-label mb-3">系统日志</div>
+          <div class="flex gap-2 mb-3 flex-wrap">
+            <select v-model="appLogsFilter.level" class="field w-auto" @change="fetchAppLogs(1)">
+              <option value="">全部级别</option>
+              <option value="info">INFO</option>
+              <option value="warn">WARN</option>
+              <option value="error">ERROR</option>
+            </select>
+            <select v-model="appLogsFilter.days" class="field w-auto" @change="fetchAppLogs(1)">
+              <option value="1">今天</option>
+              <option value="7">近 7 天</option>
+              <option value="30">近 30 天</option>
+            </select>
+            <input v-model="appLogsFilter.module" placeholder="模块名" class="field w-28" @change="fetchAppLogs(1)" />
           </div>
 
-          <div>
-            <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">用户输入</div>
-            <div class="bg-gray-50 border border-gray-100 p-3 rounded-xl text-sm text-gray-800 leading-relaxed">{{ showParseDetail.raw_input }}</div>
+          <div v-if="loadingAppLogs" class="text-center py-6 text-xs text-ink-3">加载中…</div>
+          <EmptyState
+            v-else-if="appLogs.length === 0"
+            icon="list"
+            title="暂无日志"
+            description="调整上方的级别或时间范围，或等待系统产生新日志。"
+            compact
+          />
+          <div v-else class="surface surface-flush">
+            <div v-for="log in appLogs" :key="log.id" class="admin-log-row">
+              <span class="badge" :class="logLevelBadge(log.level)">{{ log.level.toUpperCase() }}</span>
+              <span class="mono text-ink-3 shrink-0">[{{ log.module }}]</span>
+              <span class="text-xs text-ink-2 flex-1 break-all">{{ log.message }}</span>
+              <span class="text-xs text-ink-4 shrink-0 amt">{{ formatLocalTime(log.created_at) }}</span>
+            </div>
           </div>
 
-          <div v-if="showParseDetail.cleaned_input && showParseDetail.cleaned_input !== showParseDetail.raw_input">
-            <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">清洗后</div>
-            <div class="bg-blue-50 border border-blue-100 p-3 rounded-xl text-sm text-gray-800 leading-relaxed">{{ showParseDetail.cleaned_input }}</div>
-          </div>
-
-          <div v-if="showParseDetail.ai_response">
-            <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">AI 返回</div>
-            <div class="bg-gray-50 border border-gray-100 p-3 rounded-xl font-mono text-[11px] text-gray-700 max-h-36 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">{{ showParseDetail.ai_response }}</div>
-          </div>
-
-          <div v-if="showParseDetail.parsed_items">
-            <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">解析结果</div>
-            <div class="bg-emerald-50 border border-emerald-100 p-3 rounded-xl font-mono text-[11px] text-gray-700 max-h-36 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">{{ showParseDetail.parsed_items }}</div>
-          </div>
-
-          <div v-if="showParseDetail.final_items">
-            <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">最终提交</div>
-            <div class="bg-amber-50 border border-amber-100 p-3 rounded-xl font-mono text-[11px] text-gray-700 max-h-36 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">{{ showParseDetail.final_items }}</div>
-          </div>
-
-          <div v-if="showParseDetail.modification_detail">
-            <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">修正详情</div>
-            <div class="bg-yellow-50 border border-yellow-100 p-3 rounded-xl font-mono text-[11px] text-gray-700 whitespace-pre-wrap break-all leading-relaxed">{{ showParseDetail.modification_detail }}</div>
-          </div>
-
-          <div v-if="showParseDetail.error_message">
-            <div class="text-[11px] font-medium text-red-500 uppercase tracking-wide mb-1.5">错误信息</div>
-            <div class="bg-red-50 border border-red-100 p-3 rounded-xl text-sm text-red-700 leading-relaxed">{{ showParseDetail.error_message }}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Tab 5: 应用日志 -->
-    <div v-if="activeTab === 'logs'" class="space-y-3">
-      <div class="bg-white rounded-xl border border-gray-100 p-4">
-        <!-- 筛选 -->
-        <div class="flex gap-2 mb-3 flex-wrap">
-          <select v-model="appLogsFilter.level" @change="fetchAppLogs(1)" class="px-2 py-1 border border-gray-200 rounded-lg text-xs">
-            <option value="">全部级别</option>
-            <option value="info">INFO</option>
-            <option value="warn">WARN</option>
-            <option value="error">ERROR</option>
-          </select>
-          <select v-model="appLogsFilter.days" @change="fetchAppLogs(1)" class="px-2 py-1 border border-gray-200 rounded-lg text-xs">
-            <option value="1">今天</option>
-            <option value="7">近 7 天</option>
-            <option value="30">近 30 天</option>
-          </select>
-          <input v-model="appLogsFilter.module" @change="fetchAppLogs(1)" placeholder="模块名" class="px-2 py-1 border border-gray-200 rounded-lg text-xs w-24" />
-        </div>
-
-        <!-- 日志列表 -->
-        <div class="space-y-1.5 max-h-96 overflow-y-auto">
-          <div v-if="loadingAppLogs" class="text-center py-4 text-xs text-gray-400">加载中...</div>
-          <div v-else-if="appLogs.length === 0" class="text-center py-4 text-xs text-gray-400">暂无日志</div>
-          <div
-            v-for="log in appLogs"
-            :key="log.id"
-            class="flex items-start gap-2 py-1.5 border-b border-gray-50 text-xs"
-          >
-            <span
-              class="px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 mt-0.5"
-              :class="{
-                'bg-blue-50 text-blue-600': log.level === 'info',
-                'bg-yellow-50 text-yellow-600': log.level === 'warn',
-                'bg-red-50 text-red-600': log.level === 'error',
-              }"
-            >{{ log.level.toUpperCase() }}</span>
-            <span class="text-gray-400 shrink-0">[{{ log.module }}]</span>
-            <span class="text-gray-700 flex-1 break-all">{{ log.message }}</span>
-            <span class="text-[10px] text-gray-300 shrink-0">{{ formatLocalTime(log.created_at) }}</span>
+          <div v-if="appLogsPagination.total > 50" class="flex items-center justify-between mt-4 pt-3 border-t border-rule">
+            <span class="text-xs text-ink-3 amt">共 {{ appLogsPagination.total }} 条</span>
+            <div class="flex items-center gap-1">
+              <button
+                type="button"
+                class="btn btn-outline btn-sm btn-icon"
+                :disabled="appLogsPagination.page <= 1"
+                @click="fetchAppLogs(appLogsPagination.page - 1)"
+              ><AppIcon name="chevronLeft" :size="14" /></button>
+              <span class="px-2 text-xs text-ink-2 amt">{{ appLogsPagination.page }}</span>
+              <button
+                type="button"
+                class="btn btn-outline btn-sm btn-icon"
+                @click="fetchAppLogs(appLogsPagination.page + 1)"
+              ><AppIcon name="chevronRight" :size="14" /></button>
+            </div>
           </div>
         </div>
 
-        <!-- 分页 -->
-        <div v-if="appLogsPagination.total > 50" class="flex items-center justify-between mt-3 pt-2 border-t border-gray-100">
-          <span class="text-[10px] text-gray-400">共 {{ appLogsPagination.total }} 条</span>
-          <div class="flex gap-1">
-            <button :disabled="appLogsPagination.page <= 1" @click="fetchAppLogs(appLogsPagination.page - 1)" class="px-2 py-1 text-xs border rounded disabled:opacity-30">‹</button>
-            <span class="px-2 py-1 text-xs text-gray-500">{{ appLogsPagination.page }}</span>
-            <button @click="fetchAppLogs(appLogsPagination.page + 1)" class="px-2 py-1 text-xs border rounded">›</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Tab 6: 通知规则 -->
-    <div v-if="activeTab === 'rules'" class="space-y-3">
-      <!-- 新建版本 -->
-      <div class="bg-white rounded-xl border border-gray-100 p-4">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">新建版本</h3>
-        <div class="space-y-3">
-          <div>
-            <label class="text-xs font-medium text-gray-600 mb-1 block">版本号</label>
-            <input
-              v-model="newRuleVersion"
-              type="number"
-              min="1"
-              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
-              placeholder="例如: 2"
-            />
-          </div>
-          <div>
-            <label class="text-xs font-medium text-gray-600 mb-1 block">规则内容 (JSON)</label>
-            <textarea
-              v-model="newRuleContent"
-              rows="6"
-              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono focus:ring-2 focus:ring-blue-500 focus:outline-none resize-y"
-              placeholder='{ "nls": [...], "source_mapping": {...}, "processor": {...} }'
-            ></textarea>
-          </div>
-          <button
-            @click="createRule"
-            :disabled="savingRule || !newRuleVersion || !newRuleContent"
-            class="w-full py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-          >
-            {{ savingRule ? '保存中...' : '💾 保存规则' }}
-          </button>
-        </div>
-      </div>
-
-      <!-- 历史版本列表 -->
-      <div class="bg-white rounded-xl border border-gray-100 p-4">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">通知记账规则版本</h3>
-        <div v-if="loadingRules" class="text-center py-4 text-xs text-gray-400">加载中...</div>
-        <div v-else-if="notifRules.length === 0" class="text-center py-4 text-xs text-gray-400">暂无规则版本</div>
-        <div v-else class="space-y-2">
-          <div v-for="rule in notifRules" :key="rule.id">
-            <div
-              class="flex items-center justify-between p-3 rounded-lg border"
-              :class="rule.is_active ? 'border-green-200 bg-green-50' : 'border-gray-100'"
-            >
+        <!-- ───── 通知规则 ───── -->
+        <div v-if="activeTab === 'rules'" class="space-y-6">
+          <section>
+            <div class="ledger-label mb-3">新建版本</div>
+            <div class="surface p-4 space-y-3">
               <div>
-                <div class="text-sm font-medium text-gray-800">
-                  版本 {{ rule.version }}
-                  <span v-if="rule.is_active" class="ml-2 text-[10px] bg-green-500 text-white px-1.5 py-0.5 rounded-full">当前激活</span>
+                <label class="field-label">版本号</label>
+                <input v-model="newRuleVersion" type="number" min="1" class="field" placeholder="例如：2" />
+              </div>
+              <div>
+                <label class="field-label">规则内容（JSON）</label>
+                <textarea
+                  v-model="newRuleContent"
+                  rows="6"
+                  class="field mono admin-json"
+                  placeholder='{ "nls": [...], "source_mapping": {...}, "processor": {...} }'
+                ></textarea>
+              </div>
+              <button
+                type="button"
+                class="btn btn-primary btn-block"
+                :disabled="savingRule || !newRuleVersion || !newRuleContent"
+                @click="createRule"
+              >{{ savingRule ? '保存中…' : '保存规则' }}</button>
+            </div>
+          </section>
+
+          <section>
+            <div class="ledger-label mb-3">规则版本</div>
+            <div v-if="loadingRules" class="text-center py-6 text-xs text-ink-3">加载中…</div>
+            <EmptyState
+              v-else-if="notifRules.length === 0"
+              icon="code"
+              title="暂无规则版本"
+              description="在上方新建一个 JSON 规则版本，激活后用于通知自动记账解析。"
+              compact
+            />
+            <div v-else class="space-y-2">
+              <div
+                v-for="rule in notifRules"
+                :key="rule.id"
+                class="admin-rule"
+                :class="rule.is_active ? 'admin-rule-active' : ''"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <div>
+                    <div class="text-sm font-medium text-ink-1">
+                      版本 {{ rule.version }}
+                      <span v-if="rule.is_active" class="badge badge-ink ml-1.5">当前激活</span>
+                    </div>
+                    <div class="text-xs text-ink-3 mt-0.5">{{ formatLocalTime(rule.created_at) }}</div>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <button type="button" class="act" @click="togglePreview(rule.id)">
+                      {{ previewRuleId === rule.id ? '收起' : '预览' }}
+                    </button>
+                    <button
+                      v-if="!rule.is_active"
+                      type="button"
+                      class="act"
+                      @click="activateRule(rule.id)"
+                    >激活</button>
+                  </div>
                 </div>
-                <div class="text-[10px] text-gray-400 mt-0.5">{{ formatLocalTime(rule.created_at) }}</div>
-              </div>
-              <div class="flex items-center gap-2">
-                <button
-                  @click="togglePreview(rule.id)"
-                  class="text-xs px-3 py-1 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200"
-                >{{ previewRuleId === rule.id ? '收起' : '预览' }}</button>
-                <button
-                  v-if="!rule.is_active"
-                  @click="activateRule(rule.id)"
-                  class="text-xs px-3 py-1 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"
-                >激活</button>
+                <pre v-if="previewRuleId === rule.id" class="admin-json-view scroll-thin mono">{{ formatRuleJson(rule) }}</pre>
               </div>
             </div>
-            <!-- Preview block -->
-            <div v-if="previewRuleId === rule.id" class="mt-2">
-              <pre class="overflow-auto max-h-60 text-xs font-mono bg-gray-50 p-3 rounded-lg border border-gray-100">{{ formatRuleJson(rule) }}</pre>
-            </div>
-          </div>
+          </section>
         </div>
       </div>
     </div>
 
-    <!-- 用户账单明细弹窗 -->
-    <div
-      v-if="viewingUserId"
-      class="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center"
-      @click.self="closeUserTransactions"
+    <!-- 解析详情 BaseModal -->
+    <BaseModal
+      :show="!!showParseDetail"
+      title="解析详情"
+      size="xl"
+      @close="closeParseDetail"
     >
-      <div class="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
-        <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0">
-          <h3 class="text-base font-semibold text-gray-800">用户账单明细</h3>
-          <button @click="closeUserTransactions" class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-400">✕</button>
+      <div v-if="showParseDetail" class="space-y-4">
+        <div class="flex items-center gap-3 flex-wrap p-3 rounded-[var(--radius-sm)] bg-paper-sunk">
+          <span class="badge" :class="statusBadge(showParseDetail.status)">{{ statusLabel(showParseDetail.status) }}</span>
+          <span class="text-xs text-ink-3">#{{ showParseDetail.id }} · 用户 {{ showParseDetail.username }} · 耗时 {{ formatDuration(showParseDetail.duration_ms) }}</span>
+          <span v-if="showParseDetail.user_modified" class="badge badge-warn">已修正</span>
         </div>
-        <div class="overflow-y-auto flex-1 px-5 py-4">
-          <div v-if="userTransactionsLoading" class="text-center py-8 text-sm text-gray-400">加载中...</div>
-          <div v-else-if="userTransactions.length === 0" class="text-center py-8 text-sm text-gray-400">暂无交易记录</div>
-          <div v-else class="space-y-2">
-            <div
-              v-for="tx in userTransactions"
-              :key="tx.id"
-              class="flex items-center gap-3 p-2 rounded-lg bg-gray-50"
-            >
-              <span class="text-lg">{{ tx.category_icon || '📦' }}</span>
-              <div class="flex-1 min-w-0">
-                <div class="text-sm text-gray-800 truncate">{{ tx.description || '-' }}</div>
-                <div class="text-[10px] text-gray-400">{{ tx.date }} · {{ tx.category_name || '-' }} · {{ tx.account_name || '-' }}</div>
-              </div>
-              <span v-if="tx.source" class="hidden md:inline text-[10px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">{{ tx.source }}</span>
-              <span v-if="tx.date && tx.date.length > 10" class="hidden md:inline text-[10px] text-gray-300">{{ tx.date.slice(11, 16) }}</span>
-              <span class="text-sm font-medium" :class="tx.type === 'expense' ? 'text-red-500' : 'text-green-500'">
-                {{ tx.type === 'expense' ? '-' : '+' }}¥{{ formatAmount(tx.amount) }}
-              </span>
-            </div>
-          </div>
-          <!-- 分页 -->
-          <div v-if="userTxTotal > 20" class="flex items-center justify-center gap-2 mt-4">
-            <button :disabled="userTxPage <= 1" @click="fetchUserTransactions(viewingUserId!, userTxPage - 1)" class="px-3 py-1 text-xs border rounded disabled:opacity-30">上一页</button>
-            <span class="text-xs text-gray-500">{{ userTxPage }} / {{ Math.ceil(userTxTotal / 20) }}</span>
-            <button :disabled="userTxPage >= Math.ceil(userTxTotal / 20)" @click="fetchUserTransactions(viewingUserId!, userTxPage + 1)" class="px-3 py-1 text-xs border rounded disabled:opacity-30">下一页</button>
-          </div>
+
+        <div class="admin-stage">
+          <div class="admin-stage-label">用户输入</div>
+          <div class="admin-stage-box admin-stage-plain">{{ showParseDetail.raw_input }}</div>
+        </div>
+
+        <div v-if="showParseDetail.cleaned_input && showParseDetail.cleaned_input !== showParseDetail.raw_input" class="admin-stage">
+          <div class="admin-stage-label">清洗后</div>
+          <div class="admin-stage-box admin-stage-info">{{ showParseDetail.cleaned_input }}</div>
+        </div>
+
+        <div v-if="showParseDetail.ai_response" class="admin-stage">
+          <div class="admin-stage-label">AI 返回</div>
+          <pre class="admin-stage-box admin-stage-plain mono scroll-thin admin-stage-scroll">{{ showParseDetail.ai_response }}</pre>
+        </div>
+
+        <div v-if="showParseDetail.parsed_items" class="admin-stage">
+          <div class="admin-stage-label">解析结果</div>
+          <pre class="admin-stage-box admin-stage-income mono scroll-thin admin-stage-scroll">{{ showParseDetail.parsed_items }}</pre>
+        </div>
+
+        <div v-if="showParseDetail.final_items" class="admin-stage">
+          <div class="admin-stage-label">最终提交</div>
+          <pre class="admin-stage-box admin-stage-warn mono scroll-thin admin-stage-scroll">{{ showParseDetail.final_items }}</pre>
+        </div>
+
+        <div v-if="showParseDetail.modification_detail" class="admin-stage">
+          <div class="admin-stage-label">修正详情</div>
+          <pre class="admin-stage-box admin-stage-warn mono scroll-thin admin-stage-scroll">{{ showParseDetail.modification_detail }}</pre>
+        </div>
+
+        <div v-if="showParseDetail.error_message" class="admin-stage">
+          <div class="admin-stage-label">错误信息</div>
+          <div class="admin-stage-box admin-stage-expense">{{ showParseDetail.error_message }}</div>
         </div>
       </div>
-    </div>
-      </div><!-- content area end -->
-    </div><!-- flex layout end -->
+    </BaseModal>
+
+    <!-- 用户账单明细 BaseModal -->
+    <BaseModal
+      :show="!!viewingUserId"
+      title="用户账单明细"
+      size="xl"
+      @close="closeUserTransactions"
+    >
+      <div v-if="userTransactionsLoading" class="text-center py-8 text-sm text-ink-3">加载中…</div>
+      <EmptyState
+        v-else-if="userTransactions.length === 0"
+        icon="inbox"
+        title="暂无交易记录"
+        description="该用户还没有任何流水。"
+        compact
+      />
+      <div v-else class="sheet">
+        <div v-for="tx in userTransactions" :key="tx.id" class="sheet-row">
+          <span class="tx-icon">{{ tx.category_icon || '📦' }}</span>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm text-ink-1 truncate">{{ tx.description || '-' }}</div>
+            <div class="text-xs text-ink-3 truncate">{{ tx.date }} · {{ tx.category_name || '-' }} · {{ tx.account_name || '-' }}</div>
+          </div>
+          <span v-if="tx.source" class="hidden md:inline badge">{{ tx.source }}</span>
+          <Money
+            :value="tx.amount"
+            size="sm"
+            :tone="tx.type === 'expense' ? 'expense' : 'income'"
+            :sign="tx.type === 'expense' ? 'minus' : 'plus'"
+            absolute
+          />
+        </div>
+      </div>
+
+      <div v-if="userTxTotal > 20" class="flex items-center justify-center gap-2 mt-4">
+        <button
+          type="button"
+          class="btn btn-outline btn-sm"
+          :disabled="userTxPage <= 1"
+          @click="fetchUserTransactions(viewingUserId!, userTxPage - 1)"
+        >上一页</button>
+        <span class="text-xs text-ink-3 amt">{{ userTxPage }} / {{ Math.ceil(userTxTotal / 20) }}</span>
+        <button
+          type="button"
+          class="btn btn-outline btn-sm"
+          :disabled="userTxPage >= Math.ceil(userTxTotal / 20)"
+          @click="fetchUserTransactions(viewingUserId!, userTxPage + 1)"
+        >下一页</button>
+      </div>
+    </BaseModal>
   </div>
 </template>
+
+<style scoped>
+.admin-nav { position: sticky; top: 1.5rem; }
+.admin-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 0.625rem;
+  border-left: 2px solid transparent;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-ink-3);
+  text-align: left;
+  transition: color 0.13s ease, background-color 0.13s ease, border-color 0.13s ease;
+}
+.admin-nav-item:hover { color: var(--color-ink-1); background: var(--color-paper-hover); }
+.admin-nav-item-active {
+  border-left-color: var(--color-ink-1);
+  color: var(--color-ink-1);
+  background: var(--color-paper-hover);
+}
+
+/* 指标格：白底 + 顶部 2px 语义色条 + 等宽大数字 */
+.admin-stat {
+  background: var(--color-paper-raised);
+  border: 1px solid var(--color-rule);
+  border-top: 2px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  padding: 0.875rem;
+  text-align: center;
+}
+.admin-stat-num {
+  font-size: 1.5rem;
+  font-weight: 650;
+  color: var(--color-ink-1);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.admin-stat-label {
+  font-size: 0.6875rem;
+  color: var(--color-ink-3);
+  margin-top: 0.25rem;
+}
+
+.admin-avatar {
+  width: 1.75rem;
+  height: 1.75rem;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--color-paper-sunk);
+  border: 1px solid var(--color-rule);
+  color: var(--color-ink-1);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.admin-detail {
+  padding: 1rem 0.875rem;
+  background: var(--color-paper-sunk);
+  border-top: 1px solid var(--color-rule);
+}
+.admin-mini {
+  background: var(--color-paper-raised);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  padding: 0.625rem;
+  text-align: center;
+}
+.admin-mini-num {
+  font-size: 1.125rem;
+  font-weight: 650;
+  color: var(--color-ink-1);
+}
+
+/* 邀请码：等宽 + 宽字距 */
+.admin-code {
+  font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--color-ink-1);
+  background: var(--color-paper-sunk);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-xs);
+  padding: 0.1875rem 0.5rem;
+}
+
+/* 质量筛选 chip：选中态语义色 */
+.qa-chip-income {
+  background: var(--color-income);
+  border-color: var(--color-income);
+  color: var(--color-on-tone);
+}
+.qa-chip-warn {
+  background: var(--color-warn);
+  border-color: var(--color-warn);
+  color: var(--color-on-tone);
+}
+.qa-chip-expense {
+  background: var(--color-expense);
+  border-color: var(--color-expense);
+  color: var(--color-on-tone);
+}
+
+/* 日志行 */
+.admin-log-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--color-rule-faint);
+}
+.admin-log-row:first-child { border-top: 0; }
+
+/* JSON 编辑器 */
+.admin-json {
+  resize: vertical;
+  min-height: 9rem;
+  line-height: 1.5;
+}
+.admin-json-view {
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  max-height: 15rem;
+  overflow: auto;
+  background: var(--color-paper-sunk);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  color: var(--color-ink-2);
+  white-space: pre;
+}
+
+/* 规则版本行：当前激活墨色描边 */
+.admin-rule {
+  background: var(--color-paper-raised);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 0.875rem;
+}
+.admin-rule-active { border-color: var(--color-ink-1); }
+
+/* 解析详情各阶段 */
+.admin-stage-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--color-ink-3);
+  margin-bottom: 0.375rem;
+}
+.admin-stage-box {
+  padding: 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-rule);
+  font-size: 0.8125rem;
+  color: var(--color-ink-1);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.admin-stage-scroll { max-height: 10rem; overflow: auto; font-size: 0.75rem; }
+.admin-stage-plain { background: var(--color-paper-sunk); }
+.admin-stage-info { background: var(--color-info-soft); border-color: var(--color-info-line); }
+.admin-stage-income { background: var(--color-income-soft); border-color: var(--color-income-line); }
+.admin-stage-warn { background: var(--color-warn-soft); border-color: var(--color-warn-line); }
+.admin-stage-expense { background: var(--color-expense-soft); border-color: var(--color-expense-line); color: var(--color-expense); }
+</style>

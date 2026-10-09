@@ -1,17 +1,23 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { getAssetsOverview, getAssetsTrend, createSnapshot, updateAccountAsset } from '@/api/assets'
-import type { AssetOverview, TrendPoint } from '@/api/assets'
-import { Line, Doughnut } from 'vue-chartjs'
-import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, ArcElement } from 'chart.js'
+import { getAssetsOverview, updateAccountAsset } from '@/api/assets'
+import type { AssetOverview } from '@/api/assets'
+import { Doughnut } from 'vue-chartjs'
+import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, ArcElement, Tooltip, Legend } from 'chart.js'
 import { useToast } from '@/composables/useToast'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import LedgerLabel from '@/components/ui/LedgerLabel.vue'
+import StatTile from '@/components/ui/StatTile.vue'
+import Money from '@/components/ui/Money.vue'
+import Skeleton from '@/components/ui/Skeleton.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, ArcElement)
+ChartJS.register(CategoryScale, LinearScale, PointElement, ArcElement, Tooltip, Legend)
 
 const toast = useToast()
 const loading = ref(true)
 const overview = ref<AssetOverview | null>(null)
-const trend = ref<TrendPoint[]>([])
 const editingAccount = ref<number | null>(null)
 const editForm = ref<any>({})
 
@@ -20,59 +26,70 @@ const assetTypeLabels: Record<string, string> = {
   credit: '信用卡', loan: '贷款', property: '不动产', other: '其他',
 }
 
-const assetTypeColors: Record<string, string> = {
-  liquid: '#059669', savings: '#3b82f6', investment: '#8b5cf6',
-  credit: '#f59e0b', loan: '#dc2626', property: '#6366f1', other: '#6b7280',
+// 读取 CSS 变量，保证图表配色走设计系统语义色（深色模式自动跟随）
+// 注意：canvas 不认 CSS 变量/var()，必须取计算值；也不认 color-mix()，淡色填充用 rgba。
+function cssVar(name: string): string {
+  if (typeof window === 'undefined') return '#14171a'
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#14171a'
 }
 
-function fmt(cents: number): string {
-  const abs = Math.abs(cents)
-  const str = (abs / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  return cents < 0 ? `-¥${str}` : `¥${str}`
-}
+// 分布环形的分段色：围绕语义色（收/支/警/信息/墨）循环，而非彩虹硬编码
+const distPalette = computed(() => [
+  cssVar('--color-income'),
+  cssVar('--color-info'),
+  cssVar('--color-warn'),
+  cssVar('--color-expense'),
+  cssVar('--color-ink-1'),
+  cssVar('--color-ink-3'),
+  cssVar('--color-ink-4'),
+])
 
 async function loadData() {
   loading.value = true
   try {
-    const [o, t] = await Promise.all([getAssetsOverview(), getAssetsTrend(6)])
+    const o = await getAssetsOverview()
     overview.value = o.data.data
-    trend.value = t.data.data.trend
   } catch { toast.error('加载失败') }
   finally { loading.value = false }
-}
-
-async function handleSnapshot() {
-  try {
-    const res = await createSnapshot()
-    toast.success(res.data.message)
-    await loadData()
-  } catch { toast.error('快照失败') }
 }
 
 const pieData = computed(() => {
   if (!overview.value) return { labels: [], datasets: [] }
   const types = overview.value.by_type.filter(t => t.total > 0)
+  const palette = distPalette.value
   return {
     labels: types.map(t => assetTypeLabels[t.type] || t.type),
-    datasets: [{ data: types.map(t => t.total / 100), backgroundColor: types.map(t => assetTypeColors[t.type] || '#6b7280'), borderWidth: 0 }],
+    datasets: [{
+      data: types.map(t => t.total / 100),
+      backgroundColor: types.map((_, i) => palette[i % palette.length]),
+      borderWidth: 0,
+    }],
   }
 })
 
-const trendData = computed(() => ({
-  labels: trend.value.map(t => t.snapshot_date.slice(5)),
-  datasets: [{
-    label: '净资产', data: trend.value.map(t => t.net_worth / 100),
-    borderColor: '#4f46e5', backgroundColor: 'rgba(79, 70, 229, 0.06)',
-    fill: true, tension: 0.3, borderWidth: 2, pointRadius: 3, pointBackgroundColor: '#4f46e5',
-  }],
+// 环形图例：色块 / 名称 / 金额 / 占比
+const pieLegend = computed(() => {
+  if (!overview.value) return []
+  const types = overview.value.by_type.filter(t => t.total > 0)
+  const sum = types.reduce((s, t) => s + t.total, 0) || 1
+  const palette = distPalette.value
+  return types.map((t, i) => ({
+    label: assetTypeLabels[t.type] || t.type,
+    total: t.total,
+    color: palette[i % palette.length],
+    pct: Math.round((t.total / sum) * 100),
+  }))
+})
+
+// 去掉网格线与图例边框，坐标文字走墨色次级
+const pieOpts = computed(() => ({
+  responsive: true, maintainAspectRatio: false, cutout: '62%',
+  plugins: { legend: { display: false }, tooltip: { displayColors: false } },
 }))
 
-const chartOpts = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { ticks: { callback: (v: any) => `¥${v.toLocaleString()}` } } } }
-const pieOpts = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' as const, labels: { boxWidth: 10, font: { size: 11 } } } } }
-
 const groupedAccounts = computed(() => {
-  if (!overview.value) return {}
-  const groups: Record<string, typeof overview.value.accounts> = {}
+  if (!overview.value) return {} as Record<string, AssetOverview['accounts']>
+  const groups: Record<string, AssetOverview['accounts']> = {}
   for (const acc of overview.value.accounts) {
     const type = acc.asset_type || 'liquid'
     if (!groups[type]) groups[type] = []
@@ -81,7 +98,12 @@ const groupedAccounts = computed(() => {
   return groups
 })
 
+function groupSubtotal(accounts: AssetOverview['accounts']): number {
+  return accounts.reduce((s, a) => s + (a.balance || 0), 0)
+}
+
 function startEdit(acc: any) {
+  if (editingAccount.value === acc.id) { editingAccount.value = null; return }
   editingAccount.value = acc.id
   editForm.value = { asset_type: acc.asset_type || 'liquid', credit_limit: (acc.credit_limit || 0) / 100, billing_day: acc.billing_day || 0, due_day: acc.due_day || 0, note: acc.note || '' }
 }
@@ -97,95 +119,132 @@ async function saveEdit() {
   catch { toast.error('更新失败') }
 }
 
+const hasAccounts = computed(() => (overview.value?.accounts.length ?? 0) > 0)
+
 onMounted(loadData)
 </script>
 
 <template>
   <div class="pb-20 md:pb-4">
-    <!-- Header -->
-    <div class="flex items-center justify-between mb-5">
-      <div>
-        <h1 class="page-title">资产全景</h1>
-        <p class="page-subtitle">追踪你的净资产变化</p>
-      </div>
-      <button @click="handleSnapshot" class="btn-secondary text-xs">📸 记录快照</button>
-    </div>
+    <PageHeader title="资产全景" subtitle="各账户余额与净资产" />
 
-    <div v-if="loading" class="space-y-4 animate-pulse">
-      <div class="h-24 rounded-xl" style="background: var(--color-border-light)"></div>
-      <div class="h-48 rounded-xl" style="background: var(--color-border-light)"></div>
+    <!-- 加载态 -->
+    <div v-if="loading" class="stack">
+      <div class="ledger-block"><div class="lb-inner"><Skeleton variant="lines" :lines="3" /></div></div>
+      <div class="grid grid-cols-2 gap-3">
+        <Skeleton variant="block" height="4.5rem" />
+        <Skeleton variant="block" height="4.5rem" />
+      </div>
+      <Skeleton variant="block" height="11rem" />
     </div>
 
     <template v-else-if="overview">
-      <!-- 净资产摘要 -->
-      <div class="grid grid-cols-3 gap-3 mb-5">
-        <div class="card text-center">
-          <p class="text-[11px] mb-1" style="color: var(--color-text-muted)">总资产</p>
-          <p class="text-base font-semibold amount-number amount-income">{{ fmt(overview.total_assets) }}</p>
-        </div>
-        <div class="card text-center">
-          <p class="text-[11px] mb-1" style="color: var(--color-text-muted)">总负债</p>
-          <p class="text-base font-semibold amount-number amount-expense">{{ fmt(overview.total_liabilities) }}</p>
-        </div>
-        <div class="card text-center">
-          <p class="text-[11px] mb-1" style="color: var(--color-text-muted)">净资产</p>
-          <p class="text-base font-semibold amount-number amount-balance">{{ fmt(overview.net_worth) }}</p>
-        </div>
-      </div>
-
-      <!-- 图表 -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
-        <div class="card" v-if="pieData.labels.length > 0">
-          <h3 class="text-sm font-medium mb-3" style="color: var(--color-text-primary)">资产分布</h3>
-          <div class="h-44"><Doughnut :data="pieData" :options="pieOpts" /></div>
-        </div>
-        <div class="card">
-          <h3 class="text-sm font-medium mb-3" style="color: var(--color-text-primary)">净资产趋势</h3>
-          <div class="h-44" v-if="trend.length > 1"><Line :data="trendData" :options="chartOpts" /></div>
-          <div v-else class="h-44 flex items-center justify-center text-sm" style="color: var(--color-text-muted)">
-            快照不足，请定期记录
+      <div class="stack">
+        <!-- 净资产主块：paper-ruled 纸纹底 + hero 金额 -->
+        <div class="ledger-block paper-ruled">
+          <div class="lb-inner">
+            <LedgerLabel>净资产</LedgerLabel>
+            <Money
+              :value="overview.net_worth"
+              size="hero"
+              :tone="overview.net_worth < 0 ? 'expense' : 'neutral'"
+              sign="none"
+            />
           </div>
         </div>
-      </div>
 
-      <!-- 账户列表 -->
-      <div class="space-y-3">
-        <div v-for="(accounts, type) in groupedAccounts" :key="type" class="card !p-0 overflow-hidden">
-          <div class="px-4 py-2.5" style="background: var(--color-sidebar-bg); border-bottom: 1px solid var(--color-border-light)">
-            <span class="text-xs font-medium" style="color: var(--color-text-secondary)">{{ assetTypeLabels[type as string] || type }}</span>
-          </div>
-          <div class="divide-y" style="border-color: var(--color-border-light)">
-            <div v-for="acc in accounts" :key="acc.id" class="px-4 py-3">
-              <div class="flex items-center justify-between">
-                <div class="flex items-center gap-2.5">
-                  <span class="text-base">{{ acc.icon }}</span>
-                  <span class="text-sm font-medium" style="color: var(--color-text-primary)">{{ acc.name }}</span>
-                </div>
-                <div class="flex items-center gap-3">
-                  <span class="text-sm font-medium amount-number" :class="acc.balance >= 0 ? '' : 'amount-expense'">{{ fmt(acc.balance) }}</span>
-                  <button @click="startEdit(acc)" class="text-[11px]" style="color: var(--color-primary-600)">编辑</button>
-                </div>
-              </div>
-              <!-- 编辑 -->
-              <div v-if="editingAccount === acc.id" class="mt-3 p-3 rounded-lg space-y-2" style="background: var(--color-sidebar-bg)">
-                <div class="flex items-center gap-2">
-                  <label class="text-[11px] w-14" style="color: var(--color-text-muted)">类型</label>
-                  <select v-model="editForm.asset_type" class="flex-1 text-sm border rounded-md px-2 py-1" style="border-color: var(--color-border)">
-                    <option v-for="(label, key) in assetTypeLabels" :key="key" :value="key">{{ label }}</option>
-                  </select>
-                </div>
-                <div v-if="editForm.asset_type === 'credit'" class="flex items-center gap-2">
-                  <label class="text-[11px] w-14" style="color: var(--color-text-muted)">额度(元)</label>
-                  <input v-model.number="editForm.credit_limit" type="number" class="flex-1 text-sm border rounded-md px-2 py-1" style="border-color: var(--color-border)" />
-                </div>
-                <div class="flex gap-2 justify-end">
-                  <button @click="editingAccount = null" class="text-xs px-3 py-1" style="color: var(--color-text-muted)">取消</button>
-                  <button @click="saveEdit" class="btn-primary text-xs !py-1 !px-3">保存</button>
-                </div>
+        <!-- 资产 / 负债两格 -->
+        <div class="grid grid-cols-2 gap-3">
+          <StatTile label="总资产">
+            <Money :value="overview.total_assets" size="lg" tone="income" sign="none" />
+          </StatTile>
+          <StatTile label="总负债">
+            <Money :value="overview.total_liabilities" size="lg" tone="expense" />
+          </StatTile>
+        </div>
+
+        <!-- 资产分布 -->
+        <section>
+          <LedgerLabel>资产分布</LedgerLabel>
+          <div v-if="pieLegend.length > 0" class="surface p-4">
+            <div class="h-52"><Doughnut :data="pieData" :options="pieOpts" /></div>
+            <div class="mt-3 space-y-1.5">
+              <div v-for="row in pieLegend" :key="row.label" class="flex items-center gap-2 text-xs">
+                <span class="w-2.5 h-2.5 rounded-xs shrink-0" :style="{ background: row.color }" />
+                <span class="text-ink-2 truncate flex-1">{{ row.label }}</span>
+                <Money :value="row.total" size="sm" tone="neutral" sign="none" />
+                <span class="text-ink-4 w-9 text-right">{{ row.pct }}%</span>
               </div>
             </div>
           </div>
-        </div>
+          <EmptyState v-else icon="pie" title="还没有资产分布" description="添加账户并填写余额后，这里会按类型展示你的资产构成。" :ruled="true" :compact="true" />
+        </section>
+
+        <!-- 账户按类型分组：每组一个 sheet，组头浅底 + 小计 -->
+        <section>
+          <LedgerLabel>账户明细</LedgerLabel>
+          <template v-if="hasAccounts">
+            <div class="space-y-3">
+              <div v-for="(accounts, type) in groupedAccounts" :key="type" class="sheet">
+                <!-- 组头：浅底 + 类型名 + 小计 -->
+                <div class="flex items-center justify-between px-3.5 py-2 bg-paper-sunk border-b border-rule-faint">
+                  <span class="text-xs font-semibold text-ink-2">{{ assetTypeLabels[type as string] || type }}</span>
+                  <Money :value="groupSubtotal(accounts)" size="sm" tone="muted" sign="none" />
+                </div>
+                <template v-for="acc in accounts" :key="acc.id">
+                  <button
+                    class="sheet-row sheet-row-click"
+                    :class="editingAccount === acc.id ? 'sheet-row-active' : ''"
+                    @click="startEdit(acc)"
+                  >
+                    <span class="tx-icon">{{ acc.icon }}</span>
+                    <span class="text-sm font-medium text-ink-1 truncate flex-1 text-left">{{ acc.name }}</span>
+                    <Money
+                      :value="acc.balance"
+                      size="md"
+                      :tone="acc.balance >= 0 ? 'neutral' : 'expense'"
+                      sign="none"
+                    />
+                    <AppIcon
+                      :name="editingAccount === acc.id ? 'chevronUp' : 'chevronDown'"
+                      :size="15"
+                      class="text-ink-4"
+                    />
+                  </button>
+
+                  <!-- 行内展开编辑：纸下沉底 -->
+                  <div v-if="editingAccount === acc.id" class="px-3.5 py-3 bg-paper-sunk border-t border-rule-faint">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label class="field-label">账户类型</label>
+                        <select v-model="editForm.asset_type" class="field">
+                          <option v-for="(label, key) in assetTypeLabels" :key="key" :value="key">{{ label }}</option>
+                        </select>
+                      </div>
+                      <div v-if="editForm.asset_type === 'credit'">
+                        <label class="field-label">额度（元）</label>
+                        <input v-model.number="editForm.credit_limit" type="number" class="field amt" />
+                      </div>
+                    </div>
+                    <div class="flex justify-end gap-2 mt-3">
+                      <button @click.stop="editingAccount = null" class="btn btn-quiet btn-sm">取消</button>
+                      <button @click.stop="saveEdit" class="btn btn-primary btn-sm">保存</button>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+          <EmptyState
+            v-else
+            icon="wallet"
+            title="还没有账户"
+            description="去设置里添加账户，记录初始余额后，资产全景就会算出你的净资产。"
+            :ruled="true"
+          >
+            <RouterLink to="/settings" class="btn btn-primary btn-sm">添加账户</RouterLink>
+          </EmptyState>
+        </section>
       </div>
     </template>
   </div>
