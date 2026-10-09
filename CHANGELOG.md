@@ -18,7 +18,8 @@
 - **落地页改为记账**：`/` 从 Dashboard 改为记账页（原 `/quick` 重定向到 `/`）；原 Dashboard 移到 `/overview`，定位为「本月结算单」
 - **导航分层**：一级只留「记一笔 / 账本 / 本月 / AI 助手」，其余收进「偶尔」分组；移动端底栏改为「账本 / 本月 / FAB 记一笔 / 助手 / 我的」
 - **下线 5 个零使用功能**（Web 端）：预算、财务目标、订阅管理、AI 记忆、资产快照；删除 `Budget.vue` `Goals.vue` `Subscriptions.vue` `api/goals.ts`，并从 Dashboard / Home / Me / Settings / Assets 中移除相关区块
-- **后端接口与数据表全部保留**（`/api/budgets/*` `/api/goals/*` `/api/subscriptions/*` `/api/memories/*` `/api/assets/snapshot|/trend`），`GET /api/stats/dashboard` 响应结构不变，避免影响已发布的移动 App；旧 Web 路由 302 到 `/me` 而非 404
+- **后端接口与数据表暂时保留但标记 `deprecated`**：`/api/budgets/*` `/api/goals/*` `/api/subscriptions/*` `/api/memories/*` `/api/assets/snapshot|/trend`。`GET /api/stats/dashboard` 响应结构不变（那三个字段仍返回空数组），避免影响已发布客户端；旧 Web 路由 302 到 `/me` 而非 404
+  - 依据：Android 侧 `BudgetApi` / `BudgetRepository` / `BudgetResponse` / Hilt 绑定四层数据链路齐备，但 `presentation/` 层**零引用**——即「数据层写全了，UI 入口从未存在」。标 deprecated 而非“保留”，是为了避免下一个读到代码的人误以为该功能还在被使用
 
 ### Fixed
 - **SPA 深链 500**：`@fastify/static` 用 `decorateReply:false` 注册后 `reply.sendFile` 不存在，导致 `/quick` `/ledger` 等任何非根路径硬刷新返回 **HTTP 500**（`GET /favicon.ico` 同）。改为自行读文件流发送；`/favicon.ico` 改为 302 到图标

@@ -25,20 +25,25 @@
 | 🗑️ 回收站 | — | 软删除可恢复，30 天后自动清理 |
 | 🔧 管理面板 | 管理员 | 用户管理、AI 配置、解析质量监控、系统日志、通知规则 |
 
-### 已从 Web 端下线
+### 已废弃（deprecated）
 
-以下功能经 3 个月真实数据验证（`budgets` / `financial_goals` / `subscriptions` / `ai_memories` / `asset_snapshots` 均为 0 行）判定为无价值，**Web 前端已移除入口与页面**。
-**后端接口与数据表全部保留**，避免影响已发布的移动 App：
+以下功能经 3 个月真实数据验证判定为无价值：**服务端表全部 0 行**，且**两个客户端都没有可达入口**。
+Web 前端已移除页面与导航入口；**接口与数据表暂时保留，但标记为 deprecated**，便于两端对齐排期后一并移除。
 
-| 功能 | 保留的接口 |
-|------|-----------|
-| 预算管理 | `/api/budgets/*` |
-| 财务目标 | `/api/goals/*` |
-| 订阅管理 | `/api/subscriptions/*` |
-| AI 记忆 | `/api/memories/*` |
-| 资产快照 | `/api/assets/snapshot`、`/api/assets/trend` |
+| 功能 | 废弃的接口 | 客户端现状（2026-10 核查） |
+|------|-----------|----------------|
+| 预算管理 | `/api/budgets/*` | Web 已下线；Android 有 `BudgetApi`/`Repository`/`DTO` 四层数据链路但** presentation 层零引用**（未做 UI 入口） |
+| 财务目标 | `/api/goals/*` | 两端均无引用 |
+| 订阅管理 | `/api/subscriptions/*` | 两端均无引用 |
+| AI 记忆 | `/api/memories/*` | 两端均无引用 |
+| 资产快照 | `/api/assets/snapshot`、`/api/assets/trend` | 两端均无引用 |
 
-旧 Web 路由 `/budget` `/goals` `/subscriptions` 会 302 到 `/me`，不会 404。
+> 为什么不直接删：一个客户端里「数据层写全了但 UI 没入口」很容易被误读成「功能存在只是没人用」。
+> 标 deprecated 能让下一个读到代码的人知道真实状态，而不是花时间重新调研一遍。
+
+`GET /api/stats/dashboard` 的响应结构保持不变（仍含 `budget_progress` / `goals_top` /
+`subscriptions_overview`，值恒为空），以免影响已发布的移动 App。旧 Web 路由
+`/budget` `/goals` `/subscriptions` 302 到 `/me`，不会 404。
 
 ## 🚀 快速开始
 

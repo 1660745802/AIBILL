@@ -5,13 +5,24 @@
 > **响应格式**: 统一 `{ code: 0, data: <T>, message: "" }`
 > **路由总数**: 80（基于 `server/src/routes/*.ts` 2026-09 重构）
 
-> ⚠️ **兼容性说明（2026-10）**
-> 以下接口在 Web 前端已下线（页面与导航入口移除），但**后端实现与数据表全部保留**，
-> 供已发布的移动 App 继续调用，请勿删除：
-> `/api/budgets/*`、`/api/goals/*`、`/api/subscriptions/*`、`/api/memories/*`、
-> `/api/assets/snapshot`、`/api/assets/trend`。
-> 同样，`GET /api/stats/dashboard` 的响应仍包含 `budget_progress` / `goals_top` /
-> `subscriptions_overview` 字段（值为空数组），以保证响应结构不变。
+> ⚠️ **已废弃接口（deprecated，2026-10）**
+> 以下接口在 Web 前端已下线（页面与导航入口移除）。**接口与数据表暂时保留**，供两端对齐排期后一并移除，
+> 期间行为完全不变。依据：3 个月真实数据中 `budgets` / `financial_goals` / `subscriptions` /
+> `ai_memories` / `asset_snapshots` 五张表均为 0 行，且两个客户端均无可达入口
+> （Android 侧 `BudgetApi` / `BudgetRepository` / `BudgetResponse` / Hilt 绑定四层齐备，
+> 但 `presentation/` 层零引用——即“数据层写全了，UI 入口从未存在”）。
+>
+> | 废弃接口 | Web | Android |
+> |---------|-----|---------|
+> | `/api/budgets/*` | 已下线 | 数据层存在但 UI 零入口 |
+> | `/api/goals/*` | 已下线 | 无引用 |
+> | `/api/subscriptions/*` | 已下线 | 无引用 |
+> | `/api/memories/*` | 已下线 | 无引用 |
+> | `/api/assets/snapshot`、`/api/assets/trend` | 已下线 | 无引用 |
+>
+> 同理，`GET /api/stats/dashboard` 的响应仍包含 `budget_progress` / `goals_top` /
+> `subscriptions_overview` 字段（值恒为空数组），**响应结构刻意保持不变**，
+> 以保证已发布客户端的解析逻辑不受影响。
 
 ---
 
