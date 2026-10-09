@@ -435,11 +435,13 @@ select.field {
 .fade-enter-active, .fade-leave-active { transition: opacity 0.16s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
-.rise-enter-active { transition: opacity 0.26s ease, transform 0.26s cubic-bezier(0.22, 1, 0.36, 1); }
-/* 离场瞬时完成：配合 <Transition mode="out-in"> 时，过长的 leave 会在用户
-   快速连续切换 tab 时留下「旧组件已离场、新组件尚未进场」的空窗，偶发闪白。
-   离场设为极短可把串行等待窗口压到接近 0，同时保留进场的 rise 动画。 */
-.rise-leave-active { transition: opacity 0.05s linear; }
+/* 路由切换过渡（并发模式，无 mode="out-in"）
+   - 进场：淡入 + 轻微上移
+   - 离场：淡出，并绝对定位脱离文档流，避免与进场组件并排把页面撑高
+   快速连续切换时，Vue 会打断正在进行的过渡并对新组件重新触发 enter，
+   不会出现「旧的已移除、新的没进场」的空窗（旧 mode="out-in" 的白屏根因）。 */
+.rise-enter-active { transition: opacity 0.24s ease, transform 0.24s cubic-bezier(0.22, 1, 0.36, 1); }
+.rise-leave-active { transition: opacity 0.16s ease; position: absolute; width: 100%; top: 0; left: 0; pointer-events: none; }
 .rise-enter-from { opacity: 0; transform: translateY(10px); }
 .rise-leave-to { opacity: 0; }
 

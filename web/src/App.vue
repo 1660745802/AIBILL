@@ -144,7 +144,11 @@ watch(() => route.path, () => { railOpen.value = false })
 
         <main class="app-content" :class="flush ? 'app-content-flush' : ''">
           <RouterView v-slot="{ Component, route: viewRoute }">
-            <Transition name="rise" mode="out-in">
+            <!-- 不用 mode="out-in"：该模式要求旧组件离场动画结束后新组件才进场，
+                 快速连续切 tab 时离场会被下一次切换打断，导致新组件 enter 丢失、
+                 <main> 停在空占位（<!---->）= 白屏。改为并发过渡：新组件立即挂载进场，
+                 旧组件独立离场，任何一方被打断都不影响另一方，不会留空窗。 -->
+            <Transition name="rise">
               <component :is="Component" :key="viewRoute.path" />
             </Transition>
           </RouterView>
@@ -331,6 +335,7 @@ watch(() => route.path, () => { railOpen.value = false })
 @media (max-width: 1023px) { .app-body { margin-left: 0; } }
 
 .app-content {
+  position: relative; /* 作为路由过渡时离场组件 absolute 定位的参照 */
   max-width: 68rem;
   margin-inline: auto;
   padding: 1.5rem 1rem 6rem;
