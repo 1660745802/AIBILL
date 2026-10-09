@@ -436,7 +436,10 @@ select.field {
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
 .rise-enter-active { transition: opacity 0.26s ease, transform 0.26s cubic-bezier(0.22, 1, 0.36, 1); }
-.rise-leave-active { transition: opacity 0.16s ease; }
+/* 离场瞬时完成：配合 <Transition mode="out-in"> 时，过长的 leave 会在用户
+   快速连续切换 tab 时留下「旧组件已离场、新组件尚未进场」的空窗，偶发闪白。
+   离场设为极短可把串行等待窗口压到接近 0，同时保留进场的 rise 动画。 */
+.rise-leave-active { transition: opacity 0.05s linear; }
 .rise-enter-from { opacity: 0; transform: translateY(10px); }
 .rise-leave-to { opacity: 0; }
 
