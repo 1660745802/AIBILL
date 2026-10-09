@@ -7,7 +7,47 @@ import { z } from 'zod'
 import { authMiddleware, adminMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { adminResetPassword } from '../services/auth.service.js'
+import { appLog } from '../services/logger.js'
 import crypto from 'node:crypto'
+
+/**
+ * 删除用户时需要清理的表（顺序 = 依赖倒序：先子表，后父表）
+ *
+ * 背景：PRAGMA foreign_keys = ON，子表被父表引用时若先删父表会抛
+ * SQLITE_CONSTRAINT_FOREIGNKEY。defer_foreign_keys 也救不了——它只是把检查
+ * 推迟到提交，子行依然存在。因此**唯一正确的解法是删除顺序**。
+ *
+ * 新增带外键的表时，务必按依赖关系插入到正确位置。
+ */
+const USER_SCOPED_TABLES: string[] = [
+  'asset_snapshots',      // → accounts
+  'recurring_patterns',   // → categories / accounts
+  'subscriptions',        // → categories / accounts
+  'financial_goals',      // → accounts（goal_progress 由 ON DELETE CASCADE 连带清除）
+  'transactions',         // → categories / accounts
+  'ai_conversations',
+  'ai_parse_logs',
+  'ai_memories',
+  'budgets',              // → categories
+  'user_settings',
+  'categories',           // 父表：最后删
+  'accounts',             // 父表：最后删
+]
+
+/**
+ * 清除某个用户的全部业务数据（不含 users 行本身），调用方需自行控制事务。
+ * @param userId 目标用户 id
+ */
+function purgeUserData(db: ReturnType<typeof getDb>, userId: number): void {
+  for (const table of USER_SCOPED_TABLES) {
+    db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(userId)
+  }
+
+  // 引用 users(id) 但列可空的表：置空而不是删行
+  // （邀请码 / 规则版本是全局资源，不应随创建者消失）
+  db.prepare('UPDATE invite_codes SET created_by = NULL WHERE created_by = ?').run(userId)
+  db.prepare('UPDATE notification_rules SET created_by = NULL WHERE created_by = ?').run(userId)
+}
 
 const createInviteCodeSchema = z.object({
   max_uses: z.number().int().min(1).max(1000).optional().default(1),
@@ -226,19 +266,30 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       return { code: 3002, data: null, message: '用户不存在' }
     }
 
-    // 事务中删除用户所有数据
-    db.transaction(() => {
-      db.prepare('DELETE FROM transactions WHERE user_id = ?').run(userId)
-      db.prepare('DELETE FROM categories WHERE user_id = ?').run(userId)
-      db.prepare('DELETE FROM accounts WHERE user_id = ?').run(userId)
-      db.prepare('DELETE FROM budgets WHERE user_id = ?').run(userId)
-      db.prepare('DELETE FROM ai_conversations WHERE user_id = ?').run(userId)
-      db.prepare('DELETE FROM ai_parse_logs WHERE user_id = ?').run(userId)
-      db.prepare('DELETE FROM ai_memories WHERE user_id = ?').run(userId)
-      db.prepare('DELETE FROM subscriptions WHERE user_id = ?').run(userId)
-      db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(userId)
-      db.prepare('DELETE FROM users WHERE id = ?').run(userId)
-    })()
+    // 事务中删除用户所有数据（任一步失败则整体回滚）
+    try {
+      db.transaction(() => {
+        purgeUserData(db, userId)
+        db.prepare('DELETE FROM users WHERE id = ?').run(userId)
+      })()
+    } catch (err) {
+      const sqliteCode = (err as { code?: string }).code
+      if (sqliteCode?.startsWith('SQLITE_CONSTRAINT')) {
+        // 兜底：若将来新增了带外键的表而忘记加进 USER_SCOPED_TABLES，
+        // 给出可读错误而不是把 SQLITE_CONSTRAINT_* 泄漏给前端
+        appLog('error', 'admin', `删除用户 ${userId} 失败：存在未清理的关联数据`, {
+          user_id: userId,
+          sqlite_code: sqliteCode,
+        })
+        reply.code(400)
+        return {
+          code: 2003,
+          data: null,
+          message: '删除失败：仍有数据关联该用户（外键约束），请检查服务端日志',
+        }
+      }
+      throw err
+    }
 
     return { code: 0, data: null, message: `用户 ${user.username} 已删除` }
   })

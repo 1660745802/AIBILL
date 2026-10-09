@@ -3,7 +3,14 @@
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
-import { register, login, getUserById, changePassword, AppError } from '../services/auth.service.js'
+import {
+  register,
+  login,
+  getUserById,
+  changePassword,
+  issueToken,
+  AppError,
+} from '../services/auth.service.js'
 import { authMiddleware } from '../middleware/auth.js'
 import { appLog } from '../services/logger.js'
 
@@ -88,6 +95,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   )
 
   // PUT /api/auth/password - 修改密码
+  // 成功后返回新 token：改密会 bump token_version 使旧 token 立即失效，
+  // 若不换发则当前设备会被立即踢下线（且用户刚看到“成功”提示）。
   const changePasswordSchema = z.object({
     old_password: z.string().min(1, '请输入当前密码'),
     new_password: z.string().min(6, '新密码至少6个字符').max(50),
@@ -99,12 +108,15 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const body = changePasswordSchema.parse(request.body)
-        const result = changePassword(request.user!.userId, body.old_password, body.new_password)
+        const userId = request.user!.userId
+        const result = changePassword(userId, body.old_password, body.new_password)
         if (!result.success) {
           reply.code(400)
           return { code: 1007, data: null, message: result.message }
         }
-        return { code: 0, data: null, message: '密码修改成功' }
+        // 旧 token 已失效，给当前设备换发新 token
+        const token = issueToken(userId, request.user!.role)
+        return { code: 0, data: { token }, message: '密码修改成功' }
       } catch (err) {
         if (err instanceof z.ZodError) {
           reply.code(400)

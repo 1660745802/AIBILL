@@ -6,6 +6,8 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
+import { monthRange } from '../lib/date.js'
+import { budgetProgress, WARN_PERCENT } from '../lib/budget.js'
 
 const transactionItemSchema = z.object({
   client_id: z.string().uuid().optional(),
@@ -32,7 +34,9 @@ const transactionItemSchema = z.object({
 })
 
 const createTransactionsSchema = z.object({
-  items: z.array(transactionItemSchema).min(1, '至少一条交易').max(50, '批量最多50条'),
+  // 上限 200：CSV 导入按 100 条分片提交，每片约 20KB，远低于 Fastify 默认
+  // 1MB bodyLimit；再大则应走专用导入接口
+  items: z.array(transactionItemSchema).min(1, '至少一条交易').max(200, '批量最多200条'),
 })
 
 const updateTransactionSchema = z.object({
@@ -162,12 +166,18 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       let budget_warnings: Array<{ category_name: string; percent: number; status: string }> = []
 
       if (hasExpense) {
+        // 预警按**交易所在月**计算，而不是当前月
         const now = new Date()
-        const year = now.getFullYear()
-        const month = now.getMonth() + 1
-        const startDate = `${year}-${String(month).padStart(2, '0')}-01`
-        const lastDay = new Date(year, month, 0).getDate()
-        const endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+        let y = now.getFullYear()
+        let m = now.getMonth() + 1
+        for (const t of created) {
+          if (typeof t.date === 'string' && /^\d{4}-\d{2}/.test(t.date)) {
+            y = Number(t.date.slice(0, 4))
+            m = Number(t.date.slice(5, 7))
+            break
+          }
+        }
+        const { start: startDate, end: endDate } = monthRange(y, m)
 
         const budgets = db
           .prepare(
@@ -176,7 +186,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
              LEFT JOIN categories c ON b.category_id = c.id AND b.category_id != 0
              WHERE b.user_id = ? AND b.year = ? AND (b.month = ? OR b.month = 0)`,
           )
-          .all(userId, year, month) as Array<{ category_id: number; amount: number; category_name: string | null }>
+          .all(userId, y, m) as Array<{ category_id: number; amount: number; category_name: string | null }>
 
         if (budgets.length > 0) {
           const spentRows = db
@@ -193,12 +203,12 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
 
           for (const b of budgets) {
             const spent = b.category_id === 0 ? totalSpent : (spentMap.get(b.category_id) || 0)
-            const percent = b.amount > 0 ? Math.round((spent / b.amount) * 100) : 0
-            if (percent >= 80) {
+            const { percent, status } = budgetProgress(spent, b.amount)
+            if (percent >= WARN_PERCENT) {
               budget_warnings.push({
                 category_name: b.category_id === 0 ? '总预算' : (b.category_name || '分类预算'),
                 percent,
-                status: percent >= 100 ? 'exceeded' : 'warning',
+                status,
               })
             }
           }

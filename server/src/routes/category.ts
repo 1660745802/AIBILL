@@ -5,7 +5,6 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
-import { AppError } from '../services/auth.service.js'
 
 const createCategorySchema = z.object({
   name: z.string().min(1, '分类名称不能为空').max(20, '分类名称最多20个字符'),

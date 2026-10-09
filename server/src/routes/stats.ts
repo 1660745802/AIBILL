@@ -10,6 +10,9 @@ import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { chatCompletion, AiError } from '../ai/client.js'
+import { monthRange, prevMonthRange, today as todayStr, dateOffset } from '../lib/date.js'
+import { budgetProgress, WARN_PERCENT } from '../lib/budget.js'
+import { summarizeNetWorth } from '../lib/assets.js'
 
 export async function statsRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware)
@@ -24,9 +27,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     const year = parseInt(query.year || String(now.getFullYear()), 10)
     const month = parseInt(query.month || String(now.getMonth() + 1), 10)
 
-    const startDate = `${year}-${String(month).padStart(2, '0')}-01`
-    const lastDay = new Date(year, month, 0).getDate()
-    const endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+    const { start: startDate, end: endDate } = monthRange(year, month)
 
     // 当月收支
     const result = db
@@ -47,11 +48,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // 上月数据（计算环比）
-    const prevMonth = month === 1 ? 12 : month - 1
-    const prevYear = month === 1 ? year - 1 : year
-    const prevStartDate = `${prevYear}-${String(prevMonth).padStart(2, '0')}-01`
-    const prevLastDay = new Date(prevYear, prevMonth, 0).getDate()
-    const prevEndDate = `${prevYear}-${String(prevMonth).padStart(2, '0')}-${String(prevLastDay).padStart(2, '0')}`
+    const { start: prevStartDate, end: prevEndDate } = prevMonthRange(year, month)
 
     const prevResult = db
       .prepare(
@@ -100,9 +97,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     const month = parseInt(query.month || String(now.getMonth() + 1), 10)
     const type = query.type || 'expense'
 
-    const startDate = `${year}-${String(month).padStart(2, '0')}-01`
-    const lastDay = new Date(year, month, 0).getDate()
-    const endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+    const { start: startDate, end: endDate } = monthRange(year, month)
 
     const rows = db
       .prepare(
@@ -181,9 +176,8 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     // 日趋势：指定月份每日数据
     const year = parseInt(query.year || String(now.getFullYear()), 10)
     const month = parseInt(query.month || String(now.getMonth() + 1), 10)
-    const startDate = `${year}-${String(month).padStart(2, '0')}-01`
-    const lastDay = new Date(year, month, 0).getDate()
-    const endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+    const { start: startDate, end: endDate } = monthRange(year, month)
+    const lastDay = Number(endDate.slice(8))
 
     const rows = db
       .prepare(
@@ -217,9 +211,8 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     const year = now.getFullYear()
     const month = now.getMonth() + 1
 
-    const startDate = `${year}-${String(month).padStart(2, '0')}-01`
-    const lastDay = new Date(year, month, 0).getDate()
-    const endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+    const { start: startDate, end: endDate } = monthRange(year, month)
+    const today = todayStr()
 
     // === 1. 月度摘要 ===
     const summaryRows = db
@@ -276,7 +269,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     const accounts = db
       .prepare(
         `SELECT
-          a.id, a.name, a.icon,
+          a.id, a.name, a.icon, a.asset_type,
           a.initial_balance
             + COALESCE(SUM(CASE WHEN t.type='income'    THEN t.amount           ELSE 0 END), 0)
             - COALESCE(SUM(CASE WHEN t.type='expense'   THEN t.amount           ELSE 0 END), 0)
@@ -292,37 +285,20 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
         GROUP BY a.id
         ORDER BY a.sort_order ASC, a.id ASC`,
       )
-      .all(userId) as Array<{ id: number; name: string; icon: string; balance: number }>
+      .all(userId) as Array<{ id: number; name: string; icon: string; asset_type: string; balance: number }>
 
-    const netWorthTotal = accounts.reduce((sum, a) => sum + a.balance, 0)
+    // 资产/负债/净资产口径与 /api/assets/overview 完全一致：见 lib/assets.ts
+    // 净资产 = 所有账户余额之和 = 总资产 − 总负债
+    const { total_assets, total_liabilities, net_worth: netWorthTotal } = summarizeNetWorth(accounts)
     const net_worth = { total: netWorthTotal, accounts }
 
-    // === 2.1 资产分布（按 asset_type 分组，用于工作台配置图）===
-    // 重新查一次带 asset_type 的轻量聚合
-    const assetBreakdownRows = db
-      .prepare(
-        `SELECT a.asset_type,
-                a.initial_balance
-                  + COALESCE(SUM(CASE WHEN t.type='income'    THEN t.amount           ELSE 0 END), 0)
-                  - COALESCE(SUM(CASE WHEN t.type='expense'   THEN t.amount           ELSE 0 END), 0)
-                  + COALESCE(SUM(CASE WHEN t.type='transfer' AND t.target_account_id=a.id THEN t.amount ELSE 0 END), 0)
-                  - COALESCE(SUM(CASE WHEN t.type='transfer' AND t.account_id=a.id        THEN t.amount ELSE 0 END), 0)
-                AS balance
-         FROM accounts a
-         LEFT JOIN transactions t ON (t.account_id = a.id OR t.target_account_id = a.id)
-           AND t.user_id = a.user_id
-           AND t.status = 'confirmed'
-           AND t.deleted_at IS NULL
-         WHERE a.user_id = ? AND a.is_active = 1
-         GROUP BY a.id`,
-      )
-      .all(userId) as Array<{ asset_type: string; balance: number }>
-
+    // === 2.1 资产分布（按 asset_type 分组）===
+    // 直接复用上面已查出的 accounts 行在内存分组，不再重跑一遍同样的聚合
     const assetTypeMap: Record<string, { total: number; count: number }> = {}
-    for (const row of assetBreakdownRows) {
-      const t = row.asset_type || 'liquid'
+    for (const acc of accounts) {
+      const t = acc.asset_type || 'liquid'
       if (!assetTypeMap[t]) assetTypeMap[t] = { total: 0, count: 0 }
-      assetTypeMap[t].total += row.balance
+      assetTypeMap[t].total += acc.balance
       assetTypeMap[t].count += 1
     }
     const asset_breakdown = Object.entries(assetTypeMap).map(([type, v]) => ({
@@ -330,16 +306,9 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       total: v.total,
       count: v.count,
     }))
-    // 负债合计（信用卡 + 贷款，负余额）
-    const total_liabilities = asset_breakdown
-      .filter((b) => (b.type === 'credit' || b.type === 'loan') && b.total < 0)
-      .reduce((sum, b) => sum + Math.abs(b.total), 0)
 
     // === 3. 7天支出趋势 ===
-    const today = `${year}-${String(month).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-    const sevenDaysAgo = new Date(now)
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6)
-    const sevenDaysAgoStr = `${sevenDaysAgo.getFullYear()}-${String(sevenDaysAgo.getMonth() + 1).padStart(2, '0')}-${String(sevenDaysAgo.getDate()).padStart(2, '0')}`
+    const sevenDaysAgoStr = dateOffset(-6)
 
     const trendRows = db
       .prepare(
@@ -356,9 +325,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     const trendMap = new Map(trendRows.map((r) => [r.date, r.total]))
     const trend_7days: Array<{ date: string; total: number }> = []
     for (let i = 0; i < 7; i++) {
-      const d = new Date(sevenDaysAgo)
-      d.setDate(d.getDate() + i)
-      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      const dateStr = dateOffset(-6 + i)
       trend_7days.push({ date: dateStr, total: trendMap.get(dateStr) || 0 })
     }
 
@@ -420,12 +387,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     const budget_progress = budgetRows.map((b) => {
       // Use pre-fetched category spending data (single batch query)
       const spent = b.category_id === 0 ? totalExpenseForBudget : (spentMap.get(b.category_id) || 0)
-
-      const percent = b.amount > 0 ? Math.round((spent / b.amount) * 100) : 0
-      let status: 'normal' | 'warning' | 'exceeded'
-      if (percent >= 100) status = 'exceeded'
-      else if (percent >= 80) status = 'warning'
-      else status = 'normal'
+      const { percent, status, remaining } = budgetProgress(spent, b.amount)
 
       return {
         category_name: b.category_id === 0 ? '总预算' : (b.category_name || '未知'),
@@ -434,6 +396,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
         spent,
         percent,
         status,
+        remaining,
       }
     })
 
@@ -476,9 +439,9 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // 6b. budget_warning: 预算使用超过80%
+    // 6b. budget_warning: 预算使用超过阈值
     for (const bp of budget_progress) {
-      if (bp.percent >= 80 && bp.status !== 'normal') {
+      if (bp.percent >= WARN_PERCENT) {
         alerts.push({
           type: 'budget_warning',
           message: `${bp.category_name}预算已使用${bp.percent}%${bp.status === 'exceeded' ? '，已超支！' : '，请注意控制'}`,
@@ -503,8 +466,8 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       .all(userId)
 
     // === 8. 订阅到期提醒 ===
-    const todayStr = new Date().toISOString().slice(0, 10)
-    const in7days = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)
+    const todayStrLocal = todayStr()
+    const in7days = dateOffset(7)
     const upcomingSubs = db
       .prepare(
         `SELECT name, amount, next_payment_date FROM subscriptions
@@ -514,7 +477,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
          ORDER BY next_payment_date ASC
          LIMIT 5`,
       )
-      .all(userId, todayStr, in7days) as Array<{ name: string; amount: number; next_payment_date: string }>
+      .all(userId, todayStrLocal, in7days) as Array<{ name: string; amount: number; next_payment_date: string }>
 
     for (const sub of upcomingSubs) {
       const daysLeft = Math.ceil((new Date(sub.next_payment_date).getTime() - Date.now()) / 86400000)
@@ -596,6 +559,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       data: {
         summary: { ...summary, saving_rate },
         net_worth,
+        total_assets,
         total_liabilities,
         asset_breakdown,
         trend_7days,
@@ -656,8 +620,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       }))
 
       // 当月分类明细
-      const thisStart = `${year}-${String(month).padStart(2, '0')}-01`
-      const thisEnd = `${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
+      const { start: thisStart, end: thisEnd } = monthRange(year, month)
 
       const categories = db
         .prepare(

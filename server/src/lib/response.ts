@@ -1,25 +1,18 @@
 /**
- * 统一响应包装 helper
+ * 响应体判定 helper
  *
- * 两种使用方式：
- * 1. 路由内手动 return success(data) / fail(code, message)
- * 2. 全局 onSend 钩子自动包装未包装的响应（检测 `code` 字段）
+ * app.ts 的全局 onSend 钩子需要区分“已包装”与“未包装”的响应，
+ * 以便自动补上 { code, data, message }。
+ *
+ * 注：错误码常量（1xxx 认证 / 2xxx 参数 / 3xxx 业务 / 5xxx AI）目前
+ * 直接写在各路由里，唯一权威表在 docs/API.md §0.3；早期版本的
+ * ErrorCode / success() / fail() helper 无任何调用方，已移除。
  */
-
-import type { ErrorCodeValue } from './error-codes.js'
 
 export interface ApiResponse<T = unknown> {
   code: number
   data: T | null
   message: string
-}
-
-export function success<T>(data: T, message = ''): ApiResponse<T> {
-  return { code: 0, data, message }
-}
-
-export function fail(code: ErrorCodeValue, data: unknown = null, message = ''): ApiResponse {
-  return { code, data, message }
 }
 
 /**

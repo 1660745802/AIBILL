@@ -4,6 +4,8 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
+import { getDb } from '../db/index.js'
+import { matchImportCategory, markDuplicates, type ImportCandidate } from '../lib/import-matcher.js'
 
 const importCsvSchema = z.object({
   content: z.string().min(1, 'CSV 内容不能为空'),
@@ -18,11 +20,18 @@ interface ParsedTransaction {
   source_detail: string
 }
 
-interface ParseResult {
+/** CSV 解析器的原始产出（尚未附加分类/去重标记） */
+interface RawParseResult {
   parsed: ParsedTransaction[]
   total: number
   skipped: number
   errors: number
+}
+
+/** 接口返回结构（已附加分类预填与去重标记） */
+interface ParseResult extends Omit<RawParseResult, 'parsed'> {
+  parsed: ImportCandidate[]
+  duplicates: number
 }
 
 /**
@@ -66,7 +75,7 @@ function normalizeDate(raw: string): string {
 /**
  * 解析微信账单
  */
-function parseWechat(content: string): ParseResult {
+function parseWechat(content: string): RawParseResult {
   const lines = content.split(/\r?\n/)
   let headerIndex = -1
 
@@ -148,7 +157,7 @@ function parseWechat(content: string): ParseResult {
 /**
  * 解析支付宝账单
  */
-function parseAlipay(content: string): ParseResult {
+function parseAlipay(content: string): RawParseResult {
   const lines = content.split(/\r?\n/)
   let headerIndex = -1
   let headerFields: string[] = []
@@ -249,7 +258,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     const body = importCsvSchema.safeParse(request.body)
     if (!body.success) {
       reply.code(400).send({
-        code: 1,
+        code: 2000,
         data: null,
         message: body.error.errors.map((e) => e.message).join('; '),
       })
@@ -257,8 +266,10 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const { content, source } = body.data
+    const db = getDb()
+    const userId = request.user!.userId
 
-    let result: ParseResult
+    let result: RawParseResult
 
     if (source === 'wechat') {
       result = parseWechat(content)
@@ -266,9 +277,44 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
       result = parseAlipay(content)
     }
 
+    // ---- 分类预填：商户关键词 → 用户分类 ----
+    if (result.parsed.length > 0) {
+      const categories = db
+        .prepare('SELECT id, name, type, icon FROM categories WHERE user_id = ? AND is_active = 1')
+        .all(userId) as Array<{ id: number; name: string; type: 'expense' | 'income'; icon: string }>
+
+      const enriched: ImportCandidate[] = result.parsed.map((item) => {
+        const type = item.type === 'expense' ? 'expense' : item.type === 'income' ? 'income' : 'transfer'
+        // 匹配文本 = 描述 + 交易对方（source_detail 形如「微信-美团」）
+        const matched =
+          type === 'transfer'
+            ? { category_id: null, category_name: null, category_icon: null, category_auto: false }
+            : matchImportCategory(`${item.description} ${item.source_detail}`, categories, type)
+
+        return {
+          ...item,
+          type,
+          ...matched,
+          duplicate: false,
+        }
+      })
+
+      // ---- 重复检测：与已有记录 / 批次内对比 ----
+      const duplicates = markDuplicates(db, userId, enriched)
+
+      const out: ParseResult = {
+        parsed: enriched,
+        total: result.total,
+        skipped: result.skipped,
+        errors: result.errors,
+        duplicates,
+      }
+      return { code: 0, data: out }
+    }
+
     return {
       code: 0,
-      data: result,
+      data: { ...result, duplicates: 0 } as ParseResult,
     }
   })
 }

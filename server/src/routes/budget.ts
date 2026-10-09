@@ -5,6 +5,8 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
+import { monthRange } from '../lib/date.js'
+import { budgetProgress } from '../lib/budget.js'
 
 const createBudgetSchema = z.object({
   category_id: z.number().int().min(0).default(0), // 0=总预算
@@ -31,9 +33,7 @@ export async function budgetRoutes(app: FastifyInstance): Promise<void> {
     const year = parseInt(query.year || String(now.getFullYear()), 10)
     const month = parseInt(query.month || String(now.getMonth() + 1), 10)
 
-    const startDate = `${year}-${String(month).padStart(2, '0')}-01`
-    const lastDay = new Date(year, month, 0).getDate()
-    const endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+    const { start: startDate, end: endDate } = monthRange(year, month)
 
     // 获取当月所有预算
     const budgets = db
@@ -46,53 +46,40 @@ export async function budgetRoutes(app: FastifyInstance): Promise<void> {
       )
       .all(userId, year, month) as any[]
 
-    // 计算每个预算的已用金额
-    const items = budgets.map((b: any) => {
-      let spent: number
+      // 预取一次当月支出（每条预算再查一次就是 N+1）
+      const spentByCategory = new Map<number, number>()
+      let totalSpent = 0
+      if (budgets.length > 0) {
+        const spentRows = db
+          .prepare(
+            `SELECT category_id, SUM(amount) as total FROM transactions
+             WHERE user_id = ? AND type = 'expense' AND status = 'confirmed' AND deleted_at IS NULL
+               AND date BETWEEN ? AND ?
+             GROUP BY category_id`,
+          )
+          .all(userId, startDate, endDate) as Array<{ category_id: number; total: number }>
 
-      if (b.category_id === 0) {
-        // 总预算：所有支出
-        const result = db
-          .prepare(
-            `SELECT COALESCE(SUM(amount), 0) as total
-             FROM transactions
-             WHERE user_id = ? AND type = 'expense'
-               AND status = 'confirmed' AND deleted_at IS NULL
-               AND date BETWEEN ? AND ?`,
-          )
-          .get(userId, startDate, endDate) as { total: number }
-        spent = result.total
-      } else {
-        // 分类预算
-        const result = db
-          .prepare(
-            `SELECT COALESCE(SUM(amount), 0) as total
-             FROM transactions
-             WHERE user_id = ? AND type = 'expense'
-               AND category_id = ?
-               AND status = 'confirmed' AND deleted_at IS NULL
-               AND date BETWEEN ? AND ?`,
-          )
-          .get(userId, b.category_id, startDate, endDate) as { total: number }
-        spent = result.total
+        for (const r of spentRows) {
+          spentByCategory.set(r.category_id, r.total)
+          totalSpent += r.total
+        }
       }
 
-      const percent = b.amount > 0 ? Math.round((spent / b.amount) * 100) : 0
-      let status: 'normal' | 'warning' | 'exceeded'
-      if (percent >= 100) status = 'exceeded'
-      else if (percent >= 80) status = 'warning'
-      else status = 'normal'
+      // 计算每个预算的已用金额
+      const items = budgets.map((b: any) => {
+        const spent = b.category_id === 0 ? totalSpent : (spentByCategory.get(b.category_id) || 0)
+        const { percent, status, remaining } = budgetProgress(spent, b.amount)
 
-      return {
-        ...b,
-        category_name: b.category_id === 0 ? '总预算' : (b.category_name || '未知'),
-        category_icon: b.category_id === 0 ? '💰' : (b.category_icon || '📦'),
-        spent,
-        percent,
-        status,
-        remaining: Math.max(0, b.amount - spent),
-      }
-    })
+        return {
+          ...b,
+          category_name: b.category_id === 0 ? '总预算' : (b.category_name || '未知'),
+          category_icon: b.category_id === 0 ? '💰' : (b.category_icon || '📦'),
+          spent,
+          percent,
+          status,
+          remaining,
+        }
+      })
 
     return { code: 0, data: { items, year, month }, message: '' }
   })

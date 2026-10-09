@@ -162,13 +162,11 @@ export async function appUpdateAdminRoutes(app: FastifyInstance): Promise<void> 
     const parts = request.parts()
     const fields: Record<string, string> = {}
     let apkBuffer: Buffer | null = null
-    let apkOriginalName = ''
 
     for await (const part of parts) {
       if (part.type === 'file') {
         // apk_file 字段
         if (part.fieldname === 'apk_file') {
-          apkOriginalName = part.filename || 'unknown.apk'
           const chunks: Buffer[] = []
           for await (const chunk of part.file) {
             chunks.push(chunk)
@@ -267,7 +265,7 @@ export async function appUpdateAdminRoutes(app: FastifyInstance): Promise<void> 
   })
 
   // ---- GET /api/admin/updates — 历史版本列表（分页，每页 20 条） ----
-  app.get('/api/admin/updates', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get('/api/admin/updates', async (request: FastifyRequest) => {
     const query = request.query as { page?: string; page_size?: string }
     const db = getDb()
 

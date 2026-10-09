@@ -190,13 +190,20 @@ async function start(): Promise<void> {
       wildcard: false,
     })
 
-    // SPA fallback: 非 API 路由返回 index.html
+    // SPA fallback：非 API 路由返回 index.html。
+    // 注意：上面用 decorateReply:false 注册，reply.sendFile 不可用，
+    // 必须自己读文件流发送（否则 /quick 等深链会 500）。
+    const indexHtml = path.join(publicDir, 'index.html')
     app.setNotFoundHandler(async (request, reply) => {
       if (request.url.startsWith('/api/')) {
         reply.code(404).send({ code: 4004, data: null, message: '接口不存在' })
-      } else {
-        return reply.sendFile('index.html')
+        return
       }
+      if (request.url === '/favicon.ico') {
+        return reply.redirect('/icons/icon-512.svg', 302)
+      }
+      reply.type('text/html; charset=utf-8')
+      return reply.send(fs.createReadStream(indexHtml))
     })
   }
 

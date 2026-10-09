@@ -145,5 +145,60 @@ describe('Auth Routes', () => {
       })
       expect(res.statusCode).toBe(400)
     })
+
+    it('should return a new token and keep the current device logged in', async () => {
+      const token = await createUser(app, 'pwduser3')
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/auth/password',
+        headers: authHeaders(token),
+        payload: { old_password: 'test123456', new_password: 'newpassword456' },
+      })
+      const body = JSON.parse(res.payload)
+      expect(body.code).toBe(0)
+      // 回归：改密会 bump token_version 使旧 token 失效，必须换发新 token，
+      // 否则用户刚看到“修改成功”就被静默踢回登录页
+      expect(body.data?.token).toBeTruthy()
+      expect(body.data.token).not.toBe(token)
+
+      // 新 token 可用
+      const meRes = await app.inject({
+        method: 'GET',
+        url: '/api/auth/me',
+        headers: authHeaders(body.data.token),
+      })
+      expect(meRes.statusCode).toBe(200)
+      expect(JSON.parse(meRes.payload).code).toBe(0)
+
+      // 旧 token 已失效（其他设备需重新登录）
+      const oldRes = await app.inject({
+        method: 'GET',
+        url: '/api/auth/me',
+        headers: authHeaders(token),
+      })
+      expect(oldRes.statusCode).toBe(401)
+      expect(JSON.parse(oldRes.payload).code).toBe(1006)
+    })
+
+    it('should not issue a new token when the old password is wrong', async () => {
+      const token = await createUser(app, 'pwduser4')
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/auth/password',
+        headers: authHeaders(token),
+        payload: { old_password: 'nope', new_password: 'newpassword456' },
+      })
+      const body = JSON.parse(res.payload)
+      expect(res.statusCode).toBe(400)
+      expect(body.data).toBeNull()
+
+      // 原 token 不受影响
+      const meRes = await app.inject({
+        method: 'GET',
+        url: '/api/auth/me',
+        headers: authHeaders(token),
+      })
+      expect(meRes.statusCode).toBe(200)
+    })
   })
 })

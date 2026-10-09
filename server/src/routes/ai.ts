@@ -537,15 +537,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         memoryContext = `\n\n## 用户偏好记忆\n${memoryLines}`
       }
 
-      // 获取历史对话（最近10条）
-      const history = db
-        .prepare(
-          `SELECT role, content FROM ai_conversations
-           WHERE user_id = ? AND session_id = ?
-           ORDER BY created_at ASC
-           LIMIT 20`,
-        )
-        .all(userId, sessionId) as Array<{ role: string; content: string }>
+      // 获取历史对话（最近 20 条，按时间正序）
+      const history = loadRecentHistory(db, userId, sessionId, 20)
 
       // 构建消息列表
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
@@ -620,12 +613,19 @@ ${dataContext}${memoryContext}
     const db = getDb()
     const userId = request.user!.userId
 
+    // first_message 用 MIN(id) 关联子查询取“最早那条”的内容。
+    // 不能用 MIN(content)：那是字典序最小，不是时间最早，会显示错的消息。
     const sessions = db
       .prepare(
-        `SELECT session_id, MIN(content) as first_message, MAX(created_at) as last_at, COUNT(*) as message_count
-         FROM ai_conversations
-         WHERE user_id = ? AND role = 'user'
-         GROUP BY session_id
+        `SELECT s.session_id,
+                (SELECT c.content FROM ai_conversations c
+                  WHERE c.user_id = s.user_id AND c.session_id = s.session_id AND c.role = 'user'
+                  ORDER BY c.id ASC LIMIT 1) as first_message,
+                MAX(s.created_at) as last_at,
+                COUNT(*) as message_count
+         FROM ai_conversations s
+         WHERE s.user_id = ? AND s.role = 'user'
+         GROUP BY s.session_id
          ORDER BY last_at DESC
          LIMIT 50`,
       )
@@ -653,6 +653,34 @@ ${dataContext}${memoryContext}
   })
 }
 
+
+/**
+ * 读取会话最近的 N 条历史消息，**按时间正序**返回（可直接展开进 messages）。
+ *
+ * 注意两个坑：
+ * 1. 必须先 `ORDER BY id DESC` 取最近，再在内存 reverse。
+ *    直接 `ORDER BY created_at ASC LIMIT N` 拿到的是最老的 N 条，
+ *    对话超过 N 条后模型就失去了全部近期上下文。
+ * 2. 用 id 而不是 created_at 排序：created_at 是秒级精度，
+ *    同一秒的多条消息顺序不确定；id 是 AUTOINCREMENT，天然单调。
+ */
+export function loadRecentHistory(
+  db: ReturnType<typeof getDb>,
+  userId: number,
+  sessionId: string,
+  limit = 20,
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  const rows = db
+    .prepare(
+      `SELECT role, content FROM ai_conversations
+       WHERE user_id = ? AND session_id = ? AND role IN ('user', 'assistant')
+       ORDER BY id DESC
+       LIMIT ?`,
+    )
+    .all(userId, sessionId, limit) as Array<{ role: 'user' | 'assistant'; content: string }>
+
+  return rows.reverse()
+}
 
 /**
  * 插入 AI 解析日志

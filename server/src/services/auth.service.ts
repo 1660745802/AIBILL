@@ -74,6 +74,15 @@ export function getUserTokenVersion(userId: number): number {
 }
 
 /**
+ * 为指定用户签发新 token（读取库里的最新 token_version）
+ * 用于改密后给当前设备续期：旧 token 因 token_version 自增而失效，
+ * 新 token 携带自增后的版本，其他设备的 token 不受影响。
+ */
+export function issueToken(userId: number, role: string): string {
+  return signToken(userId, role, getUserTokenVersion(userId))
+}
+
+/**
  * 注册：校验邀请码 → 创建用户 → 生成默认分类/账户 → 返回 JWT
  */
 export function register(input: RegisterInput): { token: string; user: UserInfo } {
@@ -249,16 +258,6 @@ export function adminResetPassword(userId: number, newPassword: string): { succe
     `UPDATE users SET password_hash = ?, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?`,
   ).run(newHash, userId)
   return { success: true, message: '密码已重置，旧 token 已失效' }
-}
-
-/**
- * 禁用用户 + 撤销 token
- */
-export function disableUser(userId: number): void {
-  const db = getDb()
-  db.prepare(
-    `UPDATE users SET is_active = 0, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?`,
-  ).run(userId)
 }
 
 /**

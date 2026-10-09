@@ -6,6 +6,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
+import { summarizeNetWorth } from '../lib/assets.js'
 
 const updateAccountSchema = z.object({
   asset_type: z.enum(['liquid', 'savings', 'investment', 'credit', 'loan', 'property', 'other']).optional(),
@@ -57,32 +58,16 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
        ORDER BY sort_order, id`
     ).all(userId) as any[]
 
-    let totalAssets = 0
-    let totalLiabilities = 0
     const byType: Record<string, { total: number; count: number }> = {}
 
     // 单条聚合 SQL 取所有账户余额（修复 N+1）
     const balances = calcAccountBalances(db, userId)
 
+    // 口径：负余额 = 负债（信用卡欠款、活期透支都算），正余额 = 资产。
+    // asset_type 只用于展示分组。与 /api/stats/dashboard 共用 summarizeNetWorth。
     const accountsWithBalance = accounts.map((acc: any) => {
       const balance = balances.get(acc.id) ?? 0
       const assetType = acc.asset_type || 'liquid'
-
-      // 信用卡和贷款算负债
-      if (assetType === 'credit' || assetType === 'loan') {
-        // 对于信用卡：负余额 = 欠款（负债）
-        if (balance < 0) {
-          totalLiabilities += Math.abs(balance)
-        } else {
-          totalAssets += balance
-        }
-      } else {
-        if (balance >= 0) {
-          totalAssets += balance
-        } else {
-          totalLiabilities += Math.abs(balance)
-        }
-      }
 
       if (!byType[assetType]) {
         byType[assetType] = { total: 0, count: 0 }
@@ -93,7 +78,8 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
       return { ...acc, balance }
     })
 
-    const netWorth = totalAssets - totalLiabilities
+    const { total_assets: totalAssets, total_liabilities: totalLiabilities, net_worth: netWorth } =
+      summarizeNetWorth(accountsWithBalance)
 
     const typeBreakdown = Object.entries(byType).map(([type, data]) => ({
       type,
