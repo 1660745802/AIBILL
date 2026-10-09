@@ -142,12 +142,15 @@ watch(() => route.path, () => { railOpen.value = false })
           <RouterLink to="/me" class="topbar-avatar" :aria-label="`${displayName} 的账户`">{{ initial }}</RouterLink>
         </header>
 
+        <!--
+          路由切换过渡：故意不使用 mode="out-in"。
+          out-in 要求旧组件离场动画结束后新组件才进场；快速连续切 tab 时离场会被
+          下一次路由变更打断，新组件的 enter 丢失，内容区停在空占位导致白屏。
+          改为并发过渡：新组件立即挂载进场，旧组件独立离场，互不阻塞，不留空窗。
+          注意：此注释放在 RouterView v-slot 之外，避免注释节点被插槽渲染成可见文本。
+        -->
         <main class="app-content" :class="flush ? 'app-content-flush' : ''">
           <RouterView v-slot="{ Component, route: viewRoute }">
-            <!-- 不用 mode="out-in"：该模式要求旧组件离场动画结束后新组件才进场，
-                 快速连续切 tab 时离场会被下一次切换打断，导致新组件 enter 丢失、
-                 <main> 停在空占位（<!---->）= 白屏。改为并发过渡：新组件立即挂载进场，
-                 旧组件独立离场，任何一方被打断都不影响另一方，不会留空窗。 -->
             <Transition name="rise">
               <component :is="Component" :key="viewRoute.path" />
             </Transition>
