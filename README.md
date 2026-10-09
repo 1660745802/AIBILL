@@ -136,6 +136,8 @@ bill/
 - 架构 & 功能 → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - 数据模型 → [docs/DATA.md](docs/DATA.md)
 - API 契约 → [docs/API.md](docs/API.md)
+- 前端设计规格 → [docs/UI-DESIGN.md](docs/UI-DESIGN.md)
+- 功能取舍流程 → [docs/FEATURE-TRIAGE.md](docs/FEATURE-TRIAGE.md)（`scripts/feature-triage.sh` 一键体检）
 - 开发规范 → [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
 - 测试方案 → [docs/TESTING.md](docs/TESTING.md)
 
