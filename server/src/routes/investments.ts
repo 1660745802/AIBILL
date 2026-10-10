@@ -17,7 +17,8 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
-import { normalizeCode } from '../lib/quotes.js'
+import { normalizeCode, fetchQuotes, type Quote } from '../lib/quotes.js'
+import { shouldFetchQuotes } from '../services/scheduler.js'
 import { loadValuedHoldings } from '../lib/investments-repo.js'
 
 const createSchema = z.object({
@@ -90,6 +91,100 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
    * 账户级读数（现金/总投入/浮盈）不在这里返回：那是 /api/assets/portfolio 的职责。
    * 投资页同时调这两个接口，保证和资产页显示的是同一份口径。
    */
+  /* ══════════════════════════════════════════════════════════
+     手动刷新行情
+     ══════════════════════════════════════════════════════════
+     为什么需要这个：定时抓取有交易时段门禁（盘中/收盘后），周末和夜间静默跳过。
+     于是投资页只显示「未取到价」——用户既不知道为什么，也没法干预。
+     手动刷新**绕过门禁**（用户明确要求，就该去取），并且如实回报每个代码的结果：
+     - 拿到的给价和**行情自带日期**（不伪造新鲜度）
+     - 拿不到的明确说「腾讯不认这个代码」，而不是静默跳过
+     */
+  app.post('/api/investments/quotes/refresh', async (request: FastifyRequest) => {
+    const db = getDb()
+    const userId = request.user!.userId
+
+    const rows = db.prepare(
+      'SELECT DISTINCT code FROM investments WHERE user_id = ? AND is_active = 1 AND code IS NOT NULL',
+    ).all(userId) as Array<{ code: string }>
+
+    // 回报调度状态：让用户知道**为什么没有自动更新**（周末休市 / 非交易时段），
+    // 而不是只看到「未取到价」——反馈差的根子就在这里
+    const schedule = shouldFetchQuotes()
+    const now = (db.prepare(`SELECT datetime('now') t`).get() as { t: string }).t
+    const base = { total: rows.length, schedule, at: now }
+
+    if (rows.length === 0) {
+      return {
+        code: 0,
+        data: { ...base, fetched: 0, results: [], missing: [], network: true },
+        message: '没有活跃持仓，无需刷新行情',
+      }
+    }
+
+    const codes = rows.map((r) => r.code)
+
+    let quotes: Quote[]
+    try {
+      quotes = await fetchQuotes(codes)
+    } catch (err) {
+      // 网络/接口挂了要单独报：这跟「代码不对」是两回事，用户该做什么完全不同
+      return {
+        code: 0,
+        data: {
+          ...base,
+          fetched: 0,
+          network: false,
+          results: [],
+          missing: codes.map((c) => ({ code: c, reason: '行情接口连不上，稍后再试' })),
+        },
+        message: '行情接口连不上，稍后再试',
+      }
+    }
+
+    // 落库（沿用调度器同一份口径，避免两处漂移）
+    const stmt = db.prepare(
+      `INSERT OR IGNORE INTO investment_quotes
+         (code, name, price, prev_close, change_rate, quote_date, quoted_at, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'tencent')`,
+    )
+    db.transaction(() => {
+      for (const q of quotes) {
+        stmt.run(q.code, q.name, q.price, q.prevClose, q.changeRate, q.quoteDate, q.quoteAt)
+      }
+    })()
+
+    const got = new Map(quotes.map((q) => [q.code, q]))
+    const results: Array<{ code: string; ok: boolean; price?: number; quoteDate?: string; changeRate?: number | null; reason?: string }> = []
+    const missing: Array<{ code: string; reason: string }> = []
+
+    for (const code of codes) {
+      const norm = normalizeCode(code)
+      const q = got.get(norm) ?? got.get(code)
+      if (q) {
+        results.push({
+          code,
+          ok: true,
+          price: q.price,
+          quoteDate: q.quoteDate,
+          changeRate: q.changeRate,
+        })
+      } else {
+        const reason = `腾讯不认这个代码（${norm}），检查是不是多/少了字符`
+        results.push({ code, ok: false, reason })
+        missing.push({ code, reason })
+      }
+    }
+
+    return {
+      code: 0,
+      data: { ...base, fetched: results.filter((r) => r.ok).length, network: true, results, missing },
+      message: results.every((r) => r.ok)
+        ? `已更新 ${results.length} 个标的`
+        : `${results.filter((r) => r.ok).length} 个已更新，${missing.length} 个取不到价`,
+    }
+  })
+
   app.get('/api/investments', async (request: FastifyRequest) => {
     const db = getDb()
     const userId = request.user!.userId

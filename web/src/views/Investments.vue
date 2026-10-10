@@ -27,6 +27,7 @@ import Money from '@/components/ui/Money.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import Skeleton from '@/components/ui/Skeleton.vue'
 import HoldingsEditor from '@/components/HoldingsEditor.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
 
 const toast = useToast()
 const cluster = useClusterStore()
@@ -130,6 +131,55 @@ async function saveCash(acc: Account) {
 }
 
 const pct = (v: number | null) => (v == null ? '' : `（${(v * 100).toFixed(1)}%）`)
+
+/* ══════════════════════════════════════════════
+   手动刷新行情 + 反馈
+   ══════════════════════════════════════════════
+   之前「未取到价」是个死胡同：定时抓取有交易时段门禁（周末/夜间静默跳过），
+   页面既不说为什么，也不给任何入口。用户只能干等。
+   现在给个按钮，而且**如实说为什么**：没抓过 / 代码不对 / 网络不通。*/
+const refreshing = ref(false)
+const scheduleNote = ref<string | null>(null)   // 为什么没有自动更新
+const quoteNote = ref<string | null>(null)      // 刚才这一次的结果
+const quoteBad = ref<string[]>([])              // 取不到价的代码
+const quoteAt = ref<string | null>(null)        // 行情时刻（来自行情自带日期）
+
+async function refreshQuotes() {
+  refreshing.value = true
+  quoteNote.value = null
+  quoteBad.value = []
+  try {
+    const { data } = await api.post('/investments/quotes/refresh')
+    if (data.code !== 0) { toast.error(data.message || '刷新失败'); return }
+    const d = data.data
+    scheduleNote.value = d.schedule?.fetch ? null : d.schedule?.reason || null
+    quoteAt.value = d.at
+
+    if (d.total === 0) { toast.info('没有活跃持仓，无需刷新行情'); return }
+
+    quoteBad.value = (d.missing ?? []).map((m: any) => m.code)
+    if (d.network === false) {
+      quoteNote.value = '行情接口连不上，稍后再试'
+      toast.error(quoteNote.value)
+      return
+    }
+
+    quoteNote.value = d.missing?.length
+      ? `${d.fetched} 个已更新，${d.missing.length} 个取不到价`
+      : `已更新 ${d.fetched} 个标的`
+
+    if (d.missing?.length) {
+      // 拿不到的不静默：逐个说清原因，并指向修改入口
+      const codes = d.missing.map((m: any) => m.code).join('、')
+      toast.warning(`${codes} 取不到价，检查代码是否填对`)
+    } else {
+      toast.success(quoteNote.value)
+    }
+    refreshAll()
+  } catch {
+    toast.error('刷新失败')
+  } finally { refreshing.value = false }
+}
 </script>
 
 <template>
@@ -138,6 +188,27 @@ const pct = (v: number | null) => (v == null ? '' : `（${(v * 100).toFixed(1)}%
       title="投资"
       :subtitle="investAccounts.length ? `${investAccounts.length} 个理财账户 · 盈亏按「总价值 − 总投入」算` : '持仓明细与盈亏'"
     />
+
+    <!-- 行情状态条：把「为什么没更新」摊在脸上，而不是让用户自己猜。
+         这块是整个页面最需要的反馈——之前它一片空白，用户不知道是自己配错
+         还是系统没跑。 -->
+    <div class="quote-bar">
+      <div class="quote-bar-info">
+        <span v-if="quoteAt" class="quote-at">上次刷新 {{ quoteAt.slice(5, 16) }}</span>
+        <span v-else class="quote-at quote-at-quiet">行情未获取过</span>
+        <span v-if="scheduleNote" class="quote-gate">自动更新：{{ scheduleNote }}</span>
+        <span v-if="quoteNote" class="quote-note">{{ quoteNote }}</span>
+      </div>
+      <button
+        class="btn btn-quiet btn-sm"
+        :disabled="refreshing"
+        aria-label="刷新行情"
+        @click="refreshQuotes"
+      >
+        <AppIcon name="refresh" :size="13" :stroke="2.2" :class="refreshing ? 'spin' : ''" />
+        {{ refreshing ? '刷新中…' : '刷新行情' }}
+      </button>
+    </div>
 
     <div v-if="loading" class="stack">
       <Skeleton variant="block" height="5rem" />
@@ -196,6 +267,7 @@ const pct = (v: number | null) => (v == null ? '' : `（${(v * 100).toFixed(1)}%
                    而总投入明明已经填了。行情是系统抓的，该说清是「等取价」不是「等你填」。 -->
               <span v-else-if="positionOf(acc.id)?.hasHoldings" class="inv-muted" title="持仓的现价还没抓到，拿到后自动算">
                 待取价
+                <span class="inv-act-hint" @click.stop="refreshQuotes">点「刷新行情」</span>
               </span>
               <span v-else class="inv-muted">填总投入后显示</span>
             </div>
@@ -241,6 +313,50 @@ const pct = (v: number | null) => (v == null ? '' : `（${(v * 100).toFixed(1)}%
 </template>
 
 <style scoped>
+/* 行情状态条：把「为什么没更新」摊在脸上。之前这块一片空白，
+   用户不知道是自己配错还是系统没跑——这是反馈差的根子。 */
+.quote-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.875rem;
+  margin-bottom: 0.75rem;
+  background: var(--color-paper-sunk);
+  border: 1px solid var(--color-rule-faint);
+  border-radius: var(--radius-sm);
+}
+.quote-bar-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.375rem 0.75rem;
+  min-width: 0;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+}
+.quote-at { color: var(--color-ink-3); }
+.quote-at-quiet { color: var(--color-ink-4); }
+.quote-gate { color: var(--color-warn, var(--color-ink-3)); }
+.quote-note { color: var(--color-ink-2); font-weight: 500; }
+.inv-act-hint {
+  color: var(--color-action);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  margin-left: 0.25rem;
+}
+.inv-act-hint:hover { opacity: 0.75; }
+.spin {
+  animation: quote-spin 0.9s linear infinite;
+}
+@keyframes quote-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+}
 .inv-head {
   display: flex;
   align-items: baseline;

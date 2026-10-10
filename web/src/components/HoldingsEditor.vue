@@ -180,10 +180,19 @@ async function remove(h: InvestmentItem) {
               <span v-if="h.quote?.changeRate != null" :class="h.quote.changeRate >= 0 ? 'amt-income' : 'amt-expense'">
                 {{ h.quote.changeRate >= 0 ? '+' : '' }}{{ h.quote.changeRate.toFixed(2) }}%
               </span>
+              <!-- 报日期而不是「刚刚」：行情日期来自市场自己，不要伪造新鲜度。
+                   也帮用户一眼看出这个价是不是老的。 -->
+              <span v-if="h.quote?.quoteDate" class="hold-qdate">{{ h.quote.quoteDate.slice(5) }}</span>
             </div>
             <Money :value="h.marketValue" size="sm" tone="neutral" sign="none" />
           </template>
-          <span v-else class="hold-noquote">未取到价</span>
+          <!-- 取不到价时带上代码：不然用户不知道要改哪一条，
+               也不知道是代码填错了还是系统没抓。 -->
+          <span v-else class="hold-noquote">
+            未取到价
+            <span class="hold-nq-code">{{ h.code }}</span>
+            <span class="hold-nq-hint">可能是代码不对</span>
+          </span>
         </div>
 
         <div class="hold-ops">
@@ -294,7 +303,22 @@ async function remove(h: InvestmentItem) {
 }
 .hold-val { text-align: right; min-width: 5.5rem; }
 .hold-price { font-size: 0.625rem; color: var(--color-ink-3); }
-.hold-noquote { font-size: 0.6875rem; color: var(--color-warn); }
+.hold-qdate { margin-left: 0.25rem; color: var(--color-ink-4); }
+.hold-noquote {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.05rem;
+  font-size: 0.625rem;
+  color: var(--color-ink-3);
+  text-align: right;
+}
+.hold-nq-code {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  color: var(--color-ink-2);
+}
+.hold-nq-hint { color: var(--color-ink-4); font-size: 0.5625rem; }
 .hold-ops { display: inline-flex; gap: 0.125rem; }
 .hold-adjust {
   grid-column: 1 / -1;
