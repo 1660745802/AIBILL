@@ -178,7 +178,7 @@
 | 响应 P95 | < 5s |
 | 分类准确率 | > 85% |
 
-计算公式详见 [ARCHITECTURE.md §6.1 AI 埋点](ARCHITECTURE.md)。
+计算公式详见 [DATA.md](DATA.md) 里对应模块的章节。
 
 ---
 

@@ -106,7 +106,7 @@ bill/
 │   │   ├── routes/            # 16 个路由模块（80 端点）
 │   │   ├── services/          # auth / logger / scheduler
 │   │   └── lib/               # response / error-codes（统一响应包装）
-│   └── tests/                 # 8 个测试文件（96 用例）
+│   └── tests/                 # 27 个测试文件（348 用例）
 ├── web/                       # 前端（Vue 3 + TailwindCSS）
 │   ├── src/
 │   │   ├── App.vue            # PC 侧边栏 + 移动端 Tab + Toast
@@ -120,7 +120,7 @@ bill/
 ├── docs/                      # 设计文档（5 份）
 │   ├── ARCHITECTURE.md        # 架构 / 技术栈 / 功能清单 / 部署
 │   ├── DATA.md                # 数据模型 / 表结构 / 索引 / 迁移
-│   ├── API.md                 # 全部 80 个端点契约
+│   ├── API.md                 # 全部 85 个端点契约
 │   ├── CONTRIBUTING.md        # 开发规范 / Git / 安全底线
 │   └── TESTING.md             # 测试用例清单
 ├── scripts/
@@ -138,12 +138,16 @@ bill/
 - API 契约 → [docs/API.md](docs/API.md)
 - 前端设计规格 → [docs/UI-DESIGN.md](docs/UI-DESIGN.md)
 - 功能取舍流程 → [docs/FEATURE-TRIAGE.md](docs/FEATURE-TRIAGE.md)（`scripts/feature-triage.sh` 一键体检）
+
+> 新接手先看这三份：`ARCHITECTURE`（整体怎么搭的）→ `DATA`（数据模型与
+> 余额/行情口径）→ `UI-DESIGN`（前端规格）。**改动任何口径前先读对应章节**——
+> 这个项目大半的历史 bug 都出在「同一个数字有两套算法」。
 - 开发规范 → [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
 - 测试方案 → [docs/TESTING.md](docs/TESTING.md)
 
 ## 🔌 API 概览
 
-完整接口列表见 [docs/API.md](docs/API.md)（共 80 个端点）。
+完整接口列表见 [docs/API.md](docs/API.md)（共 85 个端点）。
 
 | 模块 | 端点数 | 关键端点 |
 |------|--------|---------|
@@ -168,6 +172,7 @@ bill/
 | `DB_PATH` | 否 | 数据库路径 | `./data/bill.db` |
 | `PORT` | 否 | 监听端口 | `3000` |
 | `CORS_ORIGINS` | 否 | 逗号分隔白名单 | `localhost:5173,localhost:3000` |
+| `QUOTE_REFRESH_MINUTES` | 否 | 行情刷新间隔（分钟） | `15` |
 
 ## 💾 备份与恢复
 

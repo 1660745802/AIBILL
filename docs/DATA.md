@@ -1,6 +1,5 @@
 # 数据模型
 
-> 本文整合原 DATABASE.md 与 WORKBENCH.md。
 > 表结构定义**以代码为准**：`server/src/db/schema.ts`，本文只描述设计意图与注意事项。
 
 ---
@@ -136,7 +135,7 @@ status: active | completed | paused | abandoned
 | `cashflow_forecasts` | Phase 2 现金流预测 | 📋 |
 | `financial_health_scores` | Phase 3 财务健康度 | 📋 |
 
-详细字段定义见 git history（已废弃的 WORKBENCH.md §3-4）。
+这些表尚未实现，规划详见 [ARCHITECTURE.md §6 功能清单](ARCHITECTURE.md)。
 
 ---
 

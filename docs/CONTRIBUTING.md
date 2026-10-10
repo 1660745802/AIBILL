@@ -118,7 +118,39 @@ middleware/  → 中间件（auth/error handler）
 3. 启动时自动检测执行
 4. **禁止修改已应用的 migration**，只能新增
 
-### 3.2 SQL 规范
+### 3.2 ⚠️ 读生产库只能用只读连接
+
+**硬规则：任何脚本连 `~/.bill/bill.db` 必须用 `file:...?mode=ro`，绝不能调 `initDb()`。**
+
+代价是真实付出过的：为了复现 prompt/parser 的 bug，我跑了个 `probe.tmp.ts`，
+里面调了 `initDb()`——它连的是**生产库**，于是两份 migration 被真的应用了。
+而 migration 一旦标记 applied 就不再重跑，事后想改写那份 SQL 已经来不及
+（库里已是旧结构，代码里却是新语义）。
+
+更糟的连锁反应：
+- 把已应用的 migration **原地改写** → 库和代码永久对不上
+- 想「删掉 `schema_migrations` 里那行让 012 重跑」→ 但 012 里有
+  `ALTER TABLE ... ADD COLUMN`，重跑会因 duplicate column 直接失败
+- 只能追加一个幂等的补丁 migration 去修（`CREATE TABLE IF NOT EXISTS`）
+
+**正确姿势**
+
+```ts
+// ✅ 读生产数据：只读
+new Database(`file:${process.env.HOME}/.bill/bill.db?mode=ro`, { readonly: true })
+
+// ✅ 要做完整备份再验证：用 db.backup()，它会把 WAL 一起落盘
+await src.backup(tmpPath)
+
+// ❌ 绝对不行
+initDb()   // 会建表 / 跑 migration / 写库
+```
+
+> 顺带一提：生产库是 **WAL 模式**，数据可能在 `bill.db-wal` 里。
+> `cp bill.db` 拿到的可能是**不完整**的副本（表现为「明明有数据却查不到」），
+> 必须用 `db.backup()` 或连 `-wal` 一起处理。
+
+### 3.3 SQL 规范
 - 表名复数：`transactions` / `categories` / `accounts`
 - 主键统一 `id INTEGER PRIMARY KEY AUTOINCREMENT`
 - 金额统一整数（分）
@@ -127,7 +159,7 @@ middleware/  → 中间件（auth/error handler）
 - 必须有 `created_at`，可变记录加 `updated_at`
 - **新外键必须声明 `ON DELETE`**（CASCADE / SET NULL）
 
-### 3.3 索引
+### 3.4 索引
 - 高频查询字段必须有索引
 - 复合索引：高选择性列在前
 - 命名 `idx_<表>_<字段>`

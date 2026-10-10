@@ -230,12 +230,22 @@
 ### `/api/accounts`
 | Method | 说明 |
 |--------|------|
-| GET | 列出账户，含 `current_balance`（= `accounts.balance`，017 起的权威余额） |
-| POST | 创建账户（`initial_balance` 可负） |
-| PUT | 更新；**支持 `current_balance`**（推荐）—— 017 起为**覆盖**余额并刷新基准线；旧行为（反算 initial_balance）已移除 |
-| DELETE | 停用 |
+| GET | 列出账户，含 `current_balance`（= `accounts.balance`，017 起的权威余额）。`?include_inactive=1` 连已删除的一起返回 |
+| POST | 创建账户。支持 `asset_type`（**直接建对类型**，不必建完再去资产页改一次）；`initial_balance` 可负 |
+| PUT | 更新；**支持 `current_balance`**（推荐）—— 017 起为**覆盖**余额并刷新基准线 |
+| DELETE | **删除账户**（软删，可还原）。连带清掉该账户的余额快照与持仓 |
+| POST `/api/accounts/:id/restore` | 还原误删的账户 |
 
-`account.type`: `cash | wechat | alipay | bank | credit | other`
+`account.type`（付款渠道，历史字段）：`cash | wechat | alipay | bank | credit | other`
+`account.asset_type`（**账户种类**，UI 按它分组、决定要不要出现「投资」页）：
+`liquid | savings | investment | credit | loan | property | other`
+
+**删除账户时流水会保留**（`transactions` 上有到 `accounts` 的真实外键，
+且流水是账本事实不是账户的附属品），只是不再计入该账户余额。
+`DELETE` 的响应 `data.transactions` 会告诉你有多少笔账单受影响。
+
+**理财账户的 `current_balance` 语义是「现金」**，不是账户总价值——
+总价值 = 现金 + 持仓市值，持仓市值由 `/api/investments` 单独给出。
 
 ---
 
