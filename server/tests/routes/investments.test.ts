@@ -115,11 +115,13 @@ describe('持仓 CRUD · /api/investments', () => {
   })
 
   it('GET 行情缺失时 marketValue=null，不编 0', async () => {
-    // 新挂一个没有行情的标的
+    // 新挂一个**腾讯不认**的代码（真实踩过的：hk0100）。
+    // 注意不能用真实代码——POST 现在会自动取价，用真代码会当场拿到行情，
+    // 那样这个用例测的就不再是「缺失」了。
     const add = JSON.parse(
       (await app.inject({
         method: 'POST', url: '/api/investments', headers: authHeaders(token),
-        payload: { account_id: secAccId, code: 'sz159915', quantity: 2000 },
+        payload: { account_id: secAccId, code: 'hk0100', quantity: 2000 },
       })).payload,
     )
     const res = JSON.parse(
@@ -129,6 +131,26 @@ describe('持仓 CRUD · /api/investments', () => {
     expect(noQuote.marketValue).toBeNull()   // 不是 0 —— 0 会被读成"归零了"
     expect(noQuote.valued).toBe(false)
     expect(noQuote.quote).toBeNull()
+    await app.inject({ method: 'DELETE', url: `/api/investments/${add.data.id}`, headers: authHeaders(token) })
+  })
+
+  it('新增持仓后自动取价——不该还要手动刷新', async () => {
+    // 这是用户直接提的：「我更新持仓的时候你不能自动获取最新信息吗」。
+    // 加完就该看到价，不该显示「待取价」。
+    const add = JSON.parse(
+      (await app.inject({
+        method: 'POST', url: '/api/investments', headers: authHeaders(token),
+        payload: { account_id: secAccId, code: 'sz159937', quantity: 500 },
+      })).payload,
+    )
+    expect(add.code, `POST 失败: ${add.message}`).toBe(0)
+    const res = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/investments', headers: authHeaders(token) })).payload,
+    )
+    const row = res.data.items.find((x: any) => x.id === add.data.id)!
+    expect(row.quote).not.toBeNull()        // 刚加完就有行情，不用手动刷新
+    expect(row.marketValue).not.toBeNull()
+    expect(row.valued).toBe(true)
     await app.inject({ method: 'DELETE', url: `/api/investments/${add.data.id}`, headers: authHeaders(token) })
   })
 

@@ -18,6 +18,7 @@ import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { normalizeCode, fetchQuotes, currencyOf, fxCodesFor, type Quote } from '../lib/quotes.js'
+import { storeQuotes } from '../lib/investments-repo.js'
 import { shouldFetchQuotes } from '../services/scheduler.js'
 import { loadValuedHoldings } from '../lib/investments-repo.js'
 
@@ -91,6 +92,26 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
    * 账户级读数（现金/总投入/浮盈）不在这里返回：那是 /api/assets/portfolio 的职责。
    * 投资页同时调这两个接口，保证和资产页显示的是同一份口径。
    */
+  /**
+   * 新增/改持仓后**立刻取一次价**。
+   *
+   * 用户预期很合理：加完持仓就该看到价，而不是显示「待取价」、
+   * 还得自己去找「刷新行情」按钮。定时抓取的交易时段门禁不该拖累这个动作。
+   *
+   * 取不到就取不到（返回 null），不为了"看起来有用"编一个数。
+   */
+  async function autoFetchQuotes(db: any, codes: string[]): Promise<void> {
+    const want = [...codes.map(normalizeCode).filter(Boolean), ...fxCodesFor(codes.map(currencyOf))]
+    if (want.length === 0) return
+    try {
+      const quotes = await fetchQuotes(want)
+      if (quotes.length > 0) storeQuotes(db, quotes)
+    } catch {
+      // 网络/接口挂了不阻塞写入：账户和股数已经落库了，
+      // 价只是暂时没有，用户可以手动刷新。宁可显示「待取价」也不假算。
+    }
+  }
+
   /* ══════════════════════════════════════════════════════════
      手动刷新行情
      ══════════════════════════════════════════════════════════
@@ -145,17 +166,8 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // 落库（沿用调度器同一份口径，避免两处漂移）
-    const stmt = db.prepare(
-      `INSERT OR IGNORE INTO investment_quotes
-         (code, name, price, prev_close, change_rate, quote_date, quoted_at, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'tencent')`,
-    )
-    db.transaction(() => {
-      for (const q of quotes) {
-        stmt.run(q.code, q.name, q.price, q.prevClose, q.changeRate, q.quoteDate, q.quoteAt)
-      }
-    })()
+    // 落库走同一份实现（storeQuotes），三处共用口径
+    storeQuotes(db, quotes)
 
     const got = new Map(quotes.map((q) => [q.code, q]))
     const results: Array<{ code: string; ok: boolean; price?: number; quoteDate?: string; changeRate?: number | null; reason?: string }> = []
@@ -282,6 +294,8 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
         body.data.name ?? null, marketOf(code), body.data.kind,
         body.data.quantity, body.data.note ?? null, existing.id, userId,
       )
+      // 加完立刻取价：用户不该看到「待取价」还要手动刷新
+      await autoFetchQuotes(db, [code])
       const row = db.prepare('SELECT * FROM investments WHERE id = ?').get(existing.id)
       return { code: 0, data: row, message: '已添加持仓' }
     }
@@ -294,6 +308,8 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
       body.data.name ?? null, marketOf(code), body.data.kind,
       body.data.quantity, body.data.note ?? null,
     )
+    // 加完立刻取价：用户不该看到「待取价」还要手动刷新
+    await autoFetchQuotes(db, [code])
     const row = db.prepare('SELECT * FROM investments WHERE id = ?').get(result.lastInsertRowid)
     return { code: 0, data: row, message: '已添加持仓' }
   })

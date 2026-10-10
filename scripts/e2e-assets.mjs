@@ -232,8 +232,12 @@ export default defineConfig({
   await page.locator('button:has-text("添加持仓")').first().click(); await wait(2000)
   const t2 = await body()
   ok(t2.includes('518880') || t2.includes('未取到价'), '持仓添加成功')
-  ok(t2.includes('未取到价'), '没行情 → 「未取到价」，不是 0')
-  ok(t2.includes('待取价') || t2.includes('持仓未配置'), '浮盈处说清是「待取价」而不是让你填')
+  // 新增持仓现在会**自动取价**，所以正常路径应当看到现价，而不是「未取到价」。
+  // 断网/接口挂了才回落到「未取到价」——两条都接受，但绝不能是 0。
+  const hasPrice = /518880[\s\S]{0,200}现价\s*\d/.test(t2) || /现价\s*\d[\s\S]{0,200}518880/.test(t2)
+  const hasNoQuote = t2.includes('未取到价')
+  ok(hasPrice || hasNoQuote, hasPrice ? '新增持仓自动取到价（不用手动刷新）' : '断网时回落「未取到价」，不是 0')
+  ok(!/市值\s*¥?0(\.00)?\b/.test(t2), '行情缺失也绝不显示 0（0 会被读成归零了）')
   ok(!t2.includes('先记一次现金'), '没有「先记一次现金」这种前置要求（不填就是 0）')
 
   section('【3】股数：清空与非法输入都要回滚')

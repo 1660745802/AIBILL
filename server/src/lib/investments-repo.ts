@@ -79,6 +79,26 @@ export function loadLatestQuotes(db: Db, codes: string[]): Map<string, QuoteLite
 
 /** 按账户分组的持仓估值 —— 喂给 buildPortfolio 的第 4 个参数 */
 /**
+ * 把行情落库。**三处共用**（定时抓取 / 手动刷新 / 新增持仓后自动取）——
+ * 之前各写各的 SQL，口径会悄悄漂移。
+ */
+export function storeQuotes(db: Db, quotes: Array<{
+  code: string; name: string | null; price: number; prevClose: number | null
+  changeRate: number | null; quoteDate: string; quoteAt: string
+}>): void {
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO investment_quotes
+       (code, name, price, prev_close, change_rate, quote_date, quoted_at, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'tencent')`,
+  )
+  db.transaction(() => {
+    for (const q of quotes) {
+      stmt.run(q.code, q.name, q.price, q.prevClose, q.changeRate, q.quoteDate, q.quoteAt)
+    }
+  })()
+}
+
+/**
  * 取最新汇率（币种 → 人民币）。
  *
  * 汇率也存在 `investment_quotes`（代码 `whHKDCNY` / `whUSDCNY`），
