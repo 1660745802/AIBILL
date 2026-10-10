@@ -83,6 +83,8 @@ async function addAccount() {
 /* 账户是「有」或「没有」，不是「启用/停用」两个中间态。
    删除 = 移出列表；账单保留但不再计入余额（服务端就是这么做的）。 */
 const pendingDelete = ref<any | null>(null)
+// 已删除默认收起来：它是"找回头"用的，不该常年占着版面
+const showRemoved = ref(false)
 
 async function confirmDelete() {
   const acc = pendingDelete.value
@@ -152,21 +154,26 @@ async function saveEdit() {
 
     <!-- 添加：名称 / 类型 / 余额一次给全，不用建完再去别处改一遍 -->
     <div v-if="showAdd" class="px-3.5 py-3 bg-paper-sunk border-b border-rule-faint space-y-2.5">
-      <div class="flex gap-2">
-        <input
-          v-model="newIcon"
-          class="field w-12 text-center"
-          maxlength="4"
-          aria-label="图标"
-          @input="newIconTouched = true"
-        />
-        <input
-          v-model="newName"
-          class="field flex-1"
-          placeholder="账户名称，如「招行卡」「券商账户」"
-          aria-label="账户名称"
-          @keydown.enter="addAccount"
-        />
+      <!-- 标签写在上面而不是用 placeholder：placeholder 一有内容就消失，
+           编辑时预填了名称，用户会看到一个光秃秃的框，不知道是干什么的。 -->
+      <div>
+        <div class="mb-1.5 text-[11px] text-ink-3">图标 / 账户名称</div>
+        <div class="flex gap-2">
+          <input
+            v-model="newIcon"
+            class="field w-12 text-center"
+            maxlength="4"
+            aria-label="图标"
+            @input="newIconTouched = true"
+          />
+          <input
+            v-model="newName"
+            class="field flex-1"
+            placeholder="如「招行卡」「券商账户」"
+            aria-label="账户名称"
+            @keydown.enter="addAccount"
+          />
+        </div>
       </div>
 
       <!-- 类型用一排可点的标签，而不是下拉：下拉里翻不到「理财投资」，
@@ -185,7 +192,28 @@ async function saveEdit() {
         </div>
         <p v-if="newTypeMeta.hint" class="mt-1.5 text-[11px] text-ink-4">
           {{ newTypeMeta.hint }}
-          <template v-if="newType === 'investment'">· 添加后到「投资」页配持仓</template>
+          <template v-if="newType === 'investment'">· 添加后到「投资」页配持仓
+<style scoped>
+.removed-fold {
+  border-top: 1px solid var(--color-rule-faint);
+}
+.removed-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.55rem 0.875rem;
+  background: none;
+  border: 0;
+  color: var(--color-ink-3);
+  font-size: 0.6875rem;
+  cursor: pointer;
+  text-align: left;
+}
+.removed-toggle:hover { color: var(--color-ink-2); background: var(--color-paper-sunk); }
+.removed-hint { margin-left: auto; color: var(--color-ink-4); font-size: 0.625rem; }
+</style>
+</template>
         </p>
       </div>
 
@@ -235,9 +263,13 @@ async function saveEdit() {
 
       <!-- 行内展开编辑：类型也在行上，不藏进另一个页面 -->
       <div v-if="editingId === acc.id" class="px-3.5 py-3 bg-paper-sunk border-t border-rule-faint space-y-2.5">
-        <div class="flex gap-2">
-          <input v-model="editIcon" class="field w-12 text-center" maxlength="4" aria-label="图标" />
-          <input v-model="editName" class="field flex-1" placeholder="账户名称" aria-label="账户名称" />
+        <!-- 同样用固定标签：这里输入框预填了现有名称，placeholder 会消失 -->
+        <div>
+          <div class="mb-1.5 text-[11px] text-ink-3">图标 / 账户名称</div>
+          <div class="flex gap-2">
+            <input v-model="editIcon" class="field w-12 text-center" maxlength="4" aria-label="图标" />
+            <input v-model="editName" class="field flex-1" aria-label="账户名称" />
+          </div>
         </div>
         <div>
           <div class="mb-1.5 text-[11px] text-ink-3">账户类型</div>
@@ -266,23 +298,77 @@ async function saveEdit() {
           <button @click.stop="saveEdit" class="btn btn-primary btn-sm">保存</button>
         </div>
       </div>
-    </template>
+    
+<style scoped>
+.removed-fold {
+  border-top: 1px solid var(--color-rule-faint);
+}
+.removed-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.55rem 0.875rem;
+  background: none;
+  border: 0;
+  color: var(--color-ink-3);
+  font-size: 0.6875rem;
+  cursor: pointer;
+  text-align: left;
+}
+.removed-toggle:hover { color: var(--color-ink-2); background: var(--color-paper-sunk); }
+.removed-hint { margin-left: auto; color: var(--color-ink-4); font-size: 0.625rem; }
+</style>
+</template>
 
     <div v-if="!active.length" class="px-3.5 py-6 text-center text-xs text-ink-4">
       还没有账户，点右上角「+ 添加」新建一个。
     </div>
 
-    <!-- 已删除：可以还原。账户是「有/没有」，但误删得能找回 -->
-    <template v-if="removed.length">
-      <div class="px-3.5 pt-2.5 pb-1 text-[11px] text-ink-4">已删除</div>
-      <div v-for="acc in removed" :key="acc.id" class="sheet-row opacity-50">
-        <span class="tx-icon">{{ acc.icon }}</span>
-        <div class="min-w-0 flex-1">
-          <div class="text-sm text-ink-3 truncate line-through">{{ acc.name }}</div>
+    <!-- 已删除：可以还原。**默认收起**——它是"找回头"用的，不该常年占版面。
+         折叠条上直接给数量，想看再点开。 -->
+    <div v-if="removed.length" class="removed-fold">
+      <button
+        class="removed-toggle"
+        type="button"
+        :aria-expanded="showRemoved"
+        @click="showRemoved = !showRemoved"
+      >
+        <AppIcon :name="showRemoved ? 'chevronDown' : 'chevronRight'" :size="13" class="text-ink-4" />
+        <span>已删除 {{ removed.length }} 个</span>
+        <span class="removed-hint">{{ showRemoved ? '点行里的「还原」放回来' : '点开可还原' }}</span>
+      </button>
+      <template v-if="showRemoved">
+        <div v-for="acc in removed" :key="acc.id" class="sheet-row opacity-50">
+          <span class="tx-icon">{{ acc.icon }}</span>
+          <div class="min-w-0 flex-1">
+            <div class="text-sm text-ink-3 truncate line-through">{{ acc.name }}</div>
+          </div>
+          <button @click.stop="restore(acc)" class="act shrink-0">还原</button>
         </div>
-        <button @click.stop="restore(acc)" class="act shrink-0">还原</button>
-      </div>
-    </template>
+      
+<style scoped>
+.removed-fold {
+  border-top: 1px solid var(--color-rule-faint);
+}
+.removed-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.55rem 0.875rem;
+  background: none;
+  border: 0;
+  color: var(--color-ink-3);
+  font-size: 0.6875rem;
+  cursor: pointer;
+  text-align: left;
+}
+.removed-toggle:hover { color: var(--color-ink-2); background: var(--color-paper-sunk); }
+.removed-hint { margin-left: auto; color: var(--color-ink-4); font-size: 0.625rem; }
+</style>
+</template>
+    </div>
   </div>
 
   <!-- 删除确认：说清楚账单会怎样。用户明确过「账单没漏就行」，
@@ -300,4 +386,25 @@ async function saveEdit() {
       </div>
     </div>
   </div>
+
+<style scoped>
+.removed-fold {
+  border-top: 1px solid var(--color-rule-faint);
+}
+.removed-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.55rem 0.875rem;
+  background: none;
+  border: 0;
+  color: var(--color-ink-3);
+  font-size: 0.6875rem;
+  cursor: pointer;
+  text-align: left;
+}
+.removed-toggle:hover { color: var(--color-ink-2); background: var(--color-paper-sunk); }
+.removed-hint { margin-left: auto; color: var(--color-ink-4); font-size: 0.625rem; }
+</style>
 </template>

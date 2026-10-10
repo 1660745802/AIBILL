@@ -78,15 +78,36 @@ export function loadLatestQuotes(db: Db, codes: string[]): Map<string, QuoteLite
 }
 
 /** 按账户分组的持仓估值 —— 喂给 buildPortfolio 的第 4 个参数 */
+/**
+ * 取最新汇率（币种 → 人民币）。
+ *
+ * 汇率也存在 `investment_quotes`（代码 `whHKDCNY` / `whUSDCNY`），
+ * 和股价走同一条抓取链路，不另起一套口径。
+ */
+export function loadLatestFxRates(db: Db): Map<string, number> {
+  const out = new Map<string, number>()
+  const rows = db.prepare(
+    `SELECT code, price FROM investment_quotes
+      WHERE code LIKE 'wh%CNY'
+      ORDER BY quote_date DESC, quoted_at DESC`,
+  ).all() as Array<{ code: string; price: number }>
+  for (const r of rows) {
+    const ccy = r.code.slice(2, r.code.length - 3) // whHKDCNY → HKD
+    if (ccy && !out.has(ccy)) out.set(ccy, r.price)
+  }
+  return out
+}
+
 export function loadAccountHoldings(db: Db, userId: number): Map<number, AccountHoldings> {
   const holdings = loadHoldings(db, userId).filter((h) => h.isActive)
   const quotes = loadLatestQuotes(db, holdings.map((h) => h.code))
-  return groupByAccount(holdings, quotes)
+  return groupByAccount(holdings, quotes, loadLatestFxRates(db))
 }
 
 /** 逐条估值（投资页用：要展示每条持仓的市值/现价） */
 export function loadValuedHoldings(db: Db, userId: number): HoldingValuation[] {
   const holdings = loadHoldings(db, userId).filter((h) => h.isActive)
   const quotes = loadLatestQuotes(db, holdings.map((h) => h.code))
-  return holdings.map((h) => valueHolding(h, quotes))
+  const fx = loadLatestFxRates(db)
+  return holdings.map((h) => valueHolding(h, quotes, fx))
 }

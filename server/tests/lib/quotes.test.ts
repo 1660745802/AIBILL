@@ -9,6 +9,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { normalizeCode, parseQuoteResponse, parseQuoteLine, fetchQuotes } from '../../src/lib/quotes.js'
 
 import { readFileSync } from 'node:fs'
+import { currencyOf, fxCodesFor } from '../../src/lib/quotes.js'
+import { valueHolding, groupByAccount } from '../../src/lib/holdings.js'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -170,5 +172,100 @@ describe('港股 / 美股（真实响应夹具）', () => {
 
   it('三家市场的日期格式不同但都能解析出 ISO 日期', () => {
     for (const q of parsed) expect(q.quoteDate, q.code).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+})
+
+/* ══════════════════════════════════════════════════════════════
+   币种折算：港股是港元、美股是美元，而账本是人民币。
+   不折算会把 HK$417,480 当成 ¥417,480 加进总资产。
+   ══════════════════════════════════════════════════════════════ */
+describe('币种与汇率', () => {
+  it('从代码前缀认币种', () => {
+    expect(currencyOf('hk00100')).toBe('HKD')
+    expect(currencyOf('hkHSI')).toBe('HKD')
+    expect(currencyOf('usAAPL')).toBe('USD')
+    expect(currencyOf('hf_XAU')).toBe('USD')
+    expect(currencyOf('sh518880')).toBe('CNY')
+    expect(currencyOf('sz159937')).toBe('CNY')
+    expect(currencyOf('')).toBe('CNY')
+  })
+
+  it('折人民币需要的汇率代码', () => {
+    expect(fxCodesFor(['HKD', 'USD', 'CNY'])).toEqual(['whHKDCNY', 'whUSDCNY'])
+    expect(fxCodesFor(['CNY'])).toEqual([])   // 人民币标的不需要汇率
+  })
+
+  it('解析外汇行情：22 段的格式和股票完全不同，不能走 parseTilde', () => {
+    // 真实响应：v_whHKDCNY="310~港元人民币~HKDCNY~0.8525~0~20261010045653~0.8538~..."
+    const q = parseQuoteLine(
+      'v_whHKDCNY="310~港元人民币~HKDCNY~0.8525~0~20261010045653~0.8538~0.8538~0.8539~0.8520~0.8545~0.8531~0.8526~0.8531~20261010045653~0.8526~0.8526~0.8526~0.8526~0.8526~0.8526~0.8526~0.8526"',
+    )
+    expect(q).not.toBeNull()
+    expect(q!.code).toBe('whHKDCNY')
+    expect(q!.price).toBe(0.8525)      // 汇率在段[3]
+    expect(q!.prevClose).toBe(0.8538)  // 昨收在段[6]
+    expect(q!.quoteDate).toBe('2026-10-10')
+  })
+
+  it('汇率解析失败时返回 null，而不是编一个数', () => {
+    expect(parseQuoteLine('v_whHKDCNY="310~港元人民币~HKDCNY~0~0~20261010045653~0.85"')).toBeNull()
+    expect(parseQuoteLine('v_whHKDCNY="310~港元人民币~HKDCNY~abc~0~20261010045653~0.85"')).toBeNull()
+    expect(parseQuoteLine('v_whHKDCNY="310~short"')).toBeNull()
+  })
+})
+
+/* 折算本身 */
+describe('外币持仓折人民币', () => {
+  const fx = new Map([['HKD', 0.85], ['USD', 6.7]])
+  const holding = (code: string, quantity: number) => ({
+    id: 1, accountId: 1, code, name: null, kind: 'stock',
+    quantity, note: null, isActive: true, updatedAt: '2026-10-10',
+  })
+  const quoteOf = (code: string, price: number) => new Map([[code, {
+    code, name: null, price, quoteDate: '2026-10-09', quotedAt: '2026-10-09 16:00:00', changeRate: null,
+  }]])
+
+  it('港股市值按汇率折算，不再是原币直接当人民币', () => {
+    // 1960 股 × HK$213 = HK$417,480 → 按 0.85 折 ≈ ¥354,858
+    const v = valueHolding(holding('hk00100', 1960), quoteOf('hk00100', 213), fx)
+    expect(v.currency).toBe('HKD')
+    expect(v.marketValueNative).toBe(41748000)          // 原币 HK$417,480（分）
+    expect(v.marketValue).toBe(Math.round(41748000 * 0.85))  // 折人民币
+    expect(v.marketValue).toBe(35485800)
+    expect(v.fxRate).toBe(0.85)
+  })
+
+  it('人民币标的不折算（汇率 1）', () => {
+    const v = valueHolding(holding('sh518880', 10000), quoteOf('sh518880', 8.617), fx)
+    expect(v.currency).toBe('CNY')
+    expect(v.fxRate).toBe(1)
+    expect(v.marketValue).toBe(v.marketValueNative)
+  })
+
+  it('缺汇率时 marketValue 给 null 而不是原币值——不能把港元当人民币', () => {
+    const v = valueHolding(holding('hk00100', 100), quoteOf('hk00100', 200), new Map())
+    expect(v.currency).toBe('HKD')
+    expect(v.fxRate).toBeNull()
+    expect(v.marketValue).toBeNull()      // 关键：不能是原币当人民币
+    expect(v.marketValueNative).toBe(2000000)  // 100 股 × HK$200 = HK$20,000 = 2,000,000 分
+    expect(v.valued).toBe(false)          // 所以账面不会拿它冒充市值
+  })
+
+  it('美股同样折算', () => {
+    const v = valueHolding(holding('usAAPL', 10), quoteOf('usAAPL', 336.64), fx)
+    expect(v.currency).toBe('USD')
+    expect(v.marketValue).toBe(Math.round(336640 * 6.7))
+  })
+
+  it('账户级汇总按**折算后**的值加总，不能混币种', () => {
+    const hs = [holding('hk00100', 100), holding('sh518880', 100)]
+    const quotes = new Map([
+      ['hk00100', { code: 'hk00100', name: null, price: 200, quoteDate: '2026-10-09', quotedAt: '', changeRate: null }],
+      ['sh518880', { code: 'sh518880', name: null, price: 8, quoteDate: '2026-10-09', quotedAt: '', changeRate: null }],
+    ])
+    const m = groupByAccount(hs, quotes, fx)
+    const got = m.get(1)!
+    // HK$20,000 × 0.85 = ¥17,000；¥800 不折
+    expect(got.marketValue).toBe(Math.round(2000000 * 0.85) + 80000)
   })
 })

@@ -29,6 +29,9 @@ const emit = defineEmits<{ changed: [] }>()
 
 const toast = useToast()
 
+/** 币种符号：不标的话「213.000」会被读成 ¥213 */
+const CURRENCY_SIGN: Record<string, string> = { HKD: 'HK$', USD: 'US$' } as const
+
 const holdings = ref<InvestmentItem[]>([])
 const loading = ref(true)
 const saving = ref(false)
@@ -176,7 +179,9 @@ async function remove(h: InvestmentItem) {
           <!-- 没取到价：显示「—」，不显示 0 -->
           <template v-if="h.marketValue != null">
             <div class="hold-price">
-              现价 {{ h.quote?.price?.toFixed(3) ?? '—' }}
+              <!-- 现价要带币种：港股是港元、美股是美元。
+                   不标的话「213.000」会被读成 ¥213，实际是 HK$213。 -->
+              现价 <span v-if="h.currency && h.currency !== 'CNY'" class="hold-ccy">{{ CURRENCY_SIGN[h.currency] || h.currency }}</span>{{ h.quote?.price?.toFixed(3) ?? '—' }}
               <span v-if="h.quote?.changeRate != null" :class="h.quote.changeRate >= 0 ? 'amt-income' : 'amt-expense'">
                 {{ h.quote.changeRate >= 0 ? '+' : '' }}{{ h.quote.changeRate.toFixed(2) }}%
               </span>
@@ -185,9 +190,17 @@ async function remove(h: InvestmentItem) {
               <span v-if="h.quote?.quoteDate" class="hold-qdate">{{ h.quote.quoteDate.slice(5) }}</span>
             </div>
             <Money :value="h.marketValue" size="sm" tone="neutral" sign="none" />
+            <!-- 折算来源写出来，别让人怀疑这个数对不对 -->
+            <div v-if="h.currency && h.currency !== 'CNY' && h.fxRate" class="hold-fx">
+              按 1{{ h.currency }} = ¥{{ h.fxRate.toFixed(4) }} 折算
+            </div>
           </template>
-          <!-- 取不到价时带上代码：不然用户不知道要改哪一条，
-               也不知道是代码填错了还是系统没抓。 -->
+          <!-- 取不到价/缺汇率时带上代码和原因 -->
+          <span v-else-if="h.quote && !h.fxRate" class="hold-noquote">
+            待补汇率
+            <span class="hold-nq-code">{{ h.currency }} → CNY</span>
+            <span class="hold-nq-hint">点「刷新行情」取汇率</span>
+          </span>
           <span v-else class="hold-noquote">
             未取到价
             <span class="hold-nq-code">{{ h.code }}</span>
@@ -304,6 +317,12 @@ async function remove(h: InvestmentItem) {
 .hold-val { text-align: right; min-width: 5.5rem; }
 .hold-price { font-size: 0.625rem; color: var(--color-ink-3); }
 .hold-qdate { margin-left: 0.25rem; color: var(--color-ink-4); }
+.hold-ccy { color: var(--color-ink-2); font-weight: 500; }
+.hold-fx {
+  font-size: 0.5625rem;
+  color: var(--color-ink-4);
+  margin-top: 0.05rem;
+}
 .hold-noquote {
   display: flex;
   flex-direction: column;

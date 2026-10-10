@@ -9,7 +9,7 @@
 import { getDb } from '../db/index.js'
 import { appLog as log } from './logger.js'
 import crypto from 'node:crypto'
-import { fetchQuotes } from '../lib/quotes.js'
+import { fetchQuotes, currencyOf, fxCodesFor } from '../lib/quotes.js'
 import { applyTxn } from '../lib/account-balance.js'
 
 /**
@@ -248,8 +248,11 @@ export async function processQuoteFetch(): Promise<void> {
   if (rows.length === 0) return
 
   const codes = rows.map((r) => r.code)
+  // 顺带把折人民币需要的汇率也取了：港股是港元、美股是美元，
+  // 不折算就把 HK$ 当 ¥ 加进净资产了。
+  const needFx = fxCodesFor(codes.map(currencyOf))
   try {
-    const quotes = await fetchQuotes(codes)
+    const quotes = await fetchQuotes([...codes, ...needFx])
     const stmt = db.prepare(
       `INSERT OR IGNORE INTO investment_quotes
          (code, name, price, prev_close, change_rate, quote_date, quoted_at, source)

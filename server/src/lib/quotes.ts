@@ -143,9 +143,57 @@ function parseComma(code: string, body: string): Quote | null {
   }
 }
 
+/**
+ * 一个代码对应什么币种。
+ *
+ * 港股是港元、美股是美元、外盘是美元，而账本是人民币——
+ * 直接 `股数 × 现价` 加起来会把 ¥ 和 HK$ 混成一个数，净资产算错。
+ * 所以估值前必须先折人民币。
+ */
+export function currencyOf(code: string): string {
+  const c = String(code).toLowerCase()
+  if (c.startsWith('hk')) return 'HKD'
+  if (c.startsWith('us')) return 'USD'
+  if (c.startsWith('hf_')) return 'USD' // 伦敦金/银等外盘以美元计价
+  return 'CNY' // sh / sz / bj / 未知
+}
+
+/** 折人民币需要的汇率代码（腾讯 `wh` 前缀就是外汇） */
+export function fxCodesFor(currencies: string[]): string[] {
+  return [...new Set(currencies)]
+    .filter((c) => c !== 'CNY' && c !== 'CNY')
+    .map((c) => `wh${c}CNY`)
+}
+
+/**
+ * 外汇行情（`whHKDCNY` / `whUSDCNY`）的响应格式**和股票完全不同**：
+ *
+ *   22 段（股票是 78~88 段）
+ *   段[3] = 汇率，段[5] = 时间戳，段[6] = 昨收
+ *
+ * 走 parseTilde 会因为段数 < 33 被**静默丢掉**——港股的市值继续被当成人民币。
+ */
+function parseFx(code: string, body: string): Quote | null {
+  const f = body.split('~')
+  if (f.length < 7) return null
+  const price = Number(f[3])
+  if (!Number.isFinite(price) || price <= 0) return null
+  const prev = Number(f[6])
+  return {
+    code,
+    name: f[1] ?? code,
+    price,
+    prevClose: Number.isFinite(prev) && prev > 0 ? prev : null,
+    changeRate: null, // 汇率的涨跌幅对估值没用，不编
+    quoteDate: toIsoDate(String(f[5] ?? '')) ?? '',
+    quoteAt: toIsoDate(String(f[5] ?? '')) ?? '',
+  }
+}
+
 export function parseQuoteLine(line: string): Quote | null {
   const m = line.match(/^v_([a-z0-9_]+)="([^"]*)"/i)
   if (!m) return null
+  if (m[1]!.toLowerCase().startsWith('wh')) return parseFx(m[1]!, m[2]!)
   // ⚠️ **不能 lowerCase**。`holdings.ts` 用 holdings 里的 code 去查这个 Map，
   // 而 code 是 normalizeCode 的输出（`hkHSI` / `usAAPL` 保留大小写）。
   // 这里小写化会让 Map 的 key 变成 `hkhsi`，查 `hkHSI` 必然落空 →

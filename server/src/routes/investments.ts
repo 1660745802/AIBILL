@@ -17,7 +17,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
-import { normalizeCode, fetchQuotes, type Quote } from '../lib/quotes.js'
+import { normalizeCode, fetchQuotes, currencyOf, fxCodesFor, type Quote } from '../lib/quotes.js'
 import { shouldFetchQuotes } from '../services/scheduler.js'
 import { loadValuedHoldings } from '../lib/investments-repo.js'
 
@@ -124,9 +124,11 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
 
     const codes = rows.map((r) => r.code)
 
+    // 顺带取汇率：外币持仓要折人民币
+    const needFx = fxCodesFor(codes.map(currencyOf))
     let quotes: Quote[]
     try {
-      quotes = await fetchQuotes(codes)
+      quotes = await fetchQuotes([...codes, ...needFx])
     } catch (err) {
       // 网络/接口挂了要单独报：这跟「代码不对」是两回事，用户该做什么完全不同
       return {
@@ -136,6 +138,7 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
           fetched: 0,
           network: false,
           results: [],
+          fx: {},
           missing: codes.map((c) => ({ code: c, reason: '行情接口连不上，稍后再试' })),
         },
         message: '行情接口连不上，稍后再试',
@@ -157,6 +160,12 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
     const got = new Map(quotes.map((q) => [q.code, q]))
     const results: Array<{ code: string; ok: boolean; price?: number; quoteDate?: string; changeRate?: number | null; reason?: string }> = []
     const missing: Array<{ code: string; reason: string }> = []
+    const fx: Record<string, number> = {}
+    for (const q of quotes) {
+      if (q.code.toLowerCase().startsWith('wh') && q.code.endsWith('CNY')) {
+        fx[q.code.slice(2, q.code.length - 3)] = q.price
+      }
+    }
 
     for (const code of codes) {
       const norm = normalizeCode(code)
@@ -178,7 +187,7 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
 
     return {
       code: 0,
-      data: { ...base, fetched: results.filter((r) => r.ok).length, network: true, results, missing },
+      data: { ...base, fetched: results.filter((r) => r.ok).length, network: true, results, missing, fx },
       message: results.every((r) => r.ok)
         ? `已更新 ${results.length} 个标的`
         : `${results.filter((r) => r.ok).length} 个已更新，${missing.length} 个取不到价`,

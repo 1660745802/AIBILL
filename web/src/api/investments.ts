@@ -19,8 +19,14 @@ export interface InvestmentItem {
   quantity: number
   note: string | null
   updatedAt: string
-  /** 股数 × 现价（分）。行情缺失时 null —— 不要显示 0 */
+  /** 股数 × 现价，**已折人民币**（分）。行情缺失时 null —— 不要显示 0 */
   marketValue: number | null
+  /** 该标的自己的币种市值（分），用来显示「原币 HK$417,480」 */
+  marketValueNative: number | null
+  /** 持仓计价币种：HKD / USD / CNY */
+  currency: string
+  /** 折算汇率；人民币为 1，缺汇率为 null（这时 marketValue 也是 null） */
+  fxRate: number | null
   /** 有行情且股数 > 0 */
   valued: boolean
   quote: { name: string | null; price: number; quoteDate: string; changeRate: number | null } | null
