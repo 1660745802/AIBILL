@@ -81,6 +81,11 @@ deleted_at:   软删除标记，30 天后可清理
 | 006 | `app_logs` | 应用运行日志 |
 | 007 | `notification_rules` | 通知记账规则云控（version + ETag 缓存） |
 | 008 | `financial_goals` / `goal_progress` / `asset_snapshots` / `recurring_patterns` | 财务工作台 |
+| 012 | `ai_parse_filters` (+ `transactions.parse_log_id`) | 预筛记录 / 落地追踪（详见 §10.4） |
+| 013 | `asset_snapshots.quantity` / `.total_invested` | 资产快照支持份额与账户级净投入（详见 §10.1） |
+| 014 | `investments` / `investment_quotes` | 按标的持仓 + 行情历史（详见 §10.2 / §10.3） |
+| 015 | `ai_parse_filters`（幂等补建） | 修生产库缺表（详见 §10.4） |
+| 016 | 删 `investments.cost_basis`、`asset_snapshots.quantity`/`.total_invested`；加 `accounts.invested_total` | 单只不再记成本；总投入搬到账户（详见 §10.5） |
 
 ### 3.1 accounts 扩展（migration 008）
 ```
@@ -125,8 +130,8 @@ status: active | completed | paused | abandoned
 | 表 | 阶段 | 状态 |
 |----|------|------|
 | `debts` + `debt_payments` | P2c 负债中心 | 📋 |
-| `investments` + `investment_transactions` | P3a 投资理财 | 📋 |
-| `holdings` + `holding_transactions` | Phase 4 投资追踪 | 📋 |
+| `investments` + `investment_quotes` | 投资理财（migration 014） | ✅ 见 §10.2 / §10.3 |
+| `holdings` + `holding_transactions` | Phase 4 投资追踪（早期命名，实际落地为 `investments`） | 📋 |
 | `jwt_revocations` | P0 安全加固（migration 009） | ✅ |
 | `cashflow_forecasts` | Phase 2 现金流预测 | 📋 |
 | `financial_health_scores` | Phase 3 财务健康度 | 📋 |
@@ -151,10 +156,13 @@ users ─┬─ invite_codes (created_by → SET NULL)
        │                └─ accounts
        ├─ financial_goals ── goal_progress (CASCADE)
        ├─ asset_snapshots ── accounts
+       ├─ investments ── accounts (UNIQUE user_id+account_id+code)
+       ├─ ai_parse_filters (预筛记录；无 FK，按 user_id 隔离)
        ├─ recurring_patterns
        ├─ app_logs
        ├─ notification_rules (created_by)
-       └─ jwt_revocations (user_id, CASCADE)
+       └─ (users.token_version：JWT O(1) 撤销，无独立表)
+investment_quotes (全局行情，按 code 共享，无 user_id)
 settings (全局) ──── user_settings (PK: user_id+key, CASCADE)
 ```
 
@@ -273,6 +281,140 @@ INSERT OR IGNORE INTO settings (key, value) VALUES (...);
 | 006 | app_logs | 应用运行日志 |
 | 007 | notification_rules | 通知规则版本管理 |
 | 008 | financial_workstation | 资产快照 + 目标 + 周期模式 + accounts 扩展 |
-| **009** | **jwt_revocations** | JWT jti 黑名单（P0 安全加固） |
-| **010** | **fk_on_delete** | 所有外键补 ON DELETE 策略（P0 安全加固） |
-| **011** | **drop_redundant_indexes** | 删除 4 个冗余单列索引（P0 性能加固） |
+| **009** | **jwt_token_version** | `users.token_version`，JWT O(1) 撤销（P0 安全加固） |
+| **010** | **cleanup_redundant_indexes** | 删 4 个冗余单列索引 + 加 subscriptions partial index |
+| **011** | **app_updates** | App 自托管更新表（APK 版本分发） |
+| **012** | **parse_filter_and_landing**（生产库旧名 `parse_landing_tracking`） | `transactions.parse_log_id` + 新建 `ai_parse_filters` 表（预筛记录） |
+| **013** | **asset_snapshot_position** | `asset_snapshots` 加 `quantity` / `total_invested` + `(user_id, snapshot_date DESC)` 索引 |
+| **014** | **investments_and_quotes** | 新建 `investments`（持仓）+ `investment_quotes`（行情历史） |
+| **015** | **ai_parse_filters_backfill** | 幂等补建 `ai_parse_filters`（修生产库缺表，见下 §10） |
+| **016** | **drop_holding_cost_basis** | 删三列冗余/误导性字段 + 加 `accounts.invested_total`（见下 §10.5） |
+
+> ⚠️ migration 012 曾被原地改写：早期版本重建过 `ai_parse_logs`（放宽 `status` CHECK 加 `filtered`），
+> 并被误应用到**生产库**（记录名 `parse_landing_tracking`）。当前代码里 012 是「新建 `ai_parse_filters`」版，
+> 但生产库里 012 已标 applied 不会重跑 ⇒ `ai_parse_filters` 在生产库缺失。migration 015 幂等补建这张表。
+
+---
+
+## 10. 资产工作台数据模型（migration 012–016）
+
+> 这块是「证券/资产工作台」的存储层。核心原则：**资产数据不从流水回算**——
+> 线上 551/553 笔交易没有 `account_id`，回算余额必然错，所以一切走手动快照 + 持仓估值。
+
+### 10.1 asset_snapshots（只记现金）
+
+```
+asset_snapshots (account_id, snapshot_date, balance, source)
+```
+
+**`balance` = 该账户的现金余额。** 理财账户的持仓市值不在这里，由 `investments` + 行情算。
+
+- 每日采样，`UNIQUE(user_id, account_id, snapshot_date)` + UPSERT → **漏几天随时补**
+- 停用账户（软删）的快照不参与读模型（`readSnapshots` 里 `a.is_active = 1`）——
+  否则它最后一笔现金永远留在净资产里，还会让「日变动」因覆盖数永不相等而恒为 null
+
+**口径（`lib/portfolio.ts` 守住，均有测试）**：
+- **账户总价值 = 持仓市值 + 现金**（用户原话：「股数×单价 + 余额」）
+- 无持仓账户：总价值 = 现金
+- 行情缺失：账户总价值 `null`；**该账户的现金仍计入净资产**，但整体标 `netWorthComplete=false`
+  → UI 显示「≥¥X（N 个账户待取价）」，不把下界当精确值
+- 有总投入但没配持仓 → `holdingsPending=true`，浮盈 `null`（未配置 ≠ 亏损）
+- 净值曲线拆「持仓市值 / 现金」两条
+
+> **migration 013 加过 `quantity` / `total_invested`，016 又删了。**
+> 原因：份额按标的记在 `investments.quantity`；总投入是**账户属性**（只在存/取钱时变，
+> 不是每日读数），搬到 `accounts.invested_total`。留在快照里会导致
+> 「改一次总投入得伪造一条带日期的快照」，而且同一份数据有两个写入口。
+
+### 10.2 investments（migration 014，持仓，低频手填）
+
+```
+id, user_id, account_id,
+code            规范化代码：sh518880 / sz159937 / hf_xau
+name, market    sh | sz | hk | us | hf
+kind            etf | stock | fund | gold_gram（默认 etf）
+quantity        REAL   份额/股数；gold_gram 为克数
+note, is_active, created_at, updated_at
+UNIQUE(user_id, account_id, code)
+```
+
+- **单只不记成本、不算盈亏**（用户要求「投入不要针对单只持仓股，计算总投入就可以」）：
+  只有 代码 / 名称 / 股数，市值 = 股数 × 现价。盈亏只在账户级出一个数。
+  migration 016 删掉了 `cost_basis`——留着它就会有人去算单只盈亏，
+  而单只浮盈与账户级浮盈天然不同（后者含现金），同屏显示就会符号打架。
+- **成本价是派生的、不存**：`costPrice = cost_basis ÷ quantity`。所以收盘后改股数，成本价自动重算，
+  不存在「改了股数忘了更新成本」的脏状态（`lib/holdings.ts`，有测试锁住）。
+
+### 10.3 investment_quotes（migration 014，行情，高频系统抓）
+
+```
+id, code, name,
+price       REAL   现价
+prev_close, change_rate
+quote_date  TEXT   行情自带日期（非交易日停在上一交易日）
+quoted_at   TEXT   行情自带时间戳
+source      默认 'tencent'
+created_at
+UNIQUE(code, quote_date, quoted_at)   同一时刻重复抓取直接忽略
+```
+
+- 估值由 `investments × investment_quotes` 实时算出，**不再手填市值**。
+- 保留 `quote_date`（行情自带）与 `created_at`（抓取时刻）两列：非交易日跑定时任务时两者不同，
+  用 `quote_date` 当快照日期天然去重，不会造出「今天价格很新鲜」的假象。
+- 失败**不写**任何行情（写一条错价比不写更危险），只记日志等下次重试。
+
+### 10.4 ai_parse_filters（migration 012 新建 / 015 补建）
+
+「这次没调用模型」是一个独立事件，单独记一张表，不去污染 `ai_parse_logs.status`
+（线上 1419 条日志里 759 条即 53% 是被规则挡下的纯噪声，混进去「空结果率」就废了）。
+
+```
+id, user_id, raw_input, cleaned_input,
+stage        inbound（调模型前挡下）| outbound（模型给了结果后判定为噪声）
+tier         INTEGER  classifyNotification 档位：0=命中噪声 … 4=无任何信号
+reasons      TEXT     JSON 数组
+duration_ms  INTEGER  判定耗时（分流是纯字符串匹配，应 <1ms）
+created_at
+索引：(user_id) / (stage) / (created_at)
+```
+
+> **为什么有 migration 015**：012 被改写过，生产库里记的是「重建 ai_parse_logs」的旧版，
+> 这张 `ai_parse_filters` 从未在生产库落地；012 已标 applied 不会重跑。015 用全 `IF NOT EXISTS`
+> 幂等补建此表 + 三个索引，**不动** 012 历史、不重建任何已有表、不改 `schema_migrations` 既有记录。
+> 已对生产库只读快照实跑验证：幂等、列结构与索引均正确。
+
+### 10.5 投资列归属整理（migration 016）
+
+```
+accounts.invested_total   INTEGER  账户级总投入（分），仅理财账户用。只在存/取钱时改
+-- 删除：
+investments.cost_basis           单只成本（单只不再算盈亏）
+asset_snapshots.quantity         份额已按标的记在 investments
+asset_snapshots.total_invested   总投入搬到 accounts
+```
+
+- **为什么总投入是账户属性**：它只在存/取钱时变，不是每日读数。放快照里会导致
+  「改一次总投入得伪造一条带日期的快照」；而且同一份数据出现两个写入口。
+- **为什么单只成本必须删**：留着它就会有人算单只盈亏。单只浮盈（市值 − 单只成本）
+  与账户级浮盈（总价值 − 总投入，含现金）天然不同，同屏显示必然符号打架 ——
+  这个问题真实出现过：头条「浮动盈亏 +14,170」vs 同一只持仓行「−13,830」。
+- **安全前提**：三列在应用时都没有真实数据（`investments` 的 `is_active=1` 为 0 行、
+  `asset_snapshots` 为 0 行）；无索引/视图/触发器依赖；`DROP COLUMN` 在事务里，
+  中途失败整体回滚（已在生产库副本上实测）。写入路径见 §10.6。
+
+### 10.6 唯一写入路径（避免同一列被两个语义写）
+
+| 数据 | 谁写 | 接口 |
+|---|---|---|
+| 现金 | 用户手填（每日，可补录任意日期） | `PUT /api/assets/snapshots` |
+| 份额 | 用户手填（低频，加/减仓） | `POST/PATCH /api/investments` |
+| 总投入 | 用户手填（只在存/取钱时） | `PUT /api/assets/accounts/:id` |
+| 行情 | **定时任务**（盘中每小时 + 收盘后） | 无接口，`scheduler.ts` 写入 |
+
+> ⚠️ `POST /api/assets/snapshot`（旧口径：按「期初余额 + 流水」回算）**跳过理财账户**。
+> 它写的是同一个 `balance` 列，但对理财账户回算出来是「总价值」语义（含持仓），
+> 写进去就是「持仓 + 已含持仓的余额」双重计算。该端点为已发布的 Android 客户端保留，故不删，只排除理财账户。
+>
+> ⚠️ 行情抓取**必须挂在 `runScheduledTasks` 里**。曾经 `processQuoteFetch` 写好了却没有调用者，
+> 结果是 `investment_quotes` 永远 0 行、持仓永远「未取到价」、账户总价值永远算不出。
+> 回归测试见 `tests/lib/scheduler-quotes.test.ts`。
