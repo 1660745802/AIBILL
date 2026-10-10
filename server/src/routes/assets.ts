@@ -7,9 +7,16 @@ import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { summarizeNetWorth } from '../lib/assets.js'
+import { buildPortfolio, type AccountRow, type SnapshotPoint, type AccountHoldings } from '../lib/portfolio.js'
+import { loadAccountHoldings } from '../lib/investments-repo.js'
 
 const updateAccountSchema = z.object({
   asset_type: z.enum(['liquid', 'savings', 'investment', 'credit', 'loan', 'property', 'other']).optional(),
+  /**
+   * 账户级总投入（分）——理财账户专用，只在存钱/取钱时改。
+   * 加减仓**不改它**（买卖不改变"一共投进去多少"）。允许负数（取出的比投的多）。
+   */
+  invested_total: z.number().int().nullish(),
   credit_limit: z.number().int().min(0).optional(),
   billing_day: z.number().int().min(0).max(31).optional(),
   due_day: z.number().int().min(0).max(31).optional(),
@@ -129,8 +136,20 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
     const userId = request.user!.userId
     const today = new Date().toISOString().split('T')[0]
 
+    /**
+     * **跳过理财账户。**
+     *
+     * 这个端点是旧口径：按「期初余额 + 流水」回算，写进 `asset_snapshots.balance`。
+     * 而新读模型把同一个 `balance` 当**现金**读（持仓市值另外算）。
+     * 对理财账户，回算出来的是「总价值」语义（含持仓），写进去就变成
+     * 「持仓 + 已含持仓的余额」双重计算——正好踩中 UI-DESIGN §6.6 硬规则 1。
+     *
+     * 理财账户的现金由「各账户余额 / 投资页」手动记，不由回算生成。
+     * 这个端点为已发布的 Android 客户端保留，所以不删，只把理财账户排除掉。
+     */
     const accounts = db.prepare(
-      'SELECT id FROM accounts WHERE user_id = ? AND is_active = 1'
+      `SELECT id FROM accounts
+        WHERE user_id = ? AND is_active = 1 AND COALESCE(asset_type, 'liquid') <> 'investment'`
     ).all(userId) as Array<{ id: number }>
 
     // 单条聚合 SQL 取所有账户余额（修复 N+1）
@@ -188,6 +207,7 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
       const values: any[] = []
 
       if (body.asset_type !== undefined) { updates.push('asset_type = ?'); values.push(body.asset_type) }
+      if (body.invested_total !== undefined) { updates.push('invested_total = ?'); values.push(body.invested_total) }
       if (body.credit_limit !== undefined) { updates.push('credit_limit = ?'); values.push(body.credit_limit) }
       if (body.billing_day !== undefined) { updates.push('billing_day = ?'); values.push(body.billing_day) }
       if (body.due_day !== undefined) { updates.push('due_day = ?'); values.push(body.due_day) }
@@ -212,4 +232,146 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
       throw err
     }
   })
+  /* ══════════════════════════════════════════════════════
+     手动快照：证券/资产工作台的核心写入路径
+
+     为什么不从流水回算：551/553 笔交易没有 account_id，回算余额必然是错的
+     （实测算出来每个账户都是 0）。既然回算不可靠，就直接记「某天值多少」。
+     ══════════════════════════════════════════════════════ */
+
+  /**
+   * 手动快照只记**现金余额**（分）。
+   *
+   * 份额按标的记在 `investments.quantity`（投资页维护）；
+   * 总投入是账户属性，记在 `accounts.invested_total`（投资页维护）。
+   * 曾经这两个也塞在快照里，导致同一份数据有两个写入口，迟早写错一边。
+   */
+  const manualSnapshotSchema = z.object({
+    /** 留空表示今天。允许补录——快照是采样不是流水，漏几天随时补 */
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    items: z.array(z.object({
+      account_id: z.number().int().positive(),
+      /** 现金/余额，单位分。负数 = 负债（信用卡欠款），是合法值 */
+      balance: z.number().int(),
+    })).min(1).max(50),
+  })
+
+  /**
+   * 行源：每个活跃账户一行（不管有没有填过余额）。
+   *
+   * 「想填就填，不想填就是 0」——所以没填过的账户也必须在这里，
+   * 否则它既进不了净资产、页面上也没处填。
+   * 停用账户（软删）要排除：它的快照还在库里，留着会让最后一笔现金
+   * 永远留在净资产里，也会让「日变动」因覆盖数永不相等而恒为 null。
+   */
+  function readAccounts(db: ReturnType<typeof getDb>, userId: number): AccountRow[] {
+    return db.prepare(
+      `SELECT a.id AS account_id, a.name AS account_name, a.asset_type, a.invested_total
+         FROM accounts a
+        WHERE a.user_id = ? AND a.is_active = 1
+        ORDER BY a.sort_order ASC, a.id ASC`,
+    ).all(userId) as AccountRow[]
+  }
+
+  /** 曲线源：快照历史（每账户每天一条）。和行源是两个问题，分开读 */
+  function readHistory(db: ReturnType<typeof getDb>, userId: number, sinceDays = 3650): SnapshotPoint[] {
+    const since = new Date(Date.now() - sinceDays * 86400000)
+      .toISOString().slice(0, 10)
+    return db.prepare(
+      `SELECT s.account_id, s.snapshot_date, s.balance
+         FROM asset_snapshots s
+         JOIN accounts a ON a.id = s.account_id
+        WHERE s.user_id = ? AND a.is_active = 1 AND s.snapshot_date >= ?
+        ORDER BY s.snapshot_date ASC`,
+    ).all(userId, since) as SnapshotPoint[]
+  }
+
+  function countAccounts(db: ReturnType<typeof getDb>, userId: number): number {
+    return (db.prepare(
+      'SELECT count(*) c FROM accounts WHERE user_id = ? AND is_active = 1',
+    ).get(userId) as { c: number }).c
+  }
+
+  /**
+   * 构建「每账户持仓估值」映射，喂给 buildPortfolio。
+   *
+   * 持仓市值 = Σ(股数 × 单价)，单价取每个标的**最新一条**行情（quote_date 最大，
+   * 同日取 quoted_at 最大）。某标的取不到行情时该账户 marketValue=null——
+   * 不拿部分之和冒充完整市值。
+   *
+   * 挂了持仓（investments 里有该账户的 active 记录）的账户，才会出现在返回的 Map 里；
+   * buildPortfolio 据此把这些账户的 asset_snapshots.balance 当「现金」处理。
+   */
+  /**
+   * GET /api/assets/portfolio — 工作台读模型
+   * 净资产 / 各账户最新快照 / 投资浮盈 / 净值曲线（含每日覆盖率）
+   */
+  app.get('/api/assets/portfolio', async (request: FastifyRequest) => {
+    const db = getDb()
+    const userId = request.user!.userId
+    const today = new Date().toISOString().slice(0, 10)
+    const portfolio = buildPortfolio(
+      readAccounts(db, userId),
+      readHistory(db, userId),
+      countAccounts(db, userId),
+      today,
+      loadAccountHoldings(db, userId),
+    )
+    return { code: 0, data: portfolio, message: '' }
+  })
+
+  /**
+   * PUT /api/assets/snapshots — 写入/覆盖某一天的快照
+   * 用 UPSERT：同一天同一账户重复提交是覆盖而不是报错（手动录入很常见地会重填）
+   */
+  app.put('/api/assets/snapshots', async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = manualSnapshotSchema.safeParse(request.body)
+    if (!body.success) {
+      reply.code(400)
+      return { code: 2000, data: null, message: body.error.errors[0]!.message }
+    }
+    const db = getDb()
+    const userId = request.user!.userId
+    const date = body.data.date ?? new Date().toISOString().slice(0, 10)
+
+    // 账户归属校验：不能给别人的账户写快照
+    const owned = new Set(
+      (db.prepare('SELECT id FROM accounts WHERE user_id = ? AND is_active = 1')
+        .all(userId) as Array<{ id: number }>).map((r) => r.id),
+    )
+    const foreign = body.data.items.find((i) => !owned.has(i.account_id))
+    if (foreign) {
+      reply.code(400)
+      return { code: 2001, data: null, message: `账户 ${foreign.account_id} 不存在或不属于当前用户` }
+    }
+
+    const stmt = db.prepare(
+      `INSERT INTO asset_snapshots (user_id, account_id, balance, snapshot_date, source)
+       VALUES (?, ?, ?, ?, 'manual')
+       ON CONFLICT(user_id, account_id, snapshot_date) DO UPDATE SET
+         balance = excluded.balance`,
+    )
+
+    const run = db.transaction(() => {
+      for (const item of body.data.items) {
+        stmt.run(userId, item.account_id, item.balance, date)
+      }
+    })
+    run()
+
+    const portfolio = buildPortfolio(
+      readAccounts(db, userId),
+      readHistory(db, userId),
+      countAccounts(db, userId),
+      new Date().toISOString().slice(0, 10),
+      loadAccountHoldings(db, userId),
+    )
+    return {
+      code: 0,
+      data: { date, saved: body.data.items.length, portfolio },
+      message: `已记录 ${body.data.items.length} 个账户的 ${date} 快照`,
+    }
+  })
+
 }
+

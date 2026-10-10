@@ -2,12 +2,14 @@
  * 定时任务模块
  * - 订阅自动记账：到期的 auto_record 订阅自动生成交易
  * - 回收站自动清理：软删除超过 30 天的记录永久删除
+ * - 行情抓取：盘中每小时 + 收盘后，写入 investment_quotes
  *
  * 在 app 启动时注册，每小时执行一次检查
  */
 import { getDb } from '../db/index.js'
 import { appLog as log } from './logger.js'
 import crypto from 'node:crypto'
+import { fetchQuotes } from '../lib/quotes.js'
 
 /**
  * 订阅自动记账
@@ -160,14 +162,97 @@ function processLogCleanup(): void {
 }
 
 /**
- * 执行所有定时任务
+ * 执行所有定时任务。
+ *
+ * ⚠️ 行情抓取必须在这里调用。曾经 processQuoteFetch / shouldFetchQuotes 写好了
+ * 但**没有任何调用者** —— 结果是 investment_quotes 永远是 0 行、持仓永远
+ * 「未取到价」、账户总价值永远算不出（持仓的市值部分缺失）。
+ * 单测抓不到，因为测试夹具手工往表里插价，绕开了调度器。
+ * 以后加任务同理：**函数定义在下面不等于它会跑**。
  */
-function runScheduledTasks(): void {
+export async function runScheduledTasks(): Promise<void> {
   log('info', 'scheduler', '定时任务开始执行')
   processSubscriptionAutoRecord()
   processTrashCleanup()
   processLogCleanup()
+
+  const gate = shouldFetchQuotes()
+  if (gate.fetch) {
+    // 行情抓取是 async 且会失败（非官方接口），必须自己吞错，
+    // 不能让它把上面几个同步任务的结果带崩
+    await processQuoteFetch().catch((err) => {
+      log('warn', 'scheduler', `行情抓取异常: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
+
   log('info', 'scheduler', '定时任务执行完毕')
+}
+
+
+/* ══════════════════════════════════════════════════════════
+   行情抓取：盘中每小时 + 收盘后
+   ══════════════════════════════════════════════════════════ */
+
+/**
+ * 什么时候该抓。三个时段，理由不同：
+ *
+ *  - 盘中（9:30-11:30 / 13:00-15:00）：每小时一次。盘中价格对净资产这个量级
+ *    影响很小，分钟级是浪费；小时级足够看出当天浮盈的变化。
+ *  - 收盘后（15:00-15:40）：**这次最重要**。收盘价是净资产的锚，
+ *    净值曲线和「今天值多少」都应该以它为准。
+ *  - 其它时段：不抓。夜间跑同一个价，写进去只是伪造新鲜度。
+ *
+ * 用**服务器本地时间**判断即可：A 股是单一时区，自部署没有跨时区部署的动机。
+ */
+export function shouldFetchQuotes(now = new Date()): { fetch: boolean; reason: string } {
+  const day = now.getDay()
+  if (day === 0 || day === 6) return { fetch: false, reason: '周末休市' }
+
+  const mins = now.getHours() * 60 + now.getMinutes()
+  const inSession = (mins >= 9 * 60 + 25 && mins <= 11 * 60 + 35)
+    || (mins >= 12 * 60 + 55 && mins <= 15 * 60 + 5)
+  if (inSession) return { fetch: true, reason: '盘中' }
+
+  if (mins > 15 * 60 + 5 && mins <= 15 * 60 + 40) return { fetch: true, reason: '收盘后' }
+
+  return { fetch: false, reason: '非交易时段' }
+}
+
+/**
+ * 抓取所有用户持仓的行情并落库。
+ *
+ * 失败**不抛到外面**、也**不写任何快照**：腾讯是非官方接口，会改格式也会限流。
+ * 写一条错的价格比不写更危险——页面上会显示一个看起来很新的假数字。
+ * 这里只记日志，等下次整点重试。
+ */
+export async function processQuoteFetch(): Promise<void> {
+  const db = getDb()
+  const rows = db.prepare(
+    `SELECT DISTINCT code FROM investments WHERE is_active = 1 AND code IS NOT NULL`,
+  ).all() as Array<{ code: string }>
+
+  if (rows.length === 0) return
+
+  const codes = rows.map((r) => r.code)
+  try {
+    const quotes = await fetchQuotes(codes)
+    const stmt = db.prepare(
+      `INSERT OR IGNORE INTO investment_quotes
+         (code, name, price, prev_close, change_rate, quote_date, quoted_at, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'tencent')`,
+    )
+    const write = db.transaction(() => {
+      for (const q of quotes) {
+        stmt.run(q.code, q.name, q.price, q.prevClose, q.changeRate, q.quoteDate, q.quoteAt)
+      }
+    })
+    write()
+    log('info', 'quotes', `已更新 ${quotes.length}/${codes.length} 个标的行情`)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // 这条要留痕：接口改格式/被限流时，这是唯一能查到的线索
+    log('warn', 'quotes', `行情抓取失败（保持旧数据，不写快照）: ${msg}`)
+  }
 }
 
 let intervalId: NodeJS.Timeout | null = null
@@ -179,12 +264,12 @@ let intervalId: NodeJS.Timeout | null = null
 export function startScheduler(): void {
   // 启动后延迟 5 秒执行第一次（等 DB 初始化完毕）
   setTimeout(() => {
-    runScheduledTasks()
+    void runScheduledTasks()
   }, 5000)
 
   // 每小时执行
   intervalId = setInterval(() => {
-    runScheduledTasks()
+    void runScheduledTasks()
   }, 60 * 60 * 1000)
 
   log('info', 'scheduler', '定时任务调度器已启动（每小时执行）')

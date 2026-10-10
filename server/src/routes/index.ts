@@ -13,6 +13,7 @@ import { configRoutes, notificationRulesAdminRoutes } from './notification-rules
 import { memoryRoutes } from './memory.js'
 import { subscriptionRoutes } from './subscription.js'
 import { assetsRoutes } from './assets.js'
+import { investmentRoutes } from './investments.js'
 import { goalsRoutes } from './goals.js'
 import { appUpdatePublicRoutes, appUpdateAdminRoutes } from './app-update.js'
 
@@ -38,6 +39,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(memoryRoutes)
   await app.register(subscriptionRoutes)
   await app.register(assetsRoutes)
+  await app.register(investmentRoutes)
   await app.register(goalsRoutes)
 
   // 无认证的配置接口

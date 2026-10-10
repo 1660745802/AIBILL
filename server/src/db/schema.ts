@@ -480,3 +480,164 @@ CREATE INDEX IF NOT EXISTS idx_ai_parse_filters_user    ON ai_parse_filters(user
 CREATE INDEX IF NOT EXISTS idx_ai_parse_filters_stage   ON ai_parse_filters(stage);
 CREATE INDEX IF NOT EXISTS idx_ai_parse_filters_created ON ai_parse_filters(created_at);
 `
+
+/**
+ * Migration 013: 资产快照支持份额与净投入
+ *
+ * 背景：`asset_snapshots` 表一直在，但只有 `balance` 一列，且写入路径
+ * （POST /api/assets/snapshot）是从流水回算余额——而 551/553 笔交易
+ * 没有 account_id，回算结果全错。所以这张表至今 0 行。
+ *
+ * 改成手动填写快照：既然回算不可靠，就直接记「某天这个账户值多少」。
+ * 快照是采样不是流水，漏了能补，这是不依赖流水完整性的关键。
+ *
+ * 两个新列的节奏不同，这是设计要点：
+ *   - balance        每天变（行情在动）
+ *   - quantity       只在交易时变（份额/股数）
+ *   - total_invested 只在交易时变（净投入）
+ *
+ * 放在快照行上而不是 accounts 上，是为了历史保真：11 月加仓改了
+ * accounts.total_invested，10 月 1 日那天的浮盈会被追溯改写。
+ */
+export const migration013 = `
+ALTER TABLE asset_snapshots ADD COLUMN quantity INTEGER;
+ALTER TABLE asset_snapshots ADD COLUMN total_invested INTEGER;
+
+-- 每个账户取最新一条快照的查询很频繁（净资产、持仓盈亏都要用）
+CREATE INDEX IF NOT EXISTS idx_asset_snapshots_user_date
+  ON asset_snapshots(user_id, snapshot_date DESC);
+`
+
+/**
+ * Migration 014: 按标的的持仓 + 行情历史
+ *
+ * 上一版（migration013）只给 `asset_snapshots` 加了份额/净投入，那是**账户级**的
+ * 简化：适合「每天手填一次余额」。但账户级无法自动估值——不知道买的是什么标的，
+ * `总投入 ÷ 总股数` 算不出任何价格（ETF 是「份」、股票是「股」，不能加总）。
+ *
+ * 所以拆成两层，各管一件事：
+ *   investments       持仓（低频）：代码、份额、净投入。你一个月改一次
+ *   investment_quotes 行情（高频）：每次抓取写一条，形成价格曲线
+ *
+ * 估值由这两张表实时算出，**不再手填市值**。资产账户里「今天值多少」
+ * 这件事从「每天动手」变成「系统每天算」。
+ *
+ * investment_quotes 保留 quote_date（行情自带日期）与 created_at（抓取时刻）两列：
+ * 非交易日跑定时任务时，两者不同——用 quote_date 当快照日期天然去重，
+ * 不会造出「今天价格很新鲜」的假象。
+ */
+export const migration014 = `
+CREATE TABLE IF NOT EXISTS investments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  code TEXT NOT NULL,                    -- 规范化代码：sh518880 / sz159937
+  name TEXT,
+  market TEXT,                           -- sh / sz / hk / us / hf
+  kind TEXT NOT NULL DEFAULT 'etf',       -- etf|stock|fund|gold_gram
+  quantity REAL NOT NULL DEFAULT 0,       -- 份额/股数；gold_gram 为克数
+  -- cost_basis = 该标的的累计投入（分），**可空**。
+  -- 为什么可空且不强填：净投入在多标的账户里没法自动拆分到每只标的，
+  -- 不填就只出账户级浮盈（asset_snapshots.total_invested），填了才能量单只标的收益。
+  -- 改名自 total_invested：账户级净投入也叫 total_invested，同名迟早搞混，
+  -- 单只标的的那份改叫 cost_basis 区分开。
+  cost_basis INTEGER,
+  note TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, account_id, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_investments_user    ON investments(user_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_investments_account ON investments(account_id);
+
+CREATE TABLE IF NOT EXISTS investment_quotes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL,
+  name TEXT,
+  price REAL NOT NULL,
+  prev_close REAL,
+  change_rate REAL,
+  quote_date TEXT NOT NULL,              -- 行情自带日期（非交易日会停在上一交易日）
+  quoted_at TEXT NOT NULL,               -- 行情自带时间戳
+  source TEXT NOT NULL DEFAULT 'tencent',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(code, quote_date, quoted_at)    -- 同一时刻重复抓取直接忽略
+);
+
+CREATE INDEX IF NOT EXISTS idx_quotes_code_date ON investment_quotes(code, quote_date DESC);
+`
+
+/**
+ * Migration 015: 补建 ai_parse_filters（修生产库与代码不一致）
+ *
+ * 为什么存在：migration 012 曾被原地改写——线上生产库记录的是它的早期版本
+ * （重建过 ai_parse_logs 以放宽 status 约束），而 012 当前定义里新建的
+ * `ai_parse_filters` 表在生产库里**从未落地**。因为 012 已被标记 applied，
+ * 不会重跑，这张表就一直缺。新代码一旦调用 recordFiltered() 就会因表不存在抛错。
+ *
+ * 本迁移**只**补建这张表 + 它的三个索引，全部 IF NOT EXISTS：
+ * 不动 012 历史、不重建任何已有表、不改 schema_migrations 既有记录。
+ * 幂等的唯一理由：有的环境（新部署）012 的 C 版已经把表建好了，
+ * 015 在那里重复跑必须是无操作而不是报错。
+ *
+ * 表与索引定义与 migration 012 里的那份**逐字一致**，确保两条路径收敛到同一结构。
+ */
+export const migration015 = `
+CREATE TABLE IF NOT EXISTS ai_parse_filters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  raw_input TEXT NOT NULL,
+  cleaned_input TEXT,
+  -- inbound = 调模型前挡下；outbound = 模型给了结果后判定为噪声
+  stage TEXT NOT NULL CHECK(stage IN ('inbound', 'outbound')),
+  -- classifyNotification 的档位：0=命中噪声 4=无任何信号
+  tier INTEGER NOT NULL,
+  reasons TEXT,
+  -- 判定本身花掉的毫秒数（分流是纯字符串匹配，应当 <1ms）
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_parse_filters_user    ON ai_parse_filters(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_parse_filters_stage   ON ai_parse_filters(stage);
+CREATE INDEX IF NOT EXISTS idx_ai_parse_filters_created ON ai_parse_filters(created_at);
+`
+
+/**
+ * Migration 016: 整理投资相关的列归属
+ *
+ * 用户的口径：「投入不要针对单只持仓股，计算总投入就可以」，且
+ * 「账户总价值 = 股数×单价 + 余额」。据此三件事：
+ *
+ * 1. **删 `investments.cost_basis`**（单只成本）。
+ *    留着它就会有人去算单只盈亏，而单只浮盈与账户级浮盈天然不同
+ *    （后者含现金），同屏显示就会符号打架 —— 真实出现过：
+ *    头条「浮动盈亏 +14,170」/ 同一只持仓行「−13,830」。
+ * 2. **总投入从快照搬到账户**（`accounts.invested_total`）。
+ *    它只在存钱/取钱时变，是**账户属性**不是每日读数；
+ *    放快照里会导致「改一次总投入得伪造一条带日期的快照」。
+ * 3. **删 `asset_snapshots.quantity` / `total_invested`**。
+ *    份额已经按标的记在 `investments.quantity`；总投入搬到账户。
+ *    留着两处冗余列，迟早有人写错那一边。
+ *
+ * 安全前提（已核实）：`investments` 的 is_active=1 行数为 0、
+ * `asset_snapshots` 行数为 0，没有真实数据会丢。
+ * SQLite 3.46 支持 DROP COLUMN，这几列都无索引无视图依赖。
+ */
+export const migration016 = `
+-- 2 先做：把快照里已有的总投入搬到账户，再删列（生产是 0 行，这里为其它环境保底）
+ALTER TABLE accounts ADD COLUMN invested_total INTEGER;
+
+UPDATE accounts SET invested_total = (
+  SELECT s.total_invested FROM asset_snapshots s
+   WHERE s.account_id = accounts.id AND s.total_invested IS NOT NULL
+   ORDER BY s.snapshot_date DESC LIMIT 1
+) WHERE invested_total IS NULL;
+
+-- 1 & 3：删掉三列冗余/误导性字段
+ALTER TABLE investments DROP COLUMN cost_basis;
+ALTER TABLE asset_snapshots DROP COLUMN quantity;
+ALTER TABLE asset_snapshots DROP COLUMN total_invested;
+`
