@@ -95,8 +95,8 @@ const router = createRouter({
       meta: { auth: true, title: '初始设置' },
     },
     {
-      // 落地页 = 记账。真实使用里 90%+ 的动作是「记一笔」，
-      // 首屏应该直接面对输入框，而不是先看统计再去找入口。
+      // 记一笔页。网页承担的是数据整合，记账主要靠 App 自动记账，
+      // 所以这里不再是强制落地页——它只是导航里一个普通项（见 nav.ts）。
       path: '/',
       name: 'QuickEntry',
       component: lazy(() => import('@/views/Home.vue')),
@@ -130,6 +130,13 @@ const router = createRouter({
       name: 'Import',
       component: lazy(() => import('@/views/Import.vue')),
       meta: { auth: true, title: '导入账单' },
+    },
+    {
+      path: '/investments',
+      name: 'Investments',
+      component: lazy(() => import('@/views/Investments.vue')),
+      // 讲的是个人钱，仪表读数在这里有用
+      meta: { auth: true, title: '投资', cluster: true },
     },
     {
       path: '/assets',
@@ -174,7 +181,7 @@ const router = createRouter({
     {
       path: '/:pathMatch(.*)*',
       name: 'NotFound',
-      redirect: '/',
+      redirect: '/ledger',
     },
   ],
 })
@@ -187,7 +194,7 @@ router.beforeEach((to, _from, next) => {
   if (to.meta.auth && !token) {
     next('/login')
   } else if (to.meta.guest && token) {
-    next('/')
+    next('/ledger')
   } else {
     next()
   }

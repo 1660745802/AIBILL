@@ -1,0 +1,311 @@
+<script setup lang="ts">
+/**
+ * 某理财账户的持仓（配置低频：一个月动一次）
+ *
+ * 只记 **代码 + 股数**。现价由系统每小时抓，市值 = 股数 × 现价。
+ * 单只**不算盈亏**——用户要求「投入不要针对单只持仓股，计算总投入就可以」，
+ * 盈亏只有一个数在账户级（见 Investments.vue 顶部读数）。
+ *
+ * 这同时消掉一个真实出现过的矛盾：同屏「账户浮盈 +14,170」和
+ * 「同一只持仓行 −13,830」正负号打架。根因就是单只也算了成本。
+ *
+ * 取不到价显示「—」而不是 0（0 会被读成这只持仓归零了）。
+ * 「增 / 减」只改股数，不改总投入——买卖不改变"一共投进去多少"。
+ */
+import { ref, computed, onMounted } from 'vue'
+import { useToast } from '@/composables/useToast'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import Money from '@/components/ui/Money.vue'
+import {
+  listInvestments, createInvestment, updateInvestment, deleteInvestment,
+  type InvestmentItem,
+} from '@/api/investments'
+
+const props = defineProps<{
+  accountId: number
+  accountName: string
+}>()
+const emit = defineEmits<{ changed: [] }>()
+
+const toast = useToast()
+
+const holdings = ref<InvestmentItem[]>([])
+const loading = ref(true)
+const saving = ref(false)
+
+/** 新增草稿：只有代码和股数两个字段 */
+const addCode = ref('')
+const addQty = ref('')
+/** 正在调仓的那条（点「增/减」时展开） */
+const adjusting = ref<{ id: number; dir: 1 | -1; n: string } | null>(null)
+
+const rows = computed(() => holdings.value.filter((h) => h.accountId === props.accountId))
+
+const unpricedCount = computed(() => rows.value.filter((r) => r.marketValue == null).length)
+
+async function load() {
+  loading.value = true
+  try {
+    const { data } = await listInvestments()
+    if (data.code === 0) holdings.value = data.data.items
+  } catch { /* 读不到不致命，UI 显示空态 */ } finally { loading.value = false }
+}
+onMounted(load)
+
+async function add() {
+  // ⚠️ Vue 对 `<input type="number">` 会自动套 `.number` 修饰符 → v-model 拿到的是
+  // number，直接 .trim() 会抛「is not a function」。一律 String() 后处理。
+  const code = String(addCode.value).trim()
+  const rawQty = String(addQty.value).trim()
+  if (!code) { toast.warning('请填代码，例如 518880'); return }
+  // 空值不能当 0 —— 那会建出一条 0 股持仓，而 0 股也算「挂了持仓」，
+  // 会让该账户在没行情时连现金一起从净资产里消失
+  if (rawQty === '') { toast.warning('请填股数'); return }
+  const qty = Number(rawQty)
+  if (!Number.isFinite(qty) || qty < 0) { toast.warning('股数要填一个不小于 0 的数字'); return }
+  saving.value = true
+  try {
+    const { data } = await createInvestment({ account_id: props.accountId, code, quantity: qty })
+    if (data.code === 0) {
+      toast.success('已添加')
+      addCode.value = ''
+      addQty.value = ''
+      await load()
+      emit('changed')
+    } else toast.error(data.message || '添加失败')
+  } catch (e: any) {
+    toast.error(e.response?.data?.message || '添加失败')
+  } finally { saving.value = false }
+}
+
+/**
+ * 行内改股数。
+ *
+ * 两条静默路径在这里被堵住：
+ *  - 清空输入框 → `<input type=number>` 的 value 是 ''，`Number('') === 0`
+ *    → 会静默把持仓改成 0 股（等于清仓）。空值必须当「没改」而不是 0。
+ *  - 负数或非数字 → 原来直接 return，输入框留着被拒的值、与库里不一致。
+ *    现在提示 + reload 把输入框拉回真实值。
+ */
+async function setQty(h: InvestmentItem, e: Event) {
+  const el = e.target as HTMLInputElement
+  const raw = el.value.trim()
+  /**
+   * 回滚 DOM 值要**手动**写，不能只靠 `await load()`。
+   *
+   * 原因：输入框是 `:value="h.quantity"`。清空后再 load，h.quantity 仍是 10000
+   * （没变）→ Vue 的 patch 认为 value 无需更新 → DOM 里留着用户清空的 ""。
+   * 用户看到空框、库里是 10000，正是「输入框与库不一致」那个 bug。
+   */
+  const rollback = () => { el.value = String(h.quantity) }
+
+  if (raw === '') { rollback(); return }            // 空 = 取消输入，不是 0
+  const q = Number(raw)
+  if (!Number.isFinite(q) || q < 0) {
+    toast.warning('股数要填一个不小于 0 的数字')
+    rollback()
+    return
+  }
+  if (q === h.quantity) return
+  try {
+    const { data } = await updateInvestment(h.id, { quantity: q })
+    if (data.code === 0) { emit('changed') }
+    else { toast.error(data.message || '改股数失败'); rollback() }
+  } catch { toast.error('改股数失败'); rollback() }
+}
+
+/** 加仓 / 减仓 N 股 */
+async function applyAdjust(h: InvestmentItem) {
+  const a = adjusting.value
+  if (!a || a.id !== h.id) return
+  const n = Number(a.n)
+  if (!Number.isFinite(n) || n <= 0) { toast.warning('请填股数'); return }
+  const next = h.quantity + a.dir * n
+  if (next < 0) { toast.warning('减仓不能超过持有股数'); return }
+  adjusting.value = null
+  const q = next
+  try {
+    const { data } = await updateInvestment(h.id, { quantity: q })
+    if (data.code === 0) {
+      await load()
+      emit('changed')
+      toast.success(a.dir > 0 ? `已加仓 ${n} 股` : `已减仓 ${n} 股`)
+    } else toast.error(data.message || '调仓失败')
+  } catch { toast.error('调仓失败') }
+}
+
+async function remove(h: InvestmentItem) {
+  try {
+    const { data } = await deleteInvestment(h.id)
+    if (data.code === 0) { toast.success('已移除'); await load(); emit('changed') }
+  } catch { toast.error('移除失败') }
+}
+</script>
+
+<template>
+  <div class="hold">
+    <div class="hold-head">
+      <span class="ledger-label ledger-label-solid">持仓</span>
+      <span class="hold-hint">
+        现价每小时自动更新
+        <template v-if="unpricedCount > 0"> · {{ unpricedCount }} 个待取价</template>
+      </span>
+    </div>
+
+    <ul v-if="rows.length" class="hold-list">
+      <li v-for="h in rows" :key="h.id" class="hold-row">
+        <div class="hold-id">
+          <span class="hold-name">{{ h.name || h.code }}</span>
+          <span class="hold-code">{{ h.code }}</span>
+        </div>
+
+        <label class="hold-qty">
+          <input
+            class="hold-input amt"
+            type="number"
+            inputmode="decimal"
+            step="0.0001"
+            :value="h.quantity"
+            :aria-label="`${h.name || h.code} 的股数`"
+            @change="setQty(h, $event)"
+          />
+          <span>股</span>
+        </label>
+
+        <div class="hold-val amt">
+          <!-- 没取到价：显示「—」，不显示 0 -->
+          <template v-if="h.marketValue != null">
+            <div class="hold-price">
+              现价 {{ h.quote?.price?.toFixed(3) ?? '—' }}
+              <span v-if="h.quote?.changeRate != null" :class="h.quote.changeRate >= 0 ? 'amt-income' : 'amt-expense'">
+                {{ h.quote.changeRate >= 0 ? '+' : '' }}{{ h.quote.changeRate.toFixed(2) }}%
+              </span>
+            </div>
+            <Money :value="h.marketValue" size="sm" tone="neutral" sign="none" />
+          </template>
+          <span v-else class="hold-noquote">未取到价</span>
+        </div>
+
+        <div class="hold-ops">
+          <button class="act" @click="adjusting = adjusting?.id === h.id && adjusting.dir === 1 ? null : { id: h.id, dir: 1, n: '' }">增</button>
+          <button class="act" @click="adjusting = adjusting?.id === h.id && adjusting.dir === -1 ? null : { id: h.id, dir: -1, n: '' }">减</button>
+          <button class="act act-danger" :aria-label="`移除 ${h.name || h.code}`" @click="remove(h)">删</button>
+        </div>
+
+        <!-- 加减仓：只填股数，总投入不动 -->
+        <div v-if="adjusting?.id === h.id" class="hold-adjust">
+          <span>{{ adjusting.dir > 0 ? '加仓' : '减仓' }}</span>
+          <input
+            v-model="adjusting.n"
+            class="hold-input amt"
+            type="number"
+            inputmode="decimal"
+            :placeholder="`股数`"
+            @keydown.enter="applyAdjust(h)"
+          />
+          <span>股</span>
+          <button class="btn btn-primary btn-sm" @click="applyAdjust(h)">确定</button>
+          <button class="btn btn-quiet btn-sm" @click="adjusting = null">取消</button>
+        </div>
+      </li>
+    </ul>
+
+    <p v-else-if="!loading" class="hold-empty">
+      还没有持仓。填代码和股数就行，现价和市值系统算。
+    </p>
+
+    <!-- 入口永远在：由「这是理财账户」驱动，不由「有没有持仓数据」驱动 -->
+    <div class="hold-add">
+      <input
+        v-model="addCode"
+        class="hold-input hold-add-code"
+        placeholder="代码，如 518880"
+        aria-label="新持仓代码"
+        @keydown.enter="add"
+      />
+      <input
+        v-model="addQty"
+        class="hold-input amt hold-add-qty"
+        type="number"
+        inputmode="decimal"
+        step="0.0001"
+        placeholder="股数"
+        aria-label="新持仓股数"
+        @keydown.enter="add"
+      />
+      <button class="btn btn-primary btn-sm" :disabled="saving" @click="add">
+        <AppIcon name="plus" :size="13" :stroke="2.2" />添加持仓
+      </button>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.hold-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.hold-hint { font-size: 0.625rem; color: var(--color-ink-4); }
+.hold-list { margin-top: 0.5rem; }
+.hold-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--color-rule-faint);
+}
+.hold-row:first-child { border-top: 0; }
+.hold-id { min-width: 0; }
+.hold-name {
+  display: block;
+  font-size: 0.8125rem;
+  color: var(--color-ink-1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hold-code { display: block; font-family: var(--font-mono); font-size: 0.625rem; color: var(--color-ink-4); }
+.hold-qty { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.625rem; color: var(--color-ink-3); }
+.hold-input {
+  height: 1.75rem;
+  width: 5.5rem;
+  padding: 0 0.4rem;
+  text-align: right;
+  font-size: 0.75rem;
+  color: var(--color-ink-1);
+  background: var(--color-paper-sunk);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-xs);
+}
+.hold-input:focus {
+  outline: none;
+  border-color: var(--color-action);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-action) 14%, transparent);
+}
+.hold-val { text-align: right; min-width: 5.5rem; }
+.hold-price { font-size: 0.625rem; color: var(--color-ink-3); }
+.hold-noquote { font-size: 0.6875rem; color: var(--color-warn); }
+.hold-ops { display: inline-flex; gap: 0.125rem; }
+.hold-adjust {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0 0.125rem;
+  font-size: 0.6875rem;
+  color: var(--color-ink-3);
+}
+.hold-empty { padding: 0.75rem 0; font-size: 0.8125rem; color: var(--color-ink-3); }
+.hold-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-rule-faint);
+}
+.hold-add-code { width: 9rem; text-align: left; }
+.hold-add-qty { width: 5.5rem; }
+</style>

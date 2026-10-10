@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { NAV_GROUPS } from '@/nav'
+import { useInvestmentNav } from '@/composables/useInvestmentNav'
 import { useRouter } from 'vue-router'
 import { useConfirm } from '@/composables/useConfirm'
 import PageHeader from '@/components/ui/PageHeader.vue'
@@ -9,41 +11,24 @@ import SheetRow from '@/components/ui/SheetRow.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 
 const auth = useAuthStore()
+const { hasInvestment } = useInvestmentNav()
 const router = useRouter()
 const confirm = useConfirm()
 
-interface NavItem {
-  path: string
-  label: string
-  icon: string
-  desc: string
-}
-
-const sections = computed<{ title: string; items: NavItem[] }[]>(() => {
-  // 侧栏已经放 账本 / 本月 / 资产全景 / AI 助手（按使用频率），
-  // 这一页不重复它们——两个地方列同一个功能，人会犹豫该点哪个。
-  // 这里只收「不常去但必须找得到」的那部分。
-  const groups: { title: string; items: NavItem[] }[] = [
-    {
-      title: '数据',
-      items: [
-        { path: '/import', label: '导入账单', icon: 'upload', desc: '微信 / 支付宝账单' },
-        { path: '/trash', label: '回收站', icon: 'trash', desc: '已删除的记录' },
-      ],
-    },
-    {
-      title: '系统',
-      items: [
-        { path: '/settings', label: '设置', icon: 'settings', desc: '账户与偏好设置' },
-        // 「管理面板」仅 admin 可见；非 admin 时系统分组仍有「设置」，不会留空分组
-        ...(auth.isAdmin
-          ? [{ path: '/admin', label: '管理面板', icon: 'shield', desc: '用户与系统管理' }]
-          : []),
-      ],
-    },
-  ]
-  return groups
-})
+/** 分组直接复用 @/nav.ts：与侧栏同源，不重写一份。
+ *  上一版这里自己定义了一份 NavItem 并只收「不常用」的那几个入口，
+ *  结果侧栏和这一页各列一遍功能——同一个功能两个入口，人会犹豫点哪个。 */
+const sections = computed(() =>
+  NAV_GROUPS.map((g) => ({
+    key: g.key,
+    label: g.label,
+    // 过滤规则必须和侧栏（App.vue）**完全一致**，否则同一项在两处结果相反，
+    // 而这一页的副标题还写着「与侧栏一致」。
+    items: g.items.filter(
+      (i) => (!i.adminOnly || auth.isAdmin) && (!i.needsInvestment || hasInvestment.value),
+    ),
+  })).filter((g) => g.items.length > 0),
+)
 
 const initial = computed(() =>
   (auth.user?.nickname || auth.user?.username || '?')[0]?.toUpperCase(),
@@ -62,7 +47,7 @@ async function handleLogout() {
 
 <template>
   <div class="pb-24 md:pb-6">
-    <PageHeader title="我的" subtitle="不常用但需要找得到的东西，都在这里" />
+    <PageHeader title="全部功能" subtitle="按用途分组，与侧栏一致" />
 
     <!-- 用户块 -->
     <div class="surface p-4 flex items-center gap-3 mb-6">
@@ -78,8 +63,8 @@ async function handleLogout() {
 
     <!-- 分组列表 -->
     <div class="space-y-6">
-      <section v-for="section in sections" :key="section.title">
-        <LedgerLabel>{{ section.title }}</LedgerLabel>
+      <section v-for="section in sections" :key="section.label">
+        <LedgerLabel>{{ section.label }}</LedgerLabel>
         <div class="sheet">
           <SheetRow
             v-for="item in section.items"

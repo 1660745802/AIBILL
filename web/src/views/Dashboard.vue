@@ -6,6 +6,7 @@ import {
 } from 'chart.js'
 import api from '@/api/index'
 import Money from '@/components/ui/Money.vue'
+import { useClusterStore } from '@/stores/cluster'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import LedgerLabel from '@/components/ui/LedgerLabel.vue'
 import SheetRow from '@/components/ui/SheetRow.vue'
@@ -22,8 +23,9 @@ interface AlertItem { type: string; message: string }
 const loading = ref(true)
 const data = ref<any | null>(null)
 const dismissed = ref<Set<number>>(new Set())
+const cluster = useClusterStore()
 
-onMounted(fetchDashboard)
+onMounted(() => { fetchDashboard(); cluster.loadPortfolio() })
 
 async function fetchDashboard() {
   try {
@@ -44,28 +46,38 @@ const ASSET_META: Record<string, { label: string; color: string }> = {
 const OTHER_ASSET = { label: '其他', color: 'var(--color-ink-4)' }
 const assetMeta = (t: string) => ASSET_META[t] ?? OTHER_ASSET
 
-const assetRows = computed(() => {
-  if (!data.value) return []
-  const items = data.value.asset_breakdown.filter(
-    (b: AssetBreakdownItem) => b.total > 0 && b.type !== 'credit' && b.type !== 'loan',
-  )
-  const total = items.reduce((s: number, b: AssetBreakdownItem) => s + b.total, 0) || 1
-  return items
-    .map((b: AssetBreakdownItem) => ({
-      type: b.type,
-      label: assetMeta(b.type).label,
-      color: assetMeta(b.type).color,
-      total: b.total,
-      percent: Math.round((b.total / total) * 100),
+/**
+ * 资产构成。
+ *
+ * 用 cluster store 的 `assetSplit`，而不是本页 `data.asset_breakdown`：
+ * 后者是 `/stats/dashboard` 的**流水回算**口径（期初余额 + 交易），而这一页顶部的
+ * 仪表已经改读快照口径（含持仓市值）。同屏两套口径会给出两个不同的构成 ——
+ * 这个坑在仪表那边修过一次，这里是它的翻版。
+ *
+ * store 里已经处理了「有快照用快照、没有才回落流水」，所以这里只管映射。
+ */
+const assetRows = computed(() =>
+  cluster.assetSplit
+    .map((r) => ({
+      type: r.key,
+      label: assetMeta(r.key).label,
+      color: assetMeta(r.key).color,
+      total: r.value,
+      percent: Math.round(r.percent),
     }))
-    .sort((a: any, b: any) => b.total - a.total)
-})
-
-const liabilityRows = computed(() =>
-  (data.value?.asset_breakdown ?? []).filter(
-    (b: AssetBreakdownItem) => b.total < 0 || b.type === 'credit' || b.type === 'loan',
-  ),
+    .sort((a, b) => b.total - a.total),
 )
+
+/** 负债同样优先用快照口径 */
+const liabilityRows = computed(() => {
+  const liab = cluster.portfolio?.liability
+  if (liab && liab.accountCount > 0) {
+    return [{ type: 'liability', total: liab.total, count: liab.accountCount }]
+  }
+  return (data.value?.asset_breakdown ?? []).filter(
+    (b: AssetBreakdownItem) => b.total < 0 || b.type === 'credit' || b.type === 'loan',
+  )
+})
 
 const { schemeTick } = useChartColors()
 
@@ -261,7 +273,9 @@ const monthProgress = computed(() => {
             </div>
           </template>
 
-          <EmptyState v-else compact icon="wallet" title="还没有账户"
+          <!-- 不要写「还没有账户」：账户可能都在，只是没记过余额，
+               那样写会让用户以为数据丢了（同一轮的同类文案问题） -->
+          <EmptyState v-else compact icon="wallet" title="还没有余额读数"
                       description="添加账户后这里会显示资产分布">
             <router-link to="/settings" class="btn btn-outline btn-sm">去添加</router-link>
           </EmptyState>

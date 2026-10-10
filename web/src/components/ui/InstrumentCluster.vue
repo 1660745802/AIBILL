@@ -98,7 +98,8 @@ const goExpense = () => router.push('/ledger?type=expense')
         </button>
       </p>
       <strong class="readout-value readout-lead" :class="{ 'readout-redline': cluster.netNegative }">
-        <span class="val-full">{{ reading(cluster.netWorth) }}</span>
+        <!-- 有持仓未取到价时这是个下界 → 前面加「≥」，不能把下界当精确值 -->
+        <span v-if="cluster.netWorthIncomplete" class="val-bound" aria-label="不小于">≥</span><span class="val-full">{{ reading(cluster.netWorth) }}</span>
         <span class="val-compact">{{ readingCompact(cluster.netWorth) }}</span>
       </strong>
       <!-- 构成条：这里放横条而不是刻度带——量程是「占比」，指针无意义 -->
@@ -114,7 +115,12 @@ const goExpense = () => router.push('/ledger?type=expense')
           <i :style="{ background: s.color }" />{{ s.label }} {{ s.percent.toFixed(0) }}%
         </span>
       </p>
-      <p v-else class="readout-sub">还没有账户</p>
+      <p v-else-if="cluster.netWorthIncomplete" class="readout-sub readout-amber">
+        {{ cluster.unpricedAccounts }} 个账户的持仓未取到价，实际可能更高
+      </p>
+      <!-- 「有账户但没记过余额」的文案不能写成「还没有账户」——那会让用户以为数据丢了。
+           实际情况是：账户都在，只是没有余额读数，所以构成算不出来。 -->
+      <p v-else class="readout-sub">还没有记过余额</p>
     </div>
 
     <!-- 读数 2 储蓄率：量程 0–100%，目标 30% 有参照物 -->
@@ -208,6 +214,7 @@ const goExpense = () => router.push('/ledger?type=expense')
 
 /* 宽窄屏切换读数写法：不用 JS 监听断点，两份都在 DOM 里由 CSS 选 */
 .val-compact { display: none; }
+.val-bound { font-size: 0.75em; color: var(--color-readout-2); margin-right: 0.05em; }
 
 .readout-lead { font-size: 1.5rem; margin-top: 0.375rem; }
 .cluster-c2 .readout-value,

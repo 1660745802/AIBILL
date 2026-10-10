@@ -26,6 +26,13 @@ withDefaults(defineProps<{
 </template>
 
 <style scoped>
+/**
+ * 手机端不吸顶。
+ * 外壳已经有一条 sticky top:0 的报头条（.topbar）且它已经显示了页面标题，
+ * 两者都是 sticky top:0 会直接叠在一起——PageHeader 的标题被压在下面看不见，
+ * 只剩副标题露出来（实测 /me、/ledger 手机端都是这样）。
+ * 桌面没有外壳报头条，所以 >=1024 才由这里吸顶。
+ */
 .page-head {
   display: flex;
   align-items: center;
@@ -35,16 +42,18 @@ withDefaults(defineProps<{
   margin-bottom: 1.25rem;
   border-bottom: 1px solid var(--color-rule);
 }
-.page-head-sticky {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  background: var(--color-paper);
-  /* 负边距必须与外壳内容区的左右内边距一致，否则会撑出横向滚动 */
-  margin-inline: -1rem;
-  padding-inline: 1rem;
-  padding-top: 0.5rem;
-  padding-bottom: 0.75rem;
+@media (min-width: 1024px) {
+  .page-head-sticky {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: var(--color-paper);
+    /* 负边距必须与外壳内容区的左右内边距一致，否则会撑出横向滚动 */
+    margin-inline: -1rem;
+    padding-inline: 1rem;
+    padding-top: 0.5rem;
+    padding-bottom: 0.75rem;
+  }
 }
 .page-title {
   font-size: 1.0625rem;

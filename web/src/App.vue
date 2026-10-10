@@ -7,17 +7,25 @@ import AppIcon from '@/components/ui/AppIcon.vue'
 import ToastHost from '@/components/ui/ToastHost.vue'
 import ConfirmHost from '@/components/ui/ConfirmHost.vue'
 import InstrumentCluster from '@/components/ui/InstrumentCluster.vue'
+import { NAV_GROUPS, mobileTabs, type NavGroup } from '@/nav'
+import { useInvestmentNav } from '@/composables/useInvestmentNav'
 import QuickEntry from '@/components/QuickEntry.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 const quick = useQuickEntry()
+// 「投资」出不出现取决于有没有理财账户，见 useInvestmentNav
+const { hasInvestment, refreshInvestmentNav } = useInvestmentNav()
 
 onMounted(async () => {
   if (auth.token && !auth.user) await auth.fetchUser()
   document.addEventListener('keydown', onGlobalKey)
+  void refreshInvestmentNav()
 })
+// 每次换页顺手复核一次（有缓存，不会每次都打接口）：
+// 用户在资产页把账户改成理财投资后，侧栏要跟上
+watch(() => route.path, () => { void refreshInvestmentNav() })
 onUnmounted(() => document.removeEventListener('keydown', onGlobalKey))
 
 /* ── 全局快捷键 ─────────────────────────────────────
@@ -56,30 +64,31 @@ function onGlobalKey(e: KeyboardEvent) {
 }
 
 /* ── 导航结构 ──────────────────────────────────────────
+   按功能分组，单一真源在 @/nav.ts（侧栏 / 底栏 /「我的」三处共用）。
+
    记账是「动作」不是「页面」：桌面端它是侧栏顶部的按钮，手机端是
-   右下角 FAB——都一键可达，不用先想「我在哪个页面」。
+   右下角 FAB，任意页面 ⌘K / N——都不需要先进导航。
 
-   导航里只留真正常用的四个；其余（导入 / 回收站 / 设置 / 管理）收到「我的」，
-   两个地方不列同一个功能——人会在两个入口之间犹豫该点哪个。
-   手机端顶栏头像直达「我的」，与侧栏同一套信息架构。                 */
+   手机底栏塞不进「组」只能放页面，取 nav.ts 里标了 mobileSlot 的项
+   （账本 / 记一笔 / 账户总览 / 本月结算）。这是物理约束，不是又退回频率分层。
+   记一笔在 web 端是普通 tab（web 定位是信息整合，不需要突出它）。 */
 
-interface NavItem { path: string; label: string; icon: string }
-
-const DAILY = computed<NavItem[]>(() => [
-  { path: '/ledger', label: '账本', icon: 'ledger' },
-  { path: '/overview', label: '本月', icon: 'gauge' },
-])
-
-const OCCASIONAL = computed<NavItem[]>(() => [
-  { path: '/assets', label: '资产全景', icon: 'wallet' },
-  { path: '/ai', label: 'AI 助手', icon: 'spark' },
-])
-
-const ME_CHILDREN = ['/me', '/settings', '/assets', '/import', '/trash', '/admin']
+const groups = computed<NavGroup[]>(() =>
+  NAV_GROUPS.map((g) => ({
+    ...g,
+    items: g.items.filter((i) =>
+      (!i.adminOnly || auth.isAdmin) && (!i.needsInvestment || hasInvestment.value),
+    ),
+  })).filter((g) => g.items.length > 0),
+)
 
 function isActive(path: string): boolean {
-  if (path === '/me') return ME_CHILDREN.includes(route.path)
   return route.path === path || route.path.startsWith(path + '/')
+}
+
+/** 「我的」是功能索引页，不再是某几个页面的父级——只有停在它自己时才算选中 */
+function isMeActive(): boolean {
+  return route.path === '/me'
 }
 
 const displayName = computed(() => auth.user?.nickname || auth.user?.username || '')
@@ -88,7 +97,7 @@ const initial = computed(() => displayName.value.charAt(0).toUpperCase() || '?')
 /** 顶部条标题：优先路由 meta，其次从导航结构反查 */
 const pageTitle = computed(() => {
   if (route.meta.title) return String(route.meta.title)
-  const all = DAILY.value.concat(OCCASIONAL.value)
+  const all = NAV_GROUPS.flatMap((g) => g.items)
   return all.find(i => isActive(i.path))?.label ?? '财务工作台'
 })
 
@@ -112,12 +121,8 @@ const showCluster = computed(() => route.meta.cluster === true)
 const railOpen = ref(false)
 watch(() => route.path, () => { railOpen.value = false })
 
-/** 手机底部 3 槽：高频浏览页。低频项全在「我的」里，顶栏头像直达。 */
-const TABS = computed<NavItem[]>(() => [
-  { path: '/ledger', label: '账本', icon: 'ledger' },
-  { path: '/overview', label: '本月', icon: 'gauge' },
-  { path: '/ai', label: '助手', icon: 'spark' },
-])
+/** 手机底部 3 槽，由 nav.ts 的 mobileSlot 标记派生 */
+const TABS = computed(() => mobileTabs())
 </script>
 
 <template>
@@ -143,33 +148,11 @@ const TABS = computed<NavItem[]>(() => [
           </RouterLink>
         </div>
 
-        <!-- 记账 = 动作：在侧栏里是按钮，不是导航项，所以不跳页 -->
-        <div class="rail-action">
-          <button type="button" class="rail-action-btn" aria-label="记一笔" @click="quick.open()">
-            <AppIcon name="pen" :size="15" :stroke="2" />
-            <span>记一笔</span>
-            <kbd class="rail-kbd" aria-hidden="true">N</kbd>
-          </button>
-        </div>
-
         <nav class="rail-nav scroll-thin" aria-label="主导航">
-          <p class="rail-group-title">每天</p>
-          <RouterLink
-            v-for="item in DAILY"
-            :key="item.path"
-            :to="item.path"
-            class="rail-item"
-            :class="{ 'rail-item-on': isActive(item.path) }"
-            :title="item.label"
-          >
-            <AppIcon :name="item.icon" :size="17" />
-            <span class="rail-label">{{ item.label }}</span>
-          </RouterLink>
-
-          <div class="rail-group">
-            <p class="rail-group-title">偶尔</p>
+          <div v-for="g in groups" :key="g.key" class="rail-group">
+            <p class="rail-group-title">{{ g.label }}</p>
             <RouterLink
-              v-for="item in OCCASIONAL"
+              v-for="item in g.items"
               :key="item.path"
               :to="item.path"
               class="rail-item"
@@ -182,7 +165,7 @@ const TABS = computed<NavItem[]>(() => [
           </div>
         </nav>
 
-        <RouterLink to="/me" class="rail-foot" :class="{ 'rail-item-on': isActive('/me') }">
+        <RouterLink to="/me" class="rail-foot" :class="{ 'rail-item-on': isMeActive() }">
           <span class="rail-avatar" aria-hidden="true">{{ initial }}</span>
           <span class="rail-label min-w-0">
             <span class="rail-foot-name">{{ displayName }}</span>
@@ -225,9 +208,8 @@ const TABS = computed<NavItem[]>(() => [
         </main>
       </div>
 
-      <!-- 手机底部：3 槽 + 右下角记账 FAB
-           FAB 放右下（拇指自然落点）而不是居中：居中要拇指横移，
-           且会遮住中间那一槽的点击区。低频项全在「我的」，不占槽位。 -->
+      <!-- 手机底部导航：记一笔已降级为普通 tab，不再是突出的 FAB。
+           网页承担数据整合，记账主要靠 App 自动记账，手记只是兜底。 -->
       <nav class="tabbar safe-bottom" aria-label="底部导航">
         <RouterLink
           v-for="t in TABS"
@@ -239,10 +221,6 @@ const TABS = computed<NavItem[]>(() => [
           <AppIcon :name="t.icon" :size="20" :stroke="isActive(t.path) ? 2 : 1.6" />
           <span class="tab-label">{{ t.label }}</span>
         </RouterLink>
-        <button type="button" class="tab-fab" aria-label="记一笔" @click="quick.open()">
-          <AppIcon name="plus" :size="22" :stroke="2.2" />
-          <span class="tab-fab-label">记一笔</span>
-        </button>
       </nav>
 
       <!-- 快速录入：已经站在记一笔页时不再套一层弹层（Home.vue 会直接聚焦它的输入框） -->
@@ -311,34 +289,6 @@ const TABS = computed<NavItem[]>(() => [
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* 记账 = 动作：侧栏里是一个按钮形状，不是导航项 */
-.rail-action { padding: 0.75rem 0.625rem 0.25rem; }
-.rail-action-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  height: 2.125rem;
-  padding: 0 0.625rem;
-  border-radius: var(--radius-sm);
-  background: var(--color-inverse);
-  color: var(--color-inverse-fg);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  transition: background-color 0.14s ease;
-}
-.rail-action-btn:hover { background: var(--color-inverse-hover); }
-.rail-action-btn span { flex: 1; }
-.rail-kbd {
-  font-family: var(--font-mono);
-  font-size: 0.5625rem;
-  color: var(--color-inverse-fg);
-  opacity: 0.55;
-  border: 1px solid color-mix(in srgb, var(--color-inverse-fg) 30%, transparent);
-  border-radius: 2px;
-  padding: 0.0625rem 0.25rem;
-  line-height: 1.3;
 }
 
 .rail-nav {
@@ -516,27 +466,6 @@ const TABS = computed<NavItem[]>(() => [
 }
 .tab-on { color: var(--color-ink-1); }
 .tab-label { font-size: 0.625rem; font-weight: 500; line-height: 1.2; }
-
-/* 记账 FAB：右下角 + 文字，不是一个孤零零的圆点。
-   放回文档流（而不是 absolute）——绝对定位会直接压住最后一槽，
-   三个 tab 的 flex 尺寸 unaware 它的存在。 */
-.tab-fab {
-  flex-shrink: 0;
-  align-self: center;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  height: 2.5rem;
-  margin-right: 0.25rem;
-  padding: 0 0.875rem 0 0.75rem;
-  border-radius: 999px;
-  background: var(--color-inverse);
-  color: var(--color-inverse-fg);
-  box-shadow: 0 6px 18px -6px rgb(0 0 0 / 0.45);
-  transition: transform 0.14s ease;
-}
-.tab-fab:active { transform: scale(0.95); }
-.tab-fab-label { font-size: 0.8125rem; font-weight: 600; }
 
 /* 内容底部给导航让位 */
 @media (max-width: 1023px) {
