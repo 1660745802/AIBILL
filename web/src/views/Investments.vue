@@ -323,7 +323,11 @@ async function refreshQuotes() {
           <!-- 读数：按「持仓市值 + 现金 = 总价值」「总投入 → 浮动盈亏」两组，
                不再四个格子平铺——平铺看不出哪个是加数、哪个是结果。 -->
           <div v-else class="inv-readings">
-            <!-- 第一组：总价值的构成 -->
+            <!--
+              第一组：总价值的**构成**。
+              不再重复「= 总价值」——那个数已经是头部的大数字，同一屏里写两遍
+              只会让人怀疑这两个是不是不同的东西。
+            -->
             <div class="inv-group">
               <div class="inv-cell">
                 <span class="inv-label">持仓市值</span>
@@ -337,15 +341,6 @@ async function refreshQuotes() {
               <div class="inv-cell">
                 <span class="inv-label">现金</span>
                 <Money :value="positionOf(acc.id)?.cash ?? 0" size="md" tone="neutral" sign="none" />
-              </div>
-              <span class="inv-op">=</span>
-              <div class="inv-cell">
-                <span class="inv-label">总价值</span>
-                <Money
-                  v-if="positionOf(acc.id)?.value != null"
-                  :value="positionOf(acc.id)!.value!" size="md" tone="neutral" sign="none"
-                />
-                <span v-else class="inv-muted">—</span>
               </div>
             </div>
 
@@ -373,9 +368,7 @@ async function refreshQuotes() {
                 <span v-else-if="positionOf(acc.id)?.holdingsPending" class="inv-muted">
                   持仓未配置
                 </span>
-                <span v-else-if="positionOf(acc.id)?.hasHoldings" class="inv-muted">
-                  待取价<span class="inv-act-hint" @click.stop="refreshQuotes">刷新</span>
-                </span>
+                <span v-else-if="positionOf(acc.id)?.hasHoldings" class="inv-muted">待取价</span>
                 <span v-else class="inv-muted">填总投入后显示</span>
               </div>
             </div>
