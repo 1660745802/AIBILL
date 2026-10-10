@@ -34,12 +34,23 @@ async function handleLogin() {
 <template>
   <div class="min-h-screen lg:grid lg:grid-cols-[1fr_420px]">
     <!-- 品牌面：桌面左栏，手机顶部 -->
-    <aside class="brand paper-ruled">
+    <aside class="brand">
       <div class="brand-inner">
-        <div class="brand-mark">¥</div>
-        <h1 class="brand-title">账本</h1>
-        <div class="brand-rule double-rule"></div>
-        <p class="brand-tagline">说一句话就记一笔账。<br />AI 驱动的个人财务工作台。</p>
+        <!-- 品牌符号 = 应用图标 = 一块仪表：面 + 刻度 + 指针 + 红区。
+             登录页是第一次看到产品的地方，所以先看到产品自己的隐喻。 -->
+        <svg class="brand-gauge" viewBox="0 0 120 72" aria-hidden="true">
+          <path d="M12 60h96" stroke="var(--color-notch)" stroke-width="2" />
+          <g stroke="var(--color-readout-3)" stroke-width="2">
+            <path d="M12 60V48M31 60V52M50 60V52M69 60V52M88 60V52M108 60V48" />
+          </g>
+          <g stroke="var(--color-redline)" stroke-width="2" opacity="0.7">
+            <path d="M88 60V52M108 60V48" />
+          </g>
+          <path d="M66 62V16" stroke="var(--color-readout)" stroke-width="4" />
+          <path d="M61.5 6h9L66 15z" fill="var(--color-readout)" />
+        </svg>
+        <h1 class="brand-title">财务工作台</h1>
+        <p class="brand-tagline">说一句话就记一笔账。<br />钱是读数，不是文档。</p>
       </div>
     </aside>
 
@@ -100,37 +111,38 @@ async function handleLogin() {
   align-items: center;
   justify-content: center;
   padding: 2.5rem 1.5rem;
-  border-bottom: 1px solid var(--color-rule);
+  border-right: 1px solid var(--color-rule);
+  background: var(--color-paper);
+}
+@media (max-width: 1023px) {
+  .brand { border-right: 0; border-bottom: 1px solid var(--color-rule); }
 }
 .brand-inner {
   width: 100%;
   max-width: 22rem;
-  text-align: center;
 }
-.brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 3.25rem;
-  height: 3.25rem;
+/* 品牌符号就是那块仪表：深色面板，恒定不随系统变。
+   「钱是读数」这句话只有配一个真的刻度带才立得住。 */
+.brand-gauge {
+  display: block;
+  width: 100%;
+  max-width: 17rem;
+  height: auto;
+  margin-bottom: 1.25rem;
+  padding: 1.125rem 1.25rem 0.875rem;
+  background: var(--color-bezel);
+  border: 1px solid color-mix(in srgb, var(--color-readout) 14%, transparent);
   border-radius: var(--radius-md);
-  background: var(--color-action);
-  color: var(--color-action-fg);
-  font-size: 1.75rem;
-  font-weight: 600;
-  margin-bottom: 1rem;
+  box-shadow: var(--shadow-bezel);
 }
 .brand-title {
-  font-size: 1.5rem;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   color: var(--color-ink-1);
 }
-.brand-rule {
-  width: 3rem;
-  margin: 1rem auto;
-}
 .brand-tagline {
+  margin-top: 0.5rem;
   font-size: 0.8125rem;
   color: var(--color-ink-3);
   line-height: 1.7;

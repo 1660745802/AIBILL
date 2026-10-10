@@ -32,13 +32,6 @@ async function fetchDashboard() {
   } catch { /* ignore */ } finally { loading.value = false }
 }
 
-const today = new Date()
-const periodLabel = computed(() =>
-  `${today.getFullYear()}年${today.getMonth() + 1}月`,
-)
-
-const netPositive = computed(() => (data.value?.net_worth.total ?? 0) >= 0)
-
 const ASSET_META: Record<string, { label: string; color: string }> = {
   liquid: { label: '活期', color: 'var(--color-action)' },
   savings: { label: '定期', color: 'var(--color-info)' },
@@ -125,35 +118,28 @@ const alertTone = (t: string) =>
   t.includes('exceeded') || t === 'large_expense' ? 'danger'
     : t === 'subscription_due' ? 'info' : 'warn'
 
-const savingRateTone = (r: number) => (r >= 30 ? 'income' : r >= 10 ? 'warn' : 'expense')
+/** 「这个月走到哪了」——仪表给钱，这里给时间进度，两件事不重复 */
+const monthProgress = computed(() => {
+  const now = new Date()
+  const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
+  const count = data.value?.summary?.transaction_count ?? 0
+  return `${now.getMonth() + 1} 月已过 ${now.getDate()} / ${days} 天 · 已记 ${count} 笔`
+})
 </script>
 
 <template>
   <div class="space-y-6">
-    <!-- 报头：周期 + 快捷入口 -->
+    <!-- 报头：周期与读数都在仪表面上，这里只回答「这个月走到哪了」 -->
     <div class="dash-masthead">
       <div>
-        <p class="text-[0.6875rem] font-semibold tracking-[0.06em]" style="color: var(--color-ink-3)">
-          {{ periodLabel }}
-        </p>
-        <h1 class="text-lg font-semibold amt" style="color: var(--color-ink-1)">本月</h1>
-      </div>
-      <div class="flex items-center gap-2">
-        <router-link to="/ledger" class="btn btn-outline btn-sm">
-          <AppIcon name="chart" :size="13" />看统计
-        </router-link>
-        <router-link to="/" class="btn btn-primary btn-sm">
-          <AppIcon name="plus" :size="13" :stroke="2.2" />记一笔
-        </router-link>
+        <h1 class="text-lg font-semibold" style="color: var(--color-ink-1)">本月</h1>
+        <p class="text-[0.75rem] mt-0.5" style="color: var(--color-ink-3)">{{ monthProgress }}</p>
       </div>
     </div>
 
     <!-- 加载 -->
     <div v-if="loading" class="space-y-6">
-      <div class="skeleton h-40 rounded-lg" />
-      <div class="grid grid-cols-3 gap-2.5">
-        <div v-for="i in 3" :key="i" class="skeleton h-20 rounded-md" />
-      </div>
+      <div class="skeleton h-24 rounded-lg" />
       <div class="grid lg:grid-cols-2 gap-6">
         <div class="skeleton h-44 rounded-lg" />
         <div class="skeleton h-44 rounded-lg" />
@@ -161,42 +147,11 @@ const savingRateTone = (r: number) => (r >= 30 ? 'income' : r >= 10 ? 'warn' : '
     </div>
 
     <div v-else-if="data" class="grid lg:grid-cols-[minmax(0,1fr)_21rem] gap-6 items-start">
-      <!-- ═══ 主栏 ═══ -->
+      <!-- ═══ 主栏 ═══
+           净资产 / 本月支出 / 储蓄率 三块读数已由常驻仪表面承担，页面里不重复：
+           仪表回答「我现在什么状况」，本页回答「为什么」。
+           所以主栏从待办和趋势开始，进来第一眼是事情，不是数字。      -->
       <div class="space-y-6 min-w-0">
-        <!-- 净资产块 -->
-        <section class="ledger-block">
-          <div class="paper-ruled absolute inset-0" aria-hidden="true" />
-          <div class="lb-inner relative">
-            <div class="flex items-start justify-between gap-3">
-              <span class="ledger-label ledger-label-solid text-[0.6875rem] font-semibold tracking-[0.06em]"
-                style="color: var(--color-ink-3)">净资产</span>
-              <router-link to="/assets" class="link-quiet text-[0.75rem] inline-flex items-center gap-0.5 hover:text-ink-1 transition">
-                资产详情<AppIcon name="chevronRight" :size="12" />
-              </router-link>
-            </div>
-
-            <p class="mt-2.5" :class="netPositive ? '' : 'text-expense'">
-              <Money :value="data.net_worth.total" size="hero" :sign="netPositive ? 'none' : 'auto'" />
-            </p>
-
-            <div class="grid grid-cols-3 gap-px mt-4" style="background: var(--color-rule-faint); border: 1px solid var(--color-rule-faint); border-radius: var(--radius-sm); overflow: hidden">
-              <div class="bg-paper-raised px-2.5 py-2">
-                <p class="text-[0.625rem] mb-0.5" style="color: var(--color-ink-3)">本月支出</p>
-                <Money :value="data.summary.expense" sign="none" size="sm" tone="expense" />
-              </div>
-              <div class="bg-paper-raised px-2.5 py-2">
-                <p class="text-[0.625rem] mb-0.5" style="color: var(--color-ink-3)">本月收入</p>
-                <Money :value="data.summary.income" sign="none" size="sm" tone="income" />
-              </div>
-              <div class="bg-paper-raised px-2.5 py-2">
-                <p class="text-[0.625rem] mb-0.5" style="color: var(--color-ink-3)">储蓄率</p>
-                <p class="text-xs font-semibold amt" :style="{ color: `var(--color-${savingRateTone(data.summary.saving_rate)})` }">
-                  {{ data.summary.saving_rate }}%
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
 
         <!-- 首次使用引导 -->
         <section v-if="isFirstRun" class="surface p-4">
@@ -312,24 +267,13 @@ const savingRateTone = (r: number) => (r >= 30 ? 'income' : r >= 10 ? 'warn' : '
           </EmptyState>
         </section>
 
-        <!-- 快捷入口 -->
-        <nav class="sheet">
-          <SheetRow clickable @click="$router.push('/')">
-            <AppIcon name="pen" :size="16" class="text-ink-3" />
-            <span class="flex-1 text-[0.8125rem]" style="color: var(--color-ink-1)">记一笔</span>
-            <AppIcon name="chevronRight" :size="14" class="chev-link" />
-          </SheetRow>
-          <SheetRow clickable @click="$router.push('/ledger')">
-            <AppIcon name="chart" :size="16" class="text-ink-3" />
-            <span class="flex-1 text-[0.8125rem]" style="color: var(--color-ink-1)">账本明细</span>
-            <AppIcon name="chevronRight" :size="14" class="chev-link" />
-          </SheetRow>
-          <SheetRow clickable @click="$router.push('/ai')">
-            <AppIcon name="spark" :size="16" class="text-ink-3" />
-            <span class="flex-1 text-[0.8125rem]" style="color: var(--color-ink-1)">问 AI</span>
-            <AppIcon name="chevronRight" :size="14" class="chev-link" />
-          </SheetRow>
-        </nav>
+        <!-- 快捷入口：只留导航里没有的。账本 / 助手 / 记一笔
+             分别是侧栏项、侧栏项、侧栏动作，再列一遍只会让人不知道该点哪个。 -->
+        <router-link to="/trash" class="sheet sheet-row sheet-row-click">
+          <AppIcon name="trash" :size="16" class="text-ink-3" />
+          <span class="flex-1 text-[0.8125rem]" style="color: var(--color-ink-1)">回收站</span>
+          <AppIcon name="chevronRight" :size="14" class="chev-link" />
+        </router-link>
       </aside>
     </div>
   </div>

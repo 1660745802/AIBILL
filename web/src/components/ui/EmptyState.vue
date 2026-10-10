@@ -9,7 +9,7 @@ withDefaults(defineProps<{
   icon?: string
   title: string
   description?: string
-  /** 背景使用纸纹（空账簿） */
+  /** 背景铺极淡刻度网格（空面板） */
   ruled?: boolean
   compact?: boolean
 }>(), { icon: 'inbox', description: '', ruled: false, compact: false })

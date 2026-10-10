@@ -3,9 +3,11 @@
  * 记账：把一句话交给 AI，拆成多笔账。
  * 这是整个产品唯一"用力"的地方——它是主动作，也是差异点。
  */
-import { ref, onMounted, computed, nextTick } from 'vue'
+import { ref, onMounted, computed, nextTick, watch } from 'vue'
 import api from '@/api/index'
 import { useToast } from '@/composables/useToast'
+import { useClusterStore } from '@/stores/cluster'
+import { useQuickEntry } from '@/composables/useQuickEntry'
 import { generateUUID } from '@/utils/uuid'
 import ConfirmCards from '@/components/ConfirmCards.vue'
 import ManualForm from '@/components/ManualForm.vue'
@@ -17,6 +19,7 @@ import SheetRow from '@/components/ui/SheetRow.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
+const quick = useQuickEntry()
 
 const input = ref('')
 const textarea = ref<HTMLTextAreaElement | null>(null)
@@ -27,27 +30,29 @@ const parsedItems = ref<any[]>([])
 const originalParsedItems = ref<any[]>([])
 const parseLogId = ref<number | null>(null)
 const showManual = ref(false)
-const summary = ref({ expense: 0, income: 0 })
 const todayTransactions = ref<any[]>([])
 const editing = ref<any | null>(null)
 
 const QUICK_PHRASES = ['午饭', '早饭', '咖啡', '打车', '地铁', '买菜', '晚饭', '零食']
 
-const balance = computed(() => summary.value.income - summary.value.expense)
 const todayTotal = computed(() =>
   todayTransactions.value
     .filter((t) => t.type === 'expense')
     .reduce((s, t) => s + t.amount, 0),
 )
 
-onMounted(() => { fetchSummary(); fetchToday() })
+onMounted(() => { fetchToday() })
 
-async function fetchSummary() {
-  try {
-    const { data } = await api.get('/stats/summary')
-    if (data.code === 0) summary.value = { expense: data.data.expense, income: data.data.income }
-  } catch { /* ignore */ }
-}
+/**
+ * 已经在记一笔页上时，全局「记一笔」不应该在页面上再盖一层弹窗——
+ * 直接把光标交给这页的输入框。App.vue 靠 route.path !== '/' 避开渲染弹层，
+ * 这里负责把焦点接住并把开关复位。
+ */
+watch(() => quick.state.open, (v: boolean) => {
+  if (!v) return
+  quick.close()
+  nextTick(() => textarea.value?.focus())
+})
 
 async function fetchToday() {
   try {
@@ -149,7 +154,9 @@ async function handleConfirm(items: any[]) {
 
     resetComposer()
     toast.success(`已记 ${items.length} 笔`)
-    await Promise.all([fetchSummary(), fetchToday()])
+    // 仪表读数是常驻的，账记完它必须立刻更新，否则顶部三个数字是假的
+    useClusterStore().load(true)
+    await fetchToday()
   } catch (e: any) {
     error.value = e.response?.data?.message || '保存失败'
   } finally {
@@ -177,7 +184,8 @@ async function handleManualSubmit(item: any) {
     showManual.value = false
     resetComposer()
     toast.success('记账成功')
-    await Promise.all([fetchSummary(), fetchToday()])
+    useClusterStore().load(true)
+    await fetchToday()
   } catch (e: any) {
     error.value = e.response?.data?.message || '保存失败'
   }
@@ -191,28 +199,12 @@ function openManual() {
 
 <template>
   <div class="space-y-5">
-    <!-- 报头：本月三数 -->
-    <header class="quick-masthead">
-      <div class="flex items-baseline gap-1.5">
-        <span class="text-[0.6875rem] font-semibold tracking-[0.06em]" style="color: var(--color-ink-3)">本月支出</span>
-        <Money :value="summary.expense" sign="none" size="sm" tone="expense" />
-      </div>
-      <span class="rule-y" aria-hidden="true" />
-      <div class="flex items-baseline gap-1.5">
-        <span class="text-[0.6875rem] font-semibold tracking-[0.06em]" style="color: var(--color-ink-3)">收入</span>
-        <Money :value="summary.income" sign="none" size="sm" tone="income" />
-      </div>
-      <span class="rule-y" aria-hidden="true" />
-      <div class="flex items-baseline gap-1.5">
-        <span class="text-[0.6875rem] font-semibold tracking-[0.06em]" style="color: var(--color-ink-3)">结余</span>
-        <Money :value="balance" :sign="balance < 0 ? 'auto' : 'none'" size="sm"
-               :tone="balance >= 0 ? 'neutral' : 'expense'" />
-      </div>
-    </header>
+    <!-- 记一笔 = 动作页。
+         旧版报头把「本月支出 / 收入 / 结余」又摆了一遍，和常驻仪表完全重复，
+         进来第一眼看到的是三张已经看过的数字。删掉，输入框直接当主角。 -->
 
     <!-- ═══ 输入区 ═══ -->
-    <section class="ledger-block">
-      <div class="paper-ruled absolute inset-0" aria-hidden="true" />
+    <section class="ledger-block composer-block">
       <div class="lb-inner relative">
         <span class="ledger-label ledger-label-solid text-[0.6875rem] font-semibold tracking-[0.06em]"
               style="color: var(--color-ink-3)">说一句话</span>
@@ -325,7 +317,7 @@ function openManual() {
       :show="!!editing"
       :transaction="editing"
       @close="editing = null"
-      @saved="editing = null; fetchToday(); fetchSummary()"
+      @saved="editing = null; fetchToday()"
     />
   </div>
 </template>
@@ -356,7 +348,17 @@ function openManual() {
   resize: none;
   transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
-.composer::placeholder { color: var(--color-ink-4); }
+/* 记一块：动作页的主角。左侧一道反相色条——这页唯一「现在要做的事」。
+   颜色用 --color-inverse 而非固定色，否则深色系统下这道条会消失。 */
+.composer-block {
+  border-color: var(--color-rule-strong);
+  box-shadow: inset 3px 0 0 var(--color-inverse);
+}
+.composer::placeholder {
+  color: var(--color-ink-4);
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+}
 .composer:focus,
 .composer:focus-visible {
   outline: none;

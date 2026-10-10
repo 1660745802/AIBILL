@@ -219,8 +219,10 @@ async function fetchParseLogs(page = 1) {
     if (parseLogsFilter.value.status) params.status = parseLogsFilter.value.status
     const { data } = await api.get('/admin/ai-parse-logs', { params })
     if (data.code === 0) {
-      parseLogs.value = data.data.items
-      parseLogsPagination.value = data.data.pagination
+      // 兜底 pagination：管理面板恰恰是「后端出问题时第一个要看的页面」，
+      // 响应少一个字段就整页崩掉，等于在最需要它的时候罢工。
+      parseLogs.value = data.data.items ?? []
+      parseLogsPagination.value = { ...parseLogsPagination.value, ...(data.data.pagination ?? {}) }
     }
   } catch { /* ignore */ }
   finally { loadingParseLogs.value = false }
@@ -295,8 +297,8 @@ async function fetchAppLogs(page = 1) {
     if (appLogsFilter.value.module) params.module = appLogsFilter.value.module
     const { data } = await api.get('/admin/logs', { params })
     if (data.code === 0) {
-      appLogs.value = data.data.items
-      appLogsPagination.value = data.data.pagination
+      appLogs.value = data.data.items ?? []
+      appLogsPagination.value = { ...appLogsPagination.value, ...(data.data.pagination ?? {}) }
     }
   } catch { /* ignore */ }
   finally { loadingAppLogs.value = false }
@@ -1035,11 +1037,12 @@ function closeUserTransactions() {
   text-align: center;
 }
 .admin-stat-num {
+  font-family: var(--font-mono);
   font-size: 1.5rem;
-  font-weight: 650;
+  font-weight: 500;
   color: var(--color-ink-1);
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   line-height: 1.1;
 }
 .admin-stat-label {

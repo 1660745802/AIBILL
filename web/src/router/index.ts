@@ -60,6 +60,21 @@ function lazy(loader: () => Promise<unknown>) {
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
+  /**
+   * 滚动行为
+   *
+   * 账本（meta.selfScroll）把滚动位置交回给组件自己管：它是无限滚动的，
+   * router 不知道第几页才够高，只会在目标位置超过已加载内容高度时被静默截断，
+   * 用户就落在一个不伦不类的位置。组件的 tryRestoreScroll() 会「不够高就补页」，
+   * router 插进来只会打架，所以这里返回 false 让它别动。
+   *
+   * 其余页面走默认：后退/前进回原位，其它情况回顶部。
+   */
+  scrollBehavior(to, _from, savedPosition) {
+    if (to.meta.selfScroll) return false
+    if (savedPosition) return savedPosition
+    return { top: 0 }
+  },
   routes: [
     {
       path: '/login',
@@ -95,13 +110,14 @@ const router = createRouter({
       path: '/overview',
       name: 'Dashboard',
       component: lazy(() => import('@/views/Dashboard.vue')),
-      meta: { auth: true, title: '本月' },
+      // cluster：这一页讲的是「我的钱」，仪表读数在这里才有用
+      meta: { auth: true, title: '本月', cluster: true },
     },
     {
       path: '/ledger',
       name: 'Ledger',
       component: lazy(() => import('@/views/Ledger.vue')),
-      meta: { auth: true, title: '账本' },
+      meta: { auth: true, title: '账本', cluster: true, selfScroll: true },
     },
     {
       path: '/ai',
@@ -119,7 +135,7 @@ const router = createRouter({
       path: '/assets',
       name: 'Assets',
       component: lazy(() => import('@/views/Assets.vue')),
-      meta: { auth: true, title: '资产全景' },
+      meta: { auth: true, title: '资产全景', cluster: true },
     },
     {
       path: '/me',

@@ -180,13 +180,17 @@ const TYPE_LABEL: Record<string, string> = { expense: '支出', income: '收入'
 }
 @keyframes rise-in { from { opacity: 0; transform: translateY(10px); } }
 
+/* 头部：下沉一格的细条，不是深色大块。
+   上一版拿 --color-action 铺满整条，弹层里就多出一块抢戏的深色；
+   这里的角色是「这一段的标题」，安静即可。 */
 .parsed-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.5rem 0.875rem;
-  background: var(--color-action);
-  color: var(--color-action-fg);
+  padding: 0.4375rem 0.875rem;
+  background: var(--color-paper-sunk);
+  border-bottom: 1px solid var(--color-rule);
+  color: var(--color-ink-3);
   font-size: 0.75rem;
   font-weight: 600;
 }

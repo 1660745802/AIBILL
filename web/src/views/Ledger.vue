@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch, onUnmounted, nextTick } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { Line, Doughnut } from 'vue-chartjs'
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement,
@@ -7,7 +8,6 @@ import {
 } from 'chart.js'
 import api from '@/api/index'
 import PageHeader from '@/components/ui/PageHeader.vue'
-import PeriodNav from '@/components/ui/PeriodNav.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
 import LedgerLabel from '@/components/ui/LedgerLabel.vue'
 import StatTile from '@/components/ui/StatTile.vue'
@@ -19,6 +19,13 @@ import EmptyState from '@/components/ui/EmptyState.vue'
 import Skeleton from '@/components/ui/Skeleton.vue'
 import EditTransactionModal from '@/components/EditTransactionModal.vue'
 import { useChartColors, tone, CATEGORY_PALETTE, baseScales } from '@/utils/chart'
+import { usePeriodStore } from '@/stores/period'
+import { useLedgerStore } from '@/stores/ledger'
+import { useRoute, useRouter } from 'vue-router'
+
+const route = useRoute()
+const router = useRouter()
+const ledger = useLedgerStore()
 
 ChartJS.register(
   CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Tooltip, Legend, Filler,
@@ -26,19 +33,23 @@ ChartJS.register(
 
 const { schemeTick } = useChartColors()
 
-/* ── 周期 ── */
-const now = new Date()
-const year = ref(now.getFullYear())
-const month = ref(now.getMonth() + 1)
+/* ── 周期 ──
+   周期不再由账本页自己持有，而是读全局 period store：
+   仪表面上那个控件是唯一的修改入口，账本页只跟随。
+   否则会出现两处月份显示不一致，而记账的人恰恰最怕这个。       */
+const period = usePeriodStore()
+const year = computed(() => period.year)
+const month = computed(() => period.month)
 
-function onPeriodChange(y: number, m: number) {
-  year.value = y
-  month.value = m
-  window.scrollTo({ top: 0, behavior: 'smooth' })
-}
+/** 仪表上换月后滚回顶部：换周期等于换了一本账，位置没有意义 */
+/** 换月 = 换了一本账，去那个月自己的位置；没记过就回顶部 */
+watch(() => period.current, () => {
+  const saved = ledger.recall(scrollKeyNow.value)
+  pendingScroll = saved > 0 ? saved : 0
+  if (pendingScroll === 0) window.scrollTo({ top: 0, behavior: 'smooth' })
+})
 
 /* ── Tab ── */
-const activeTab = ref<'transactions' | 'stats'>('transactions')
 const TABS = [
   { value: 'transactions', label: '流水' },
   { value: 'stats', label: '统计' },
@@ -77,8 +88,18 @@ const txPage = ref(1)
 const txPageSize = 20
 const hasMore = computed(() => txPage.value * txPageSize < txTotal.value)
 
-const keyword = ref('')
-const filterType = ref('')
+const keyword = computed({
+  get: () => ledger.keyword,
+  set: (v: string) => { ledger.keyword = v },
+})
+const filterType = computed({
+  get: () => ledger.filterType,
+  set: (v: string) => { ledger.filterType = v },
+})
+const activeTab = computed({
+  get: () => ledger.activeTab,
+  set: (v: 'transactions' | 'stats') => { ledger.activeTab = v },
+})
 const TYPE_FILTERS = [
   { value: '', label: '全部' },
   { value: 'expense', label: '支出' },
@@ -93,9 +114,7 @@ let observer: IntersectionObserver | null = null
 async function fetchTransactions(append = false) {
   txLoading.value = true
   try {
-    const startDate = `${year.value}-${String(month.value).padStart(2, '0')}-01`
-    const endDay = new Date(year.value, month.value, 0).getDate()
-    const endDate = `${year.value}-${String(month.value).padStart(2, '0')}-${String(endDay).padStart(2, '0')}`
+    const { start_date: startDate, end_date: endDate } = period.range
 
     const params: Record<string, any> = {
       page: txPage.value, page_size: txPageSize, start_date: startDate, end_date: endDate,
@@ -108,16 +127,74 @@ async function fetchTransactions(append = false) {
       transactions.value = append ? [...transactions.value, ...data.data.items] : data.data.items
       txTotal.value = data.data.total
     }
-  } catch { /* ignore */ } finally { txLoading.value = false }
+  } catch { /* ignore */ } finally {
+    txLoading.value = false
+    // 每一页加载完都试一次：分页渲染完成高度才算数，否则会拿旧的 scrollHeight 判断
+    nextTick(tryRestoreScroll)
+  }
 }
 
-function handleSearch() { txPage.value = 1; fetchTransactions() }
+function handleSearch() {
+  txPage.value = 1
+  pendingScroll = 0
+  window.scrollTo({ top: 0 })
+  fetchTransactions()
+}
 function clearSearch() { keyword.value = ''; handleSearch() }
 
 function setFilterType(t: string) {
   filterType.value = t
   txPage.value = 1
+  pendingScroll = 0
+  window.scrollTo({ top: 0 })
   fetchTransactions()
+}
+
+/* ── 滚动位置记忆 ─────────────────────────────────────
+   账本是无限滚动的，所以「直接 scrollTo(记住的位置)」行不通：
+   浏览器会把位置截断到当前已加载内容的高度。用户滚到第 3 页离开、
+   回来只加载了第 1 页，结果落在一个不伦不类的位置——比不恢复更糟。
+
+   改成记住一个「目标位置」：内容不够高就先补页，补完再试，
+   直到能真正落到位。                              */
+const scrollKeyNow = computed(() =>
+  ledger.scrollKey(period.current, activeTab.value, filterType.value, keyword.value),
+)
+let pendingScroll: number | null = null
+
+function saveScroll() {
+  // 目标还没落到位时不要记，否则会把一个临时位置当成用户的位置存下来
+  if (pendingScroll != null) return
+  ledger.remember(scrollKeyNow.value, window.scrollY)
+}
+
+/**
+ * 存位置必须发生在「导航开始时」，不能等卸载。
+ *
+ * 实测踩过的坑：原本写在 onUnmounted 里，但 router 会先把新页面滚到顶部
+ * （scrollBehavior 返回 { top: 0 }）才卸载旧组件，于是 saveScroll 读到的
+ * scrollY 已经是 0——等于永远存下 0。onBeforeRouteLeave 在 DOM 还是旧页
+ * 的时候触发，才是唯一可靠时机。
+ */
+onBeforeRouteLeave(() => { saveScroll() })
+
+function tryRestoreScroll() {
+  if (pendingScroll == null) return
+  const needed = pendingScroll + window.innerHeight
+  if (document.documentElement.scrollHeight < needed) {
+    if (hasMore.value) {
+      // 正在加载说明「还有页在路上」，它的 finally 会再叫我一次；
+      // 不能在这里认定到底了。写错这个判断的表现是：只补一页就停在半路。
+      if (!txLoading.value) loadMore()
+      return
+    }
+    // 真的没有更多了（筛选结果变少 / 到底了），接受现实地停在最底部
+    window.scrollTo(0, document.documentElement.scrollHeight)
+    pendingScroll = null
+    return
+  }
+  window.scrollTo(0, pendingScroll)
+  pendingScroll = null
 }
 
 function loadMore() {
@@ -137,6 +214,7 @@ function setupObserver() {
   observer.observe(sentinel.value)
 }
 onUnmounted(() => observer?.disconnect())
+
 
 function handleEditSaved() {
   showEditModal.value = false
@@ -260,20 +338,38 @@ watch(viewType, () => { fetchCategory(); fetchTrend() })
 watch(activeTab, (tab) => {
   if (tab === 'transactions' && transactions.value.length === 0) fetchTransactions()
   else if (tab === 'stats' && !summary.value) fetchStats()
+  // 两个 tab 的内容高度完全不同，位置不能互相继承
+  pendingScroll = ledger.recall(scrollKeyNow.value)
+  if (pendingScroll === 0) window.scrollTo({ top: 0, behavior: 'smooth' })
+  nextTick(tryRestoreScroll)
 })
 watch(filterType, () => nextTick(setupObserver))
 
 onMounted(async () => {
+  // 从别处带筛选条件进来：仪表上的「本月支出」读数就链到这里
+  const qType = route.query.type
+  if (typeof qType === 'string' && TYPE_FILTERS.some(o => o.value === qType)) {
+    filterType.value = qType
+    router.replace({ query: {} })
+  }
+
+  // 先记下目标位置，再开始拉数据：顺序反了就拿不到旧位置
+  const saved = ledger.recall(scrollKeyNow.value)
+  if (saved > 0) pendingScroll = saved
+
   await fetchTransactions()
-  nextTick(setupObserver)
+  nextTick(() => { setupObserver(); tryRestoreScroll() })
 })
 </script>
 
 <template>
   <div>
-    <PageHeader title="账本" :subtitle="`共 ${txTotal} 笔记录`">
+    <PageHeader title="账本" :subtitle="`${period.label} 共 ${txTotal} 笔记录`">
       <template #meta>
-        <PeriodNav :year="year" :month="month" @change="onPeriodChange" />
+        <!-- 周期控件长在仪表面上，这里不重复放第二个月份 -->
+        <span v-if="!period.isCurrent" class="ledger-period-hint">
+          正在看历史月份
+        </span>
       </template>
     </PageHeader>
 
@@ -296,6 +392,7 @@ onMounted(async () => {
           <AppIcon name="search" :size="15" class="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
                    style="color: var(--color-ink-4)" />
           <input
+            id="page-search"
             v-model="keyword"
             type="search"
             class="field !pl-8 !pr-8"

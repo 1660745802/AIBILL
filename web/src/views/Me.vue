@@ -20,18 +20,14 @@ interface NavItem {
 }
 
 const sections = computed<{ title: string; items: NavItem[] }[]>(() => {
+  // 侧栏已经放 账本 / 本月 / 资产全景 / AI 助手（按使用频率），
+  // 这一页不重复它们——两个地方列同一个功能，人会犹豫该点哪个。
+  // 这里只收「不常去但必须找得到」的那部分。
   const groups: { title: string; items: NavItem[] }[] = [
     {
-      title: '财务管理',
+      title: '数据',
       items: [
-        { path: '/assets', label: '资产全景', icon: 'wallet', desc: '各账户余额与净资产' },
-      ],
-    },
-    {
-      title: '工具',
-      items: [
-        { path: '/ai', label: 'AI 助手', icon: 'spark', desc: '智能问答与分析' },
-        { path: '/import', label: '导入数据', icon: 'upload', desc: '微信/支付宝账单' },
+        { path: '/import', label: '导入账单', icon: 'upload', desc: '微信 / 支付宝账单' },
         { path: '/trash', label: '回收站', icon: 'trash', desc: '已删除的记录' },
       ],
     },
@@ -66,7 +62,7 @@ async function handleLogout() {
 
 <template>
   <div class="pb-24 md:pb-6">
-    <PageHeader title="我的" subtitle="账户、工具与系统设置" />
+    <PageHeader title="我的" subtitle="不常用但需要找得到的东西，都在这里" />
 
     <!-- 用户块 -->
     <div class="surface p-4 flex items-center gap-3 mb-6">

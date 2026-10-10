@@ -4,8 +4,8 @@
   "description": "一句话记账的个人财务工作台",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f3f5f6",
-  "theme_color": "#f3f5f6",
+  "background_color": "#171b1f",
+  "theme_color": "#171b1f",
   "orientation": "portrait",
   "icons": [
     {

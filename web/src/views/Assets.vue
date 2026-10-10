@@ -2,8 +2,6 @@
 import { ref, onMounted, computed } from 'vue'
 import { getAssetsOverview, updateAccountAsset } from '@/api/assets'
 import type { AssetOverview } from '@/api/assets'
-import { Doughnut } from 'vue-chartjs'
-import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, ArcElement, Tooltip, Legend } from 'chart.js'
 import { useToast } from '@/composables/useToast'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import LedgerLabel from '@/components/ui/LedgerLabel.vue'
@@ -12,10 +10,10 @@ import Money from '@/components/ui/Money.vue'
 import Skeleton from '@/components/ui/Skeleton.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
-
-ChartJS.register(CategoryScale, LinearScale, PointElement, ArcElement, Tooltip, Legend)
+import { useClusterStore } from '@/stores/cluster'
 
 const toast = useToast()
+const cluster = useClusterStore()
 const loading = ref(true)
 const overview = ref<AssetOverview | null>(null)
 const editingAccount = ref<number | null>(null)
@@ -26,66 +24,19 @@ const assetTypeLabels: Record<string, string> = {
   credit: '信用卡', loan: '贷款', property: '不动产', other: '其他',
 }
 
-// 读取 CSS 变量，保证图表配色走设计系统语义色（深色模式自动跟随）
-// 注意：canvas 不认 CSS 变量/var()，必须取计算值；也不认 color-mix()，淡色填充用 rgba。
-function cssVar(name: string): string {
-  if (typeof window === 'undefined') return '#14171a'
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#14171a'
-}
-
-// 分布环形的分段色：围绕语义色（收/支/警/信息/墨）循环，而非彩虹硬编码
-const distPalette = computed(() => [
-  cssVar('--color-income'),
-  cssVar('--color-info'),
-  cssVar('--color-warn'),
-  cssVar('--color-expense'),
-  cssVar('--color-ink-1'),
-  cssVar('--color-ink-3'),
-  cssVar('--color-ink-4'),
-])
-
 async function loadData() {
   loading.value = true
   try {
+    // 这一页要的是账户级字段（额度/账单日），dashboard 不带，所以仍走
+    // /assets/overview；仪表读数则由 store 自行拉取，两边不会打同一个接口。
     const o = await getAssetsOverview()
     overview.value = o.data.data
   } catch { toast.error('加载失败') }
   finally { loading.value = false }
 }
 
-const pieData = computed(() => {
-  if (!overview.value) return { labels: [], datasets: [] }
-  const types = overview.value.by_type.filter(t => t.total > 0)
-  const palette = distPalette.value
-  return {
-    labels: types.map(t => assetTypeLabels[t.type] || t.type),
-    datasets: [{
-      data: types.map(t => t.total / 100),
-      backgroundColor: types.map((_, i) => palette[i % palette.length]),
-      borderWidth: 0,
-    }],
-  }
-})
-
-// 环形图例：色块 / 名称 / 金额 / 占比
-const pieLegend = computed(() => {
-  if (!overview.value) return []
-  const types = overview.value.by_type.filter(t => t.total > 0)
-  const sum = types.reduce((s, t) => s + t.total, 0) || 1
-  const palette = distPalette.value
-  return types.map((t, i) => ({
-    label: assetTypeLabels[t.type] || t.type,
-    total: t.total,
-    color: palette[i % palette.length],
-    pct: Math.round((t.total / sum) * 100),
-  }))
-})
-
-// 去掉网格线与图例边框，坐标文字走墨色次级
-const pieOpts = computed(() => ({
-  responsive: true, maintainAspectRatio: false, cutout: '62%',
-  plugins: { legend: { display: false }, tooltip: { displayColors: false } },
-}))
+/** 账户总数，给页头一句人话 */
+const accountsTotal = computed(() => overview.value?.accounts.length ?? 0)
 
 const groupedAccounts = computed(() => {
   if (!overview.value) return {} as Record<string, AssetOverview['accounts']>
@@ -114,7 +65,10 @@ async function saveEdit() {
     const payload = { ...editForm.value }
     if (payload.credit_limit) payload.credit_limit = Math.round(payload.credit_limit * 100)
     await updateAccountAsset(editingAccount.value, payload)
-    toast.success('已更新'); editingAccount.value = null; await loadData()
+    toast.success('已更新'); editingAccount.value = null
+    await loadData()
+    // 改完账户余额，顶部仪表的净资产读数必须跟着变
+    cluster.load(true)
   }
   catch { toast.error('更新失败') }
 }
@@ -126,7 +80,7 @@ onMounted(loadData)
 
 <template>
   <div class="pb-20 md:pb-4">
-    <PageHeader title="资产全景" subtitle="各账户余额与净资产" />
+    <PageHeader title="账户" :subtitle="`${accountsTotal} 个账户 · 展开任意行可改类型与额度`" />
 
     <!-- 加载态 -->
     <div v-if="loading" class="stack">
@@ -140,20 +94,8 @@ onMounted(loadData)
 
     <template v-else-if="overview">
       <div class="stack">
-        <!-- 净资产主块：paper-ruled 纸纹底 + hero 金额 -->
-        <div class="ledger-block paper-ruled">
-          <div class="lb-inner">
-            <LedgerLabel>净资产</LedgerLabel>
-            <Money
-              :value="overview.net_worth"
-              size="hero"
-              :tone="overview.net_worth < 0 ? 'expense' : 'neutral'"
-              sign="none"
-            />
-          </div>
-        </div>
-
-        <!-- 资产 / 负债两格 -->
+        <!-- 净资产读数与资产构成已经在常驻仪表上，这里不重复。
+             这一页的任务是把账户管好，所以上来就给总资产/总负债和账户列表。 -->
         <div class="grid grid-cols-2 gap-3">
           <StatTile label="总资产">
             <Money :value="overview.total_assets" size="lg" tone="income" sign="none" />
@@ -162,23 +104,6 @@ onMounted(loadData)
             <Money :value="overview.total_liabilities" size="lg" tone="expense" />
           </StatTile>
         </div>
-
-        <!-- 资产分布 -->
-        <section>
-          <LedgerLabel>资产分布</LedgerLabel>
-          <div v-if="pieLegend.length > 0" class="surface p-4">
-            <div class="h-52"><Doughnut :data="pieData" :options="pieOpts" /></div>
-            <div class="mt-3 space-y-1.5">
-              <div v-for="row in pieLegend" :key="row.label" class="flex items-center gap-2 text-xs">
-                <span class="w-2.5 h-2.5 rounded-xs shrink-0" :style="{ background: row.color }" />
-                <span class="text-ink-2 truncate flex-1">{{ row.label }}</span>
-                <Money :value="row.total" size="sm" tone="neutral" sign="none" />
-                <span class="text-ink-4 w-9 text-right">{{ row.pct }}%</span>
-              </div>
-            </div>
-          </div>
-          <EmptyState v-else icon="pie" title="还没有资产分布" description="添加账户并填写余额后，这里会按类型展示你的资产构成。" :ruled="true" :compact="true" />
-        </section>
 
         <!-- 账户按类型分组：每组一个 sheet，组头浅底 + 小计 -->
         <section>

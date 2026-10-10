@@ -1,45 +1,83 @@
 <script setup lang="ts">
-import { onMounted, computed, ref, watch } from 'vue'
-import { RouterView, useRoute, RouterLink } from 'vue-router'
+import { onMounted, onUnmounted, computed, ref, watch } from 'vue'
+import { RouterView, useRoute, useRouter, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useQuickEntry } from '@/composables/useQuickEntry'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import ToastHost from '@/components/ui/ToastHost.vue'
 import ConfirmHost from '@/components/ui/ConfirmHost.vue'
+import InstrumentCluster from '@/components/ui/InstrumentCluster.vue'
+import QuickEntry from '@/components/QuickEntry.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
+const router = useRouter()
+const quick = useQuickEntry()
 
 onMounted(async () => {
   if (auth.token && !auth.user) await auth.fetchUser()
+  document.addEventListener('keydown', onGlobalKey)
 })
+onUnmounted(() => document.removeEventListener('keydown', onGlobalKey))
+
+/* ── 全局快捷键 ─────────────────────────────────────
+   记一笔是唯一的高频动作：让它不依赖「我此刻在哪个页面」。
+   ⌘K / N 任何地方都能把它拉出来；`/` 则先给当前页的搜索框
+   （账本这种列表页），页面上没有搜索框时才回落到快速录入——
+   否则同一个键在两页有两种含义，人会记错。
+   只在「不是在打字」时生效，否则会把用户正在输入的内容吃掉。  */
+const SHORTCUT_TABS: string[] = ['/ledger', '/overview', '/ai']
+
+function onGlobalKey(e: KeyboardEvent) {
+  if (quick.state.open) return // 弹层开着时让位给它自己的 Esc / ↵
+  const t = e.target as HTMLElement | null
+  const typing = !!t && (
+    t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT'
+    || t.isContentEditable
+  )
+  if (e.metaKey || e.ctrlKey) {
+    if (e.key.toLowerCase() === 'k') { e.preventDefault(); quick.open() }
+    return
+  }
+  if (typing || e.altKey) return
+  if (e.key === '/') {
+    e.preventDefault()
+    const search = document.querySelector<HTMLInputElement>('#page-search')
+    if (search) search.focus()
+    else quick.open()
+    return
+  }
+  if (e.key.toLowerCase() === 'n') { e.preventDefault(); quick.open(); return }
+  const n = Number(e.key)
+  if (n >= 1 && n <= 3) {
+    e.preventDefault()
+    router.push(SHORTCUT_TABS[n - 1]!)
+  }
+}
 
 /* ── 导航结构 ──────────────────────────────────────────
-   分组不按“功能类型”，而按真实使用频率排：
-   记账 / 账本 / 本月 占 90%+ 的使用时长；预算、目标、订阅
-   建过但从未被打开，已从 Web 端下线（后端接口保留给 App），
-   如需回滚，旧路由已重定向到 /me。                            */
+   记账是「动作」不是「页面」：桌面端它是侧栏顶部的按钮，手机端是
+   右下角 FAB——都一键可达，不用先想「我在哪个页面」。
+
+   导航里只留真正常用的四个；其余（导入 / 回收站 / 设置 / 管理）收到「我的」，
+   两个地方不列同一个功能——人会在两个入口之间犹豫该点哪个。
+   手机端顶栏头像直达「我的」，与侧栏同一套信息架构。                 */
 
 interface NavItem { path: string; label: string; icon: string }
 
-const PRIMARY = computed<NavItem[]>(() => [
-  { path: '/', label: '记一笔', icon: 'pen' },
+const DAILY = computed<NavItem[]>(() => [
   { path: '/ledger', label: '账本', icon: 'ledger' },
-  { path: '/overview', label: '本月', icon: 'chart' },
+  { path: '/overview', label: '本月', icon: 'gauge' },
+])
+
+const OCCASIONAL = computed<NavItem[]>(() => [
+  { path: '/assets', label: '资产全景', icon: 'wallet' },
   { path: '/ai', label: 'AI 助手', icon: 'spark' },
 ])
 
-const SYSTEM = computed<NavItem[]>(() => [
-  { path: '/assets', label: '资产全景', icon: 'wallet' },
-  { path: '/import', label: '导入账单', icon: 'upload' },
-  { path: '/settings', label: '设置', icon: 'settings' },
-  ...(auth.isAdmin ? [{ path: '/admin', label: '管理面板', icon: 'shield' }] : []),
-])
-
-/** 「我的」聚合的二级页 */
 const ME_CHILDREN = ['/me', '/settings', '/assets', '/import', '/trash', '/admin']
 
 function isActive(path: string): boolean {
-  if (path === '/') return route.path === '/' || route.path === '/quick'
   if (path === '/me') return ME_CHILDREN.includes(route.path)
   return route.path === path || route.path.startsWith(path + '/')
 }
@@ -50,7 +88,7 @@ const initial = computed(() => displayName.value.charAt(0).toUpperCase() || '?')
 /** 顶部条标题：优先路由 meta，其次从导航结构反查 */
 const pageTitle = computed(() => {
   if (route.meta.title) return String(route.meta.title)
-  const all = PRIMARY.value.concat(SYSTEM.value)
+  const all = DAILY.value.concat(OCCASIONAL.value)
   return all.find(i => isActive(i.path))?.label ?? '财务工作台'
 })
 
@@ -59,11 +97,27 @@ const todayLabel = computed(() =>
   `${today.getMonth() + 1}月${today.getDate()}日 周${'日一二三四五六'[today.getDay()]}`,
 )
 
-/** flush 路由（AI 助手）自己管理整屏高度，不加页面留白 */
+/** flush 路由（AI 助手）自己管理整屏高度，不加页面留白、不叠仪表 */
 const flush = computed(() => route.meta.flush === true)
+
+/**
+ * 仪表读数只在「这一页就是在讲我的钱」时出现：账本 / 本月 / 资产。
+ *
+ * 之前是「登录了就一直显示」，于是邀请码页、系统日志上方挂着一个
+ * ¥1,284,356 —— 那是管理员自己的钱，跟这一屏要干的事没有任何关系。
+ * 常驻不等于到处常驻：读数是上下文，不是装饰。
+ */
+const showCluster = computed(() => route.meta.cluster === true)
 
 const railOpen = ref(false)
 watch(() => route.path, () => { railOpen.value = false })
+
+/** 手机底部 3 槽：高频浏览页。低频项全在「我的」里，顶栏头像直达。 */
+const TABS = computed<NavItem[]>(() => [
+  { path: '/ledger', label: '账本', icon: 'ledger' },
+  { path: '/overview', label: '本月', icon: 'gauge' },
+  { path: '/ai', label: '助手', icon: 'spark' },
+])
 </script>
 
 <template>
@@ -77,22 +131,31 @@ watch(() => route.path, () => { railOpen.value = false })
       class="app-frame"
       :class="{ 'frame-flush': flush }"
     >
-      <!-- 桌面 / 平板 侧栏 -->
+      <!-- 桌面侧栏 -->
       <aside class="rail" :class="{ 'rail-open': railOpen }">
         <div class="rail-brand">
-          <RouterLink to="/" class="flex items-center gap-2.5 min-w-0">
+          <RouterLink to="/ledger" class="rail-brand-link">
             <span class="rail-mark" aria-hidden="true">账</span>
             <span class="rail-brand-text min-w-0">
               <span class="rail-brand-name">财务工作台</span>
-              <span class="rail-brand-user">{{ displayName }}</span>
+              <span class="rail-brand-user amt">{{ displayName }}</span>
             </span>
           </RouterLink>
+        </div>
+
+        <!-- 记账 = 动作：在侧栏里是按钮，不是导航项，所以不跳页 -->
+        <div class="rail-action">
+          <button type="button" class="rail-action-btn" aria-label="记一笔" @click="quick.open()">
+            <AppIcon name="pen" :size="15" :stroke="2" />
+            <span>记一笔</span>
+            <kbd class="rail-kbd" aria-hidden="true">N</kbd>
+          </button>
         </div>
 
         <nav class="rail-nav scroll-thin" aria-label="主导航">
           <p class="rail-group-title">每天</p>
           <RouterLink
-            v-for="item in PRIMARY"
+            v-for="item in DAILY"
             :key="item.path"
             :to="item.path"
             class="rail-item"
@@ -103,10 +166,10 @@ watch(() => route.path, () => { railOpen.value = false })
             <span class="rail-label">{{ item.label }}</span>
           </RouterLink>
 
-          <div v-if="SYSTEM.length" class="rail-group">
+          <div class="rail-group">
             <p class="rail-group-title">偶尔</p>
             <RouterLink
-              v-for="item in SYSTEM"
+              v-for="item in OCCASIONAL"
               :key="item.path"
               :to="item.path"
               class="rail-item"
@@ -122,8 +185,8 @@ watch(() => route.path, () => { railOpen.value = false })
         <RouterLink to="/me" class="rail-foot" :class="{ 'rail-item-on': isActive('/me') }">
           <span class="rail-avatar" aria-hidden="true">{{ initial }}</span>
           <span class="rail-label min-w-0">
-            <span class="block text-xs font-semibold truncate" style="color: var(--color-ink-1)">{{ displayName }}</span>
-            <span class="block text-[10px] truncate" style="color: var(--color-ink-3)">
+            <span class="rail-foot-name">{{ displayName }}</span>
+            <span class="rail-foot-role amt">
               {{ auth.isAdmin ? '管理员' : '@' + auth.user?.username }}
             </span>
           </span>
@@ -132,15 +195,19 @@ watch(() => route.path, () => { railOpen.value = false })
 
       <!-- 内容区 -->
       <div class="app-body">
-        <!-- 手机吸顶条 -->
+        <!-- 手机吸顶条：标题 + 头像（低频项从这里进「我的」） -->
         <header class="topbar">
-          <span class="rail-mark rail-mark-sm" aria-hidden="true">账</span>
           <div class="min-w-0 flex-1">
             <h1 class="topbar-title truncate">{{ pageTitle }}</h1>
             <p class="topbar-sub amt">{{ todayLabel }}</p>
           </div>
           <RouterLink to="/me" class="topbar-avatar" :aria-label="`${displayName} 的账户`">{{ initial }}</RouterLink>
         </header>
+
+        <!-- 仪表读数：常驻，但只在讲个人财务的页面。窄屏压成一行吸顶读数条 -->
+        <div v-if="showCluster" class="cluster-dock">
+          <InstrumentCluster />
+        </div>
 
         <!--
           路由切换过渡：故意不使用 mode="out-in"。
@@ -158,13 +225,12 @@ watch(() => route.path, () => { railOpen.value = false })
         </main>
       </div>
 
-      <!-- 手机底部导航 -->
+      <!-- 手机底部：3 槽 + 右下角记账 FAB
+           FAB 放右下（拇指自然落点）而不是居中：居中要拇指横移，
+           且会遮住中间那一槽的点击区。低频项全在「我的」，不占槽位。 -->
       <nav class="tabbar safe-bottom" aria-label="底部导航">
         <RouterLink
-          v-for="t in [
-            { path: '/ledger', label: '账本', icon: 'ledger' },
-            { path: '/overview', label: '本月', icon: 'chart' },
-          ]"
+          v-for="t in TABS"
           :key="t.path"
           :to="t.path"
           class="tab"
@@ -173,25 +239,17 @@ watch(() => route.path, () => { railOpen.value = false })
           <AppIcon :name="t.icon" :size="20" :stroke="isActive(t.path) ? 2 : 1.6" />
           <span class="tab-label">{{ t.label }}</span>
         </RouterLink>
-
-        <RouterLink to="/" class="tab-fab" aria-label="记一笔">
+        <button type="button" class="tab-fab" aria-label="记一笔" @click="quick.open()">
           <AppIcon name="plus" :size="22" :stroke="2.2" />
-        </RouterLink>
-
-        <RouterLink
-          v-for="t in [
-            { path: '/ai', label: '助手', icon: 'spark' },
-            { path: '/me', label: '我的', icon: 'user' },
-          ]"
-          :key="t.path"
-          :to="t.path"
-          class="tab"
-          :class="{ 'tab-on': isActive(t.path) }"
-        >
-          <AppIcon :name="t.icon" :size="20" :stroke="isActive(t.path) ? 2 : 1.6" />
-          <span class="tab-label">{{ t.label }}</span>
-        </RouterLink>
+          <span class="tab-fab-label">记一笔</span>
+        </button>
       </nav>
+
+      <!-- 快速录入：已经站在记一笔页时不再套一层弹层（Home.vue 会直接聚焦它的输入框） -->
+      <QuickEntry
+        v-if="quick.state.open && route.path !== '/'"
+        @close="quick.close()"
+      />
     </div>
 
     <!-- 未登录 / 访客页 -->
@@ -220,35 +278,66 @@ watch(() => route.path, () => { railOpen.value = false })
 @media (max-width: 1023px) { .rail { display: none; } }
 
 .rail-brand {
-  padding: 1rem 1rem 0.875rem;
-  border-bottom: 3px double var(--color-rule-strong);
+  padding: 0.875rem 1rem 0.75rem;
+  border-bottom: 1px solid var(--color-rule);
+  box-shadow: 0 2px 0 -1px var(--color-rule);
 }
+.rail-brand-link { display: flex; align-items: center; gap: 0.625rem; min-width: 0; }
 .rail-mark {
-  width: 1.75rem;
-  height: 1.75rem;
+  width: 1.625rem;
+  height: 1.625rem;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-xs);
-  background: var(--color-action);
-  color: var(--color-action-fg);
-  font-size: 0.8125rem;
-  font-weight: 700;
-  letter-spacing: 0;
+  background: var(--color-inverse);
+  color: var(--color-inverse-fg);
+  font-size: 0.75rem;
+  font-weight: 600;
 }
-.rail-mark-sm { width: 1.5rem; height: 1.5rem; font-size: 0.6875rem; }
 .rail-brand-name {
   display: block;
   font-size: 0.8125rem;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--color-ink-1);
-  line-height: 1.2;
+  line-height: 1.25;
 }
 .rail-brand-user {
   display: block;
-  font-size: 0.6875rem;
+  font-size: 0.625rem;
   color: var(--color-ink-3);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 记账 = 动作：侧栏里是一个按钮形状，不是导航项 */
+.rail-action { padding: 0.75rem 0.625rem 0.25rem; }
+.rail-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2.125rem;
+  padding: 0 0.625rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-inverse);
+  color: var(--color-inverse-fg);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  transition: background-color 0.14s ease;
+}
+.rail-action-btn:hover { background: var(--color-inverse-hover); }
+.rail-action-btn span { flex: 1; }
+.rail-kbd {
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  color: var(--color-inverse-fg);
+  opacity: 0.55;
+  border: 1px solid color-mix(in srgb, var(--color-inverse-fg) 30%, transparent);
+  border-radius: 2px;
+  padding: 0.0625rem 0.25rem;
   line-height: 1.3;
 }
 
@@ -256,20 +345,20 @@ watch(() => route.path, () => { railOpen.value = false })
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0.75rem 0.625rem 1rem;
+  padding: 0.5rem 0.625rem 1rem;
 }
 .rail-group + .rail-group {
-  margin-top: 0.875rem;
-  padding-top: 0.75rem;
+  margin-top: 0.75rem;
+  padding-top: 0.625rem;
   border-top: 1px solid var(--color-rule-faint);
 }
 .rail-group-title {
   font-size: 0.625rem;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   color: var(--color-ink-4);
   padding: 0 0.5rem;
-  margin-bottom: 0.3125rem;
+  margin-bottom: 0.25rem;
 }
 .rail-item {
   position: relative;
@@ -284,7 +373,7 @@ watch(() => route.path, () => { railOpen.value = false })
   transition: background-color 0.13s ease, color 0.13s ease;
 }
 .rail-item:hover { background: var(--color-paper-hover); color: var(--color-ink-1); }
-/* 选中 = 左侧墨条 + 墨色字，不用填充药丸 */
+/* 选中 = 左侧指针条 + 深色字，不用填充药丸 */
 .rail-item-on { color: var(--color-ink-1); background: var(--color-paper-hover); }
 .rail-item-on::before {
   content: '';
@@ -294,19 +383,9 @@ watch(() => route.path, () => { railOpen.value = false })
   transform: translateY(-50%);
   width: 2px;
   height: 1.125rem;
-  border-radius: 0 2px 2px 0;
   background: var(--color-action);
 }
 .rail-label { flex: 1; min-width: 0; }
-.rail-tag {
-  font-size: 0.625rem;
-  font-weight: 600;
-  color: var(--color-ink-4);
-  border: 1px solid var(--color-rule);
-  border-radius: 2px;
-  padding: 0 0.1875rem;
-  line-height: 1.4;
-}
 
 .rail-foot {
   display: flex;
@@ -319,8 +398,8 @@ watch(() => route.path, () => { railOpen.value = false })
 }
 .rail-foot:hover { background: var(--color-paper-hover); }
 .rail-avatar {
-  width: 1.75rem;
-  height: 1.75rem;
+  width: 1.625rem;
+  height: 1.625rem;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -329,21 +408,44 @@ watch(() => route.path, () => { railOpen.value = false })
   background: var(--color-paper-sunk);
   border: 1px solid var(--color-rule);
   color: var(--color-ink-1);
-  font-size: 0.75rem;
-  font-weight: 650;
+  font-size: 0.6875rem;
+  font-weight: 600;
 }
+.rail-foot-name {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-ink-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-foot-role { display: block; font-size: 0.625rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── 内容 ─────────────────────────────────────── */
 .app-body { flex: 1; min-width: 0; margin-left: 232px; }
 @media (max-width: 1023px) { .app-body { margin-left: 0; } }
 
+/* 仪表停靠：宽屏跟着内容滚，窄屏吸顶常驻 */
+.cluster-dock { max-width: 68rem; margin-inline: auto; padding: 1.5rem 1rem 0; }
+@media (min-width: 1024px) { .cluster-dock { padding: 1.75rem 2rem 0; } }
+@media (max-width: 1023px) {
+  .cluster-dock {
+    position: sticky;
+    top: 0;
+    z-index: 25;
+    padding: 0;
+    background: var(--color-paper);
+  }
+}
+
 .app-content {
-  position: relative; /* 作为路由过渡时离场组件 absolute 定位的参照 */
+  position: relative;
   max-width: 68rem;
   margin-inline: auto;
-  padding: 1.5rem 1rem 6rem;
+  padding: 1.25rem 1rem 6rem;
 }
-@media (min-width: 1024px) { .app-content { padding: 2rem 2rem 3rem; } }
+@media (min-width: 1024px) { .app-content { padding: 1.5rem 2rem 3rem; } }
 .app-content-flush { padding: 0 0 4.5rem; max-width: none; }
 
 /* ── 手机吸顶条 ─────────────────────────────────── */
@@ -356,24 +458,20 @@ watch(() => route.path, () => { railOpen.value = false })
     display: flex;
     align-items: center;
     gap: 0.625rem;
-    padding: 0.625rem 1rem;
+    padding: 0.5rem 1rem;
     background: var(--color-paper);
-    border-bottom: 3px double var(--color-rule-strong);
+    border-bottom: 1px solid var(--color-rule);
   }
 }
-/* flush 页面自带报头，不再叠加外壳吸顶条 */
+/* flush 页面自带报头，不叠外壳吸顶条 */
 .frame-flush .topbar { display: none !important; }
 .topbar-title {
   font-size: 0.9375rem;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--color-ink-1);
-  line-height: 1.2;
+  line-height: 1.25;
 }
-.topbar-sub {
-  font-size: 0.6875rem;
-  color: var(--color-ink-3);
-  line-height: 1.3;
-}
+.topbar-sub { font-size: 0.625rem; color: var(--color-ink-3); line-height: 1.3; }
 .topbar-avatar {
   width: 1.75rem;
   height: 1.75rem;
@@ -382,14 +480,13 @@ watch(() => route.path, () => { railOpen.value = false })
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: var(--color-paper-raised);
-  border: 1px solid var(--color-rule);
-  color: var(--color-ink-1);
-  font-size: 0.75rem;
-  font-weight: 650;
+  background: var(--color-inverse);
+  color: var(--color-inverse-fg);
+  font-size: 0.6875rem;
+  font-weight: 600;
 }
 
-/* ── 底部 Tab ──────────────────────────────────── */
+/* ── 底部 Tab：3 槽 + 右下 FAB ─────────────────── */
 .tabbar {
   position: fixed;
   left: 0;
@@ -398,9 +495,9 @@ watch(() => route.path, () => { railOpen.value = false })
   z-index: 50;
   display: none;
   align-items: center;
-  justify-content: space-around;
-  padding: 0.375rem 0.5rem 0.375rem;
-  background: color-mix(in srgb, var(--color-paper-raised) 92%, transparent);
+  gap: 0.25rem;
+  padding: 0.3125rem 0.5rem 0.3125rem;
+  background: color-mix(in srgb, var(--color-paper-raised) 94%, transparent);
   backdrop-filter: blur(12px);
   border-top: 1px solid var(--color-rule);
 }
@@ -408,10 +505,10 @@ watch(() => route.path, () => { railOpen.value = false })
 
 .tab {
   display: flex;
+  flex: 1;
   flex-direction: column;
   align-items: center;
   gap: 0.125rem;
-  min-width: 3.25rem;
   padding: 0.25rem 0.5rem;
   border-radius: var(--radius-sm);
   color: var(--color-ink-4);
@@ -420,26 +517,31 @@ watch(() => route.path, () => { railOpen.value = false })
 .tab-on { color: var(--color-ink-1); }
 .tab-label { font-size: 0.625rem; font-weight: 500; line-height: 1.2; }
 
-/* 中间凸起的记账按钮 */
+/* 记账 FAB：右下角 + 文字，不是一个孤零零的圆点。
+   放回文档流（而不是 absolute）——绝对定位会直接压住最后一槽，
+   三个 tab 的 flex 尺寸 unaware 它的存在。 */
 .tab-fab {
-  width: 2.75rem;
-  height: 2.75rem;
-  margin-top: -1.25rem;
+  flex-shrink: 0;
+  align-self: center;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 0.25rem;
+  height: 2.5rem;
+  margin-right: 0.25rem;
+  padding: 0 0.875rem 0 0.75rem;
   border-radius: 999px;
-  background: var(--color-action);
-  color: var(--color-action-fg);
-  border: 3px solid var(--color-paper);
-  box-shadow: 0 4px 12px -2px color-mix(in srgb, var(--color-action) 45%, transparent);
+  background: var(--color-inverse);
+  color: var(--color-inverse-fg);
+  box-shadow: 0 6px 18px -6px rgb(0 0 0 / 0.45);
   transition: transform 0.14s ease;
 }
-.tab-fab:active { transform: scale(0.94); }
+.tab-fab:active { transform: scale(0.95); }
+.tab-fab-label { font-size: 0.8125rem; font-weight: 600; }
 
 /* 内容底部给导航让位 */
 @media (max-width: 1023px) {
-  .app-content { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom, 0px)); }
-  .app-content-flush { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom, 0px)); }
+  .app-content, .app-content-flush {
+    padding-bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+  }
 }
 </style>

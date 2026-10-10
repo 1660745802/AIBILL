@@ -77,6 +77,8 @@ const currentStep = computed(() => {
   return fileName.value ? 2 : 1
 })
 
+const STEP_TITLES = ['选择来源', '上传账单', '预览校对', '导入完成']
+
 /** 与当前类型匹配的分类（用于下拉框） */
 function categoriesFor(type: string): Category[] {
   return categories.value.filter((c) => c.type === (type === 'income' ? 'income' : 'expense'))
@@ -296,16 +298,20 @@ function typeBadgeClass(type: string): string {
       </template>
     </PageHeader>
 
-    <!-- 步骤条 -->
-    <div class="steps mb-6">
+    <!-- 步骤条：光秃秃的四段线读不出「到哪一步了」，
+         所以下面补一句「第 n 步 / 共 4 步 · 步骤名」——刻度之外还得有读数。 -->
+    <div class="steps mb-1.5">
       <span :class="currentStep > 1 ? 'done' : (currentStep === 1 ? 'current' : '')"></span>
       <span :class="currentStep > 2 ? 'done' : (currentStep === 2 ? 'current' : '')"></span>
       <span :class="currentStep > 3 ? 'done' : (currentStep === 3 ? 'current' : '')"></span>
       <span :class="currentStep >= 4 ? 'done' : (currentStep === 4 ? 'current' : '')"></span>
     </div>
+    <p class="mb-6 text-[0.6875rem] amt" style="color: var(--color-ink-3)">
+      第 {{ currentStep }} 步 / 共 4 步 · {{ STEP_TITLES[currentStep - 1] }}
+    </p>
 
     <!-- 完成：收据样式 -->
-    <div v-if="imported" class="receipt paper-ruled px-6 py-8 text-center">
+    <div v-if="imported" class="receipt px-6 py-8 text-center">
       <div class="flex justify-center mb-3 text-income">
         <AppIcon name="check" :size="36" :stroke="2" />
       </div>
@@ -364,7 +370,7 @@ function typeBadgeClass(type: string): string {
       <section class="mb-6">
         <LedgerLabel>上传 CSV 文件</LedgerLabel>
         <label
-          class="dropzone paper-ruled"
+          class="dropzone"
           :class="dragOver ? 'dropzone-on' : ''"
           @dragover.prevent="dragOver = true"
           @dragleave.prevent="dragOver = false"

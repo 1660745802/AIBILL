@@ -1,6 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#39434b"/>
-  <g stroke="#ffffff" stroke-width="18" stroke-linecap="round" fill="none">
-    <path d="M186 150v212M326 150v212M126 222h260M126 290h260"/>
+  <!-- 仪表读数：仪表面 + 刻度带 + 指针 + 红区。
+       16px 下也认得出，因为只剩三样东西：面、针、斜纹红区。 -->
+  <rect width="512" height="512" rx="96" fill="#171b1f"/>
+  <g fill="none" stroke-linecap="butt">
+    <!-- 刻度轴 -->
+    <path d="M104 340h304" stroke="#39434a" stroke-width="6"/>
+    <!-- 小刻度 -->
+    <g stroke="#4a555d" stroke-width="7">
+      <path d="M104 340v-22M180 340v-14M256 340v-14M332 340v-14M408 340v-22"/>
+    </g>
+    <!-- 红区：从 80% 到满量程 -->
+    <g stroke="#e0574b" stroke-width="7" opacity="0.75">
+      <path d="M347 340v-14M380 340v-14M408 340v-14"/>
+    </g>
+    <!-- 指针：唯一在动的东西 -->
+    <path d="M300 344v-96" stroke="#e9eef2" stroke-width="14"/>
+    <path d="M292 226h16l-8 20z" fill="#e9eef2"/>
+    <!-- 读数：一条短横线代表一行读数，不画具体数字（小尺寸下会糊） -->
+    <g stroke="#5d6975" stroke-width="10" stroke-linecap="round">
+      <path d="M124 176h120M124 214h64"/>
+    </g>
   </g>
 </svg>
