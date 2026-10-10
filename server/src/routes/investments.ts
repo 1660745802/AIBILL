@@ -18,7 +18,7 @@ import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { normalizeCode, fetchQuotes, currencyOf, fxCodesFor, type Quote } from '../lib/quotes.js'
-import { storeQuotes } from '../lib/investments-repo.js'
+import { storeQuotes, loadLatestFxRates } from '../lib/investments-repo.js'
 import { shouldFetchQuotes } from '../services/scheduler.js'
 import { loadValuedHoldings } from '../lib/investments-repo.js'
 
@@ -245,6 +245,20 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
           ? { name: h.quote.name, price: h.quote.price, quoteDate: h.quote.quoteDate, changeRate: h.quote.changeRate }
           : null,
       }))
+
+    /* 自愈：缺哪个币种的汇率就在后台补一次。
+       之前「待补汇率」要等用户点刷新，而汇率本来就不该要用户管。
+       fire-and-forget，不拖慢本次响应；下次进来就有值了。 */
+    try {
+      const haveFx = loadLatestFxRates(db)
+      const missing = [...new Set(items.map((h) => h.currency))]
+        .filter((c) => c !== 'CNY' && !haveFx.has(c))
+      if (missing.length > 0) {
+        void fetchQuotes(fxCodesFor(missing)).then((qs) => {
+          if (qs.length > 0) storeQuotes(getDb(), qs)
+        }).catch(() => {/* 后台补失败不影响本次响应 */})
+      }
+    } catch { /* 自愈是尽力而为 */ }
 
     return { code: 0, data: { items }, message: '' }
   })

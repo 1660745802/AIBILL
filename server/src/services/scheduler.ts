@@ -10,6 +10,7 @@ import { getDb } from '../db/index.js'
 import { appLog as log } from './logger.js'
 import crypto from 'node:crypto'
 import { fetchQuotes, currencyOf, fxCodesFor } from '../lib/quotes.js'
+import { storeQuotes } from '../lib/investments-repo.js'
 import { applyTxn } from '../lib/account-balance.js'
 
 /**
@@ -190,6 +191,11 @@ export async function runScheduledTasks(): Promise<void> {
   processTrashCleanup()
   processLogCleanup()
 
+  // 汇率无条件抓（不认交易时段）；股价才受门禁
+  await processFxRateFetch().catch((err) => {
+    log('warn', 'scheduler', `汇率任务异常: ${err instanceof Error ? err.message : String(err)}`)
+  })
+
   const gate = shouldFetchQuotes()
   if (gate.fetch) {
     // 行情抓取是 async 且会失败（非官方接口），必须自己吞错，
@@ -239,6 +245,34 @@ export function shouldFetchQuotes(now = new Date()): { fetch: boolean; reason: s
  * 写一条错的价格比不写更危险——页面上会显示一个看起来很新的假数字。
  * 这里只记日志，等下次整点重试。
  */
+/**
+ * 取折人民币需要的汇率。
+ *
+ * **不走交易时段门禁**：汇率不是股价，它没有"盘中/收盘"的概念，
+ * 而缺它会让整个外币持仓算不出人民币市值（宁可显示「待补汇率」也不假算）。
+ * 之前汇率是跟着行情抓取走的，于是周末/夜间静默跳过 →
+ * 新增持仓后汇率永远拿不到，用户只能自己点刷新。
+ */
+export async function processFxRateFetch(): Promise<void> {
+  const db = getDb()
+  const rows = db.prepare(
+    `SELECT DISTINCT code FROM investments WHERE is_active = 1 AND code IS NOT NULL`,
+  ).all() as Array<{ code: string }>
+  if (rows.length === 0) return
+
+  const needFx = fxCodesFor(rows.map((r) => currencyOf(r.code)))
+  if (needFx.length === 0) return
+
+  try {
+    const quotes = await fetchQuotes(needFx)
+    if (quotes.length > 0) storeQuotes(db, quotes)
+    log('info', 'fx', `汇率已更新 ${quotes.length}/${needFx.length}`)
+  } catch (err) {
+    // 汇率失败不影响股价抓取，只记一笔
+    log('warn', 'fx', `汇率抓取失败（维持旧汇率）: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 export async function processQuoteFetch(): Promise<void> {
   const db = getDb()
   const rows = db.prepare(
@@ -248,11 +282,9 @@ export async function processQuoteFetch(): Promise<void> {
   if (rows.length === 0) return
 
   const codes = rows.map((r) => r.code)
-  // 顺带把折人民币需要的汇率也取了：港股是港元、美股是美元，
-  // 不折算就把 HK$ 当 ¥ 加进净资产了。
-  const needFx = fxCodesFor(codes.map(currencyOf))
   try {
-    const quotes = await fetchQuotes([...codes, ...needFx])
+    // 汇率由 processFxRateFetch 单独抓（不走门禁），这里只管股价
+    const quotes = await fetchQuotes(codes)
     const stmt = db.prepare(
       `INSERT OR IGNORE INTO investment_quotes
          (code, name, price, prev_close, change_rate, quote_date, quoted_at, source)

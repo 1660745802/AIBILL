@@ -237,9 +237,22 @@ async function refreshQuotes() {
             <!-- 读数的统一排版：标签在上、数字在下。
                  之前标签在数字**下面**，和下面 .inv-cell 的 label/value 顺序不一致，
                  同一屏里两种排版规则，眼睛要来回切换。 -->
-            <span v-if="positionOf(acc.id)?.value != null" class="inv-value">
-              <span class="inv-value-cap">总价值</span>
-              <span class="amt"><Money :value="positionOf(acc.id)!.value!" size="lg" tone="neutral" sign="none" /></span>
+            <!--
+              主读数必须**始终有一个数字**。之前 value==null 时整个 header 是空的
+              （`<!---->`），页面于是没有任何主导数字，全是小标签——「主体不突出」
+              就是这么来的。
+
+              总价值 = 持仓市值 + 现金；持仓还没取到价时现金是已知的下限，
+              所以显示「≥ ¥现金」，而不是给一片空白。
+            -->
+            <span class="inv-value">
+              <span class="inv-value-cap">{{ positionOf(acc.id)?.value != null ? '总价值' : '总资产下限' }}</span>
+              <span class="amt" v-if="positionOf(acc.id)?.value != null">
+                <Money :value="positionOf(acc.id)!.value!" size="lg" tone="neutral" sign="none" />
+              </span>
+              <span class="amt inv-value-min" v-else>
+                <span class="inv-ge">≥</span><Money :value="positionOf(acc.id)?.cash ?? 0" size="lg" tone="neutral" sign="none" />
+              </span>
             </span>
           </header>
 
@@ -411,11 +424,17 @@ async function refreshQuotes() {
 }
 /* 主读数：标签在上、数字在下，右对齐。
    数字比下面的 cell 大两档，形成「一个主读数 + 若干辅读数」的层次。 */
+/* 主读数：比下面的辅读数大两档。页面上必须有一个「最大的数字」，
+   否则整屏都是等大的小字，读者不知道该先看哪。 */
 .inv-value {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  line-height: 1.05;
 }
+.inv-value .money { font-size: 1.375rem; font-weight: 600; letter-spacing: -0.01em; }
+.inv-ge { color: var(--color-ink-3); margin-right: 0.125rem; font-weight: 500; }
+.inv-value-min .money { color: var(--color-ink-2); }
 .inv-value-cap {
   font-size: 0.5625rem;
   line-height: 1;
@@ -455,6 +474,8 @@ async function refreshQuotes() {
   margin-bottom: 0.25rem;
   white-space: nowrap;
 }
+/* 辅读数字号统一小一档，和主读数拉开层级 */
+.inv-cell .money { font-size: 0.8125rem; }
 .inv-pnl { font-size: 0.9375rem; font-weight: 600; display: inline-flex; align-items: baseline; gap: 0.125rem; }
 .inv-rate { font-size: 0.6875rem; font-weight: 500; }
 .inv-muted { font-size: 0.75rem; color: var(--color-ink-4); }

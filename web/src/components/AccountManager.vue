@@ -170,10 +170,10 @@ const activeTotal = computed(
            用户会看到一个不知道是什么的空白框 -->
       <div>
         <div class="am-label">图标 / 账户名称</div>
-        <div class="flex gap-2">
+        <div class="flex gap-1.5">
           <input
-            v-model="newIcon" class="field w-12 text-center" maxlength="4"
-            aria-label="图标" @input="newIconTouched = true"
+            v-model="newIcon" class="field am-icon" maxlength="4"
+            aria-label="图标" title="图标" @input="newIconTouched = true"
           />
           <input
             v-model="newName" class="field flex-1" placeholder="如「招行卡」「券商账户」"
@@ -200,10 +200,10 @@ const activeTotal = computed(
 
       <div>
         <div class="am-label">当前余额（选填，不想填就是 0）</div>
-        <div class="flex gap-2">
+        <div class="flex gap-1.5">
           <input
             v-model="newBalance" type="number" step="0.01" inputmode="decimal"
-            class="field flex-1 amt" placeholder="0.00" aria-label="当前余额"
+            class="field am-bal amt" placeholder="0.00" aria-label="当前余额"
             @keydown.enter="addAccount"
           />
           <button @click="addAccount" :disabled="loading || !newName.trim()" class="btn btn-primary btn-sm">
@@ -237,29 +237,40 @@ const activeTotal = computed(
 
       <!-- 展开 = 编辑态。删除收在这里，不常驻在每一行（减少误触和视觉噪音） -->
       <div v-if="editingId === acc.id" class="am-edit bg-paper-sunk border-t border-rule-faint">
+        <!--
+          编辑态要**紧凑**。原来的毛病：
+            · 图标框 w-12（3rem）放一个 emoji，把名称挤到看不全
+            · 类型 7 个 chip 换行成 3 行，占掉大半高度，而改类型是极低频操作
+            · 余额 width:100%，一个数字占满整行，右边全是空的
+
+          现在：名称独占一行（它是改得最多的）、余额和类型并排两列、
+          类型降级为下拉（新增时才用 chip，因为那时选类型是主要决定）。
+        -->
         <div>
-          <div class="am-label">图标 / 账户名称</div>
-          <div class="flex gap-2">
-            <input v-model="editIcon" class="field w-12 text-center" maxlength="4" aria-label="图标" />
-            <input v-model="editName" class="field flex-1" placeholder="账户名称" aria-label="账户名称" />
+          <div class="am-label">账户名称</div>
+          <div class="flex gap-1.5">
+            <input
+              v-model="editIcon" class="field am-icon" maxlength="4"
+              aria-label="图标" title="图标"
+            />
+            <input v-model="editName" class="field flex-1" placeholder="如「招行卡」" aria-label="账户名称" />
           </div>
         </div>
-        <div>
-          <div class="am-label">账户类型</div>
-          <div class="flex flex-wrap gap-1.5">
-            <button
-              v-for="t in ASSET_TYPES" :key="t.v" type="button"
-              class="chip" :class="editType === t.v ? 'chip-active' : ''"
-              @click="editType = t.v"
-            >{{ t.label }}</button>
+
+        <div class="am-cols">
+          <div>
+            <div class="am-label">当前余额（元）</div>
+            <input
+              v-model="editBalance" type="number" step="0.01" inputmode="decimal"
+              class="field amt" placeholder="0.00" aria-label="当前余额"
+            />
           </div>
-        </div>
-        <div>
-          <div class="am-label">当前余额（元）</div>
-          <input
-            v-model="editBalance" type="number" step="0.01" inputmode="decimal"
-            class="field am-input amt" placeholder="0.00" aria-label="当前余额"
-          />
+          <div>
+            <div class="am-label">账户类型</div>
+            <select v-model="editType" class="field" aria-label="账户类型">
+              <option v-for="t in ASSET_TYPES" :key="t.v" :value="t.v">{{ t.label }}</option>
+            </select>
+          </div>
         </div>
         <div class="am-edit-ops">
           <button @click.stop="pendingDelete = acc" class="btn btn-quiet btn-sm am-del">删除这个账户</button>
@@ -329,10 +340,28 @@ const activeTotal = computed(
 .am-head-right { display: flex; align-items: center; gap: 0.5rem; }
 .am-total { color: var(--color-ink-3); }
 
-.am-form, .am-edit { padding: 0.75rem 0.875rem; display: flex; flex-direction: column; gap: 0.75rem; }
-.am-label { font-size: 0.6875rem; color: var(--color-ink-3); margin-bottom: 0.3rem; }
-.am-hint { font-size: 0.6875rem; color: var(--color-ink-4); margin-top: 0.3rem; }
-.am-input { width: 100%; text-align: right; }
+.am-form, .am-edit { padding: 0.75rem 0.875rem; display: flex; flex-direction: column; gap: 0.625rem; }
+.am-label {
+  font-size: 0.5625rem;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--color-ink-4);
+  margin-bottom: 0.25rem;
+}
+.am-hint { font-size: 0.6875rem; color: var(--color-ink-4); margin-top: 0.35rem; }
+
+/* 图标框只放一个 emoji：2.25rem 刚好，3rem 会把名称挤到看不全 */
+.am-icon {
+  width: 2.25rem;
+  padding: 0;
+  text-align: center;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+/* 余额是数字，不需要占满整行——右侧留白是浪费 */
+.am-bal { width: 9rem; text-align: right; }
+/* 余额 + 类型并排：两个都是低频字段，不该各占一行 */
+.am-cols { display: grid; grid-template-columns: 9rem 1fr; gap: 0.625rem; }
 
 .am-row-main { display: flex; align-items: baseline; gap: 0.375rem; min-width: 0; flex: 1; }
 .am-row-name {
