@@ -287,8 +287,8 @@ async function remove(h: InvestmentItem) {
 </template>
 
 <style scoped>
-/* 「持仓」和右侧提示不该被拉到卡片两端（宽屏下像两个不相干的东西） */
-.hold { max-width: 44rem; }
+/* 持仓铺满卡片宽：行的「市值」列右对齐到卡片边缘，和头部「总价值」
+   落在同一条竖轴上——右边缘对齐能让整列数字形成一道线，比缩在左边好扫。 */
 .hold-head {
   display: flex;
   align-items: baseline;

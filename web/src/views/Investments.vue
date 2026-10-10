@@ -178,6 +178,9 @@ const ASSET_LABEL: Record<string, string> = {
   credit: '信用卡', loan: '贷款', property: '不动产', other: '其他',
 }
 
+/** 哪个账户的「总投入 / 现金」编辑区展开着（默认都收起） */
+const editing = ref<number | null>(null)
+
 const refreshing = ref(false)
 const quoteNote = ref<string | null>(null)      // 刚才这一次的结果（临时反馈）
 /**
@@ -320,83 +323,87 @@ async function refreshQuotes() {
             还没有内容 —— 在下面配持仓，或填一下总投入 / 现金。
           </div>
 
-          <!-- 读数：按「持仓市值 + 现金 = 总价值」「总投入 → 浮动盈亏」两组，
-               不再四个格子平铺——平铺看不出哪个是加数、哪个是结果。 -->
+          <!--
+            读数铺满整行（桌面 4 列 / 手机 2 列）。
+            之前是「两个一组、左对齐」，卡片宽的时候右半边整片空着；
+            四个读数其实是同一层级的信息，摊开反而更好扫。
+          -->
           <div v-else class="inv-readings">
-            <!--
-              第一组：总价值的**构成**。
-              不再重复「= 总价值」——那个数已经是头部的大数字，同一屏里写两遍
-              只会让人怀疑这两个是不是不同的东西。
-            -->
-            <div class="inv-group">
-              <div class="inv-cell">
-                <span class="inv-label">持仓市值</span>
-                <Money
-                  v-if="positionOf(acc.id)?.holdingsValue != null"
-                  :value="positionOf(acc.id)!.holdingsValue!" size="md" tone="neutral" sign="none"
-                />
-                <span v-else class="inv-muted">待取价</span>
-              </div>
-              <span class="inv-op">+</span>
-              <div class="inv-cell">
-                <span class="inv-label">现金</span>
-                <Money :value="positionOf(acc.id)?.cash ?? 0" size="md" tone="neutral" sign="none" />
-              </div>
+            <div class="inv-cell">
+              <span class="inv-label">持仓市值</span>
+              <Money
+                v-if="positionOf(acc.id)?.holdingsValue != null"
+                :value="positionOf(acc.id)!.holdingsValue!" size="md" tone="neutral" sign="none"
+              />
+              <span v-else class="inv-muted">待取价</span>
             </div>
-
-            <!-- 第二组：投了多少、赚了多少。盈亏是重点，字重更高。 -->
-            <div class="inv-group inv-group-pnl">
-              <div class="inv-cell">
-                <span class="inv-label">总投入</span>
-                <Money
-                  v-if="acc.invested_total != null"
-                  :value="acc.invested_total" size="md" tone="muted" sign="none"
-                />
-                <span v-else class="inv-muted">未填</span>
-              </div>
-              <div class="inv-cell inv-cell-pnl">
-                <span class="inv-label">浮动盈亏</span>
-                <span v-if="positionOf(acc.id)?.unrealized != null"
-                      :class="positionOf(acc.id)!.unrealized! >= 0 ? 'amt-income' : 'amt-expense'"
-                      class="inv-pnl amt">
-                  {{ positionOf(acc.id)!.unrealized! >= 0 ? '+' : '−' }}<Money
-                    :value="Math.abs(positionOf(acc.id)!.unrealized!)" size="md"
-                    :tone="positionOf(acc.id)!.unrealized! >= 0 ? 'income' : 'expense'" sign="none"
-                  /><span class="inv-rate">{{ pct(positionOf(acc.id)!.unrealizedRate) }}</span>
-                </span>
-                <!-- 算不出的三种情况各说各的原因，不显示 0、不假造负数 -->
-                <span v-else-if="positionOf(acc.id)?.holdingsPending" class="inv-muted">
-                  持仓未配置
-                </span>
-                <span v-else-if="positionOf(acc.id)?.hasHoldings" class="inv-muted">待取价</span>
-                <span v-else class="inv-muted">填总投入后显示</span>
-              </div>
+            <div class="inv-cell">
+              <span class="inv-label">现金</span>
+              <Money :value="positionOf(acc.id)?.cash ?? 0" size="md" tone="neutral" sign="none" />
+            </div>
+            <div class="inv-cell">
+              <span class="inv-label">总投入</span>
+              <Money
+                v-if="acc.invested_total != null"
+                :value="acc.invested_total" size="md" tone="muted" sign="none"
+              />
+              <span v-else class="inv-muted">未填</span>
+            </div>
+            <div class="inv-cell">
+              <span class="inv-label">浮动盈亏</span>
+              <span v-if="positionOf(acc.id)?.unrealized != null"
+                    :class="positionOf(acc.id)!.unrealized! >= 0 ? 'amt-income' : 'amt-expense'"
+                    class="inv-pnl amt">
+                {{ positionOf(acc.id)!.unrealized! >= 0 ? '+' : '−' }}<Money
+                  :value="Math.abs(positionOf(acc.id)!.unrealized!)" size="md"
+                  :tone="positionOf(acc.id)!.unrealized! >= 0 ? 'income' : 'expense'" sign="none"
+                /><span class="inv-rate">{{ pct(positionOf(acc.id)!.unrealizedRate) }}</span>
+              </span>
+              <!-- 算不出的三种情况各说各的原因，不显示 0、不假造负数 -->
+              <span v-else-if="positionOf(acc.id)?.holdingsPending" class="inv-muted">持仓未配置</span>
+              <span v-else-if="positionOf(acc.id)?.hasHoldings" class="inv-muted">待取价</span>
+              <span v-else class="inv-muted">填总投入后显示</span>
             </div>
           </div>
 
-          <!-- 两个输入（总投入=低频 / 现金=每日）。读数是「看」，输入是「改」，
-               所以整块视觉下沉：更小、更灰、带分隔，不跟上面的读数抢注意力。
-               不用跳页，改完自动生效。 -->
-          <div class="inv-form">
-            <div class="inv-form-grid">
-              <label>
-                <span>总投入（元）</span>
-                <input
-                  v-model="draft[acc.id]!.invested" class="inv-input amt" type="number"
-                  inputmode="decimal" step="0.01" placeholder="一共投进去多少"
-                  @change="saveInvested(acc)"
-                />
-              </label>
-              <label>
-                <span>现金（元）</span>
-                <input
-                  v-model="draft[acc.id]!.cash" class="inv-input amt" type="number"
-                  inputmode="decimal" step="0.01" placeholder="今天还剩多少活钱"
-                  @change="saveCash(acc)"
-                />
-              </label>
+          <!--
+            总投入 / 现金的编辑**默认收起**。
+            这两个是低频动作（总投入只在存/取钱时改，现金想起来才记），
+            常驻两个输入框+一行说明，占掉一整行而 99% 的时间你不看它。
+            需要时点开，改完自动收起。
+          -->
+          <div class="inv-edit">
+            <button
+              class="inv-edit-toggle"
+              type="button"
+              :aria-expanded="editing === acc.id"
+              @click="editing = editing === acc.id ? null : acc.id"
+            >
+              <AppIcon :name="editing === acc.id ? 'chevronUp' : 'chevronDown'" :size="12" />
+              {{ editing === acc.id ? '收起' : '改总投入 / 现金' }}
+            </button>
+
+            <div v-if="editing === acc.id" class="inv-form">
+              <div class="inv-form-grid">
+                <label>
+                  <span>总投入（元）</span>
+                  <input
+                    v-model="draft[acc.id]!.invested" class="inv-input amt" type="number"
+                    inputmode="decimal" step="0.01" placeholder="一共投进去多少"
+                    @change="saveInvested(acc)"
+                  />
+                </label>
+                <label>
+                  <span>现金（元）</span>
+                  <input
+                    v-model="draft[acc.id]!.cash" class="inv-input amt" type="number"
+                    inputmode="decimal" step="0.01" placeholder="今天还剩多少活钱"
+                    @change="saveCash(acc)"
+                  />
+                </label>
+              </div>
+              <p class="inv-hint">总投入只在存/取钱时改；加减仓不改它。现金随手改，改完即生效。</p>
             </div>
-            <p class="inv-hint">总投入只在存/取钱时改；加减仓不改它。现金随手改，改完即生效。</p>
           </div>
 
           <div class="inv-holdings">
@@ -503,24 +510,29 @@ async function refreshQuotes() {
 
 /* 读数分成两组：先看总价值怎么来的，再看投了多少赚了多少。
    四格平铺看不出加数和结果，读者得自己在脑子里做加法。 */
-/* 限宽：宽屏下读数/表单不该被拉到屏幕两端（两个输入框中间隔半个屏幕） */
+/* 读数铺满：手机 2 列、桌面 4 列。四个读数同级，摊开比「两两一组左对齐」好扫。 */
 .inv-readings {
-  display: flex;
-  flex-direction: column;
-  gap: 0.625rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem 1rem;
   padding: 0.125rem 0.875rem 0.75rem;
-  max-width: 44rem;
 }
-.inv-group {
-  display: flex;
-  align-items: flex-end;
-  gap: 0.5rem;
-  flex-wrap: wrap;
+@media (min-width: 768px) {
+  .inv-readings { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
-.inv-group-pnl {
-  padding-top: 0.5rem;
-  border-top: 1px dashed var(--color-rule-faint);
+.inv-edit { padding: 0 0.875rem 0.5rem; }
+.inv-edit-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem 0;
+  background: none;
+  border: 0;
+  color: var(--color-ink-4);
+  font-size: 0.625rem;
+  cursor: pointer;
 }
+.inv-edit-toggle:hover { color: var(--color-ink-2); }
 /* 空账户：一句引导，而不是三个 0.00 相加 */
 .inv-bare {
   padding: 0 0.875rem 0.625rem;
@@ -532,7 +544,7 @@ async function refreshQuotes() {
 /* cell 内部排版：标签固定高度（避免有的标签换行把数字顶歪）、
    数字走同一条基线。同一行几个 cell 才对得齐。 */
 .inv-cell { display: flex; flex-direction: column; min-width: 0; }
-.inv-cell-pnl { margin-left: auto; align-items: flex-end; text-align: right; }
+
 .inv-label {
   font-size: 0.5625rem;
   line-height: 1;
@@ -547,9 +559,11 @@ async function refreshQuotes() {
 .inv-rate { font-size: 0.6875rem; font-weight: 500; }
 .inv-muted { font-size: 0.75rem; color: var(--color-ink-4); }
 .inv-form {
-  padding: 0.625rem 0.875rem 0.75rem;
+  margin-top: 0.5rem;
+  padding: 0.625rem 0.75rem 0.75rem;
   background: var(--color-paper-sunk);
-  border-top: 1px solid var(--color-rule-faint);
+  border: 1px solid var(--color-rule-faint);
+  border-radius: var(--radius-sm);
 }
 /* 限宽：宽屏下两个输入框被拉到卡片两端、中间空一大片，读起来像两个孤立的框。
    限宽后它们自然靠在一起。 */
