@@ -230,9 +230,9 @@
 ### `/api/accounts`
 | Method | 说明 |
 |--------|------|
-| GET | 列出账户，含 `current_balance`（实时计算） |
+| GET | 列出账户，含 `current_balance`（= `accounts.balance`，017 起的权威余额） |
 | POST | 创建账户（`initial_balance` 可负） |
-| PUT | 更新；**支持 `current_balance`**（推荐）—— 后端反算 initial_balance，使显示余额 = 你设的值 |
+| PUT | 更新；**支持 `current_balance`**（推荐）—— 017 起为**覆盖**余额并刷新基准线；旧行为（反算 initial_balance）已移除 |
 | DELETE | 停用 |
 
 `account.type`: `cash | wechat | alipay | bank | credit | other`

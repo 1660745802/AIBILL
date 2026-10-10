@@ -10,6 +10,7 @@ import { getDb } from '../db/index.js'
 import { appLog as log } from './logger.js'
 import crypto from 'node:crypto'
 import { fetchQuotes } from '../lib/quotes.js'
+import { applyTxn } from '../lib/account-balance.js'
 
 /**
  * 订阅自动记账
@@ -73,7 +74,7 @@ function processSubscriptionAutoRecord(): void {
       }
 
       // 创建交易
-      insertTx.run(
+      const insRes = insertTx.run(
         sub.user_id,
         clientId,
         `subscription:${sub.id}`,
@@ -83,6 +84,19 @@ function processSubscriptionAutoRecord(): void {
         `${sub.name}（自动记账）`,
         sub.next_payment_date,
       )
+
+      /* 订阅自动记账同样是有归属的支出，要从账户余额里扣。
+         漏了这条 = 每月自动扣款的账户余额只涨不跌。 */
+      // ⚠️ 必须传真实 lastInsertRowid：applyTxn 用它和基准线比较，
+      // 缺了会退化成 NaN 而**整段跳过基准线保护**（静默出错）。
+      applyTxn(db, {
+        id: insRes.lastInsertRowid,
+        type: 'expense',
+        amount: sub.amount,
+        account_id: sub.account_id,
+        target_account_id: null,
+        status: 'confirmed',
+      }, 1, sub.user_id)
 
       // 计算下一个付款日
       const months = sub.cycle === 'monthly' ? 1 : sub.cycle === 'quarterly' ? 3 : 12

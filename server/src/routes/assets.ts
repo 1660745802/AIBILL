@@ -7,8 +7,9 @@ import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { summarizeNetWorth } from '../lib/assets.js'
-import { buildPortfolio, type AccountRow, type SnapshotPoint, type AccountHoldings } from '../lib/portfolio.js'
+import { buildPortfolio, type AccountRow, type SnapshotPoint } from '../lib/portfolio.js'
 import { loadAccountHoldings } from '../lib/investments-repo.js'
+import { setManualBalance } from '../lib/account-balance.js'
 
 const updateAccountSchema = z.object({
   asset_type: z.enum(['liquid', 'savings', 'investment', 'credit', 'loan', 'property', 'other']).optional(),
@@ -24,26 +25,22 @@ const updateAccountSchema = z.object({
 })
 
 /**
- * 一次性计算该用户所有活跃账户的余额（分），返回 account_id → balance 映射
- * 修复 N+1：原版每个账户 4 次 SELECT；新版 1 次聚合 LEFT JOIN GROUP BY
+ * 一次性取该用户所有活跃账户的**权威余额**（分），返回 account_id → balance 映射。
+ *
+ * 017 之后余额不再每次重算：`accounts.balance` 就是唯一真源，由
+ *   - 有归属的账单增删改 → 增量加减（lib/account-balance.ts）
+ *   - 手填               → 覆盖
+ * 两条路径共同维护。
+ *
+ * 旧版这里是「期初余额 + 流水重算」，它和手填快照两个来源会打架：仪表读一个数、
+ * 账户页读另一个数。而且 551/553 笔流水没有 account_id，重算几乎恒等于期初余额。
+ * 修 N+1 的写法保留（1 次聚合查询）。
  */
 function calcAccountBalances(db: any, userId: number): Map<number, number> {
   const rows = db.prepare(
-    `SELECT
-       a.id AS account_id,
-       a.initial_balance
-         + COALESCE(SUM(CASE WHEN t.type='income'    THEN t.amount           ELSE 0 END), 0)
-         - COALESCE(SUM(CASE WHEN t.type='expense'   THEN t.amount           ELSE 0 END), 0)
-         + COALESCE(SUM(CASE WHEN t.type='transfer' AND t.target_account_id=a.id THEN t.amount ELSE 0 END), 0)
-         - COALESCE(SUM(CASE WHEN t.type='transfer' AND t.account_id=a.id        THEN t.amount ELSE 0 END), 0)
-       AS balance
-     FROM accounts a
-     LEFT JOIN transactions t ON (t.account_id = a.id OR t.target_account_id = a.id)
-       AND t.user_id = a.user_id
-       AND t.status = 'confirmed'
-       AND t.deleted_at IS NULL
-     WHERE a.user_id = ? AND a.is_active = 1
-     GROUP BY a.id`,
+    `SELECT id AS account_id, balance
+     FROM accounts
+     WHERE user_id = ? AND is_active = 1`,
   ).all(userId) as Array<{ account_id: number; balance: number }>
 
   return new Map(rows.map((r) => [r.account_id, r.balance]))
@@ -139,13 +136,13 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
     /**
      * **跳过理财账户。**
      *
-     * 这个端点是旧口径：按「期初余额 + 流水」回算，写进 `asset_snapshots.balance`。
-     * 而新读模型把同一个 `balance` 当**现金**读（持仓市值另外算）。
-     * 对理财账户，回算出来的是「总价值」语义（含持仓），写进去就变成
-     * 「持仓 + 已含持仓的余额」双重计算——正好踩中 UI-DESIGN §6.6 硬规则 1。
-     *
-     * 理财账户的现金由「各账户余额 / 投资页」手动记，不由回算生成。
+     * 新读模型把 `balance` 当**现金**读（持仓市值另外算），对理财账户写入
+     * 「总价值」语义会造成双重计算——踩中 UI-DESIGN §6.6 硬规则 1。
+     * 理财账户的现金由「各账户余额 / 投资页」手动记。
      * 这个端点为已发布的 Android 客户端保留，所以不删，只把理财账户排除掉。
+     *
+     * 017 之后不再回算：直接把 `accounts.balance` 这个权威值落一行快照，
+     * 同时把基准线刷到今天（等于声明「此刻的余额就按这个算」）。
      */
     const accounts = db.prepare(
       `SELECT id FROM accounts
@@ -169,6 +166,12 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
         const result = insertStmt.run(userId, acc.id, balance, today)
         if (result.changes > 0) {
           created++
+          // 基准线 = **此刻**：这一行就是「此刻余额按这个数」的声明。
+          // 必须是 now 而不是 today——用日期会把今天剩余时间新建的账单
+          // （created_at 也是今天）判成「已烤进去」而永久跳过。
+          db.prepare(
+            `UPDATE accounts SET balance_as_of_txn_id = (SELECT COALESCE(MAX(id),0) FROM transactions WHERE user_id = ?) WHERE id = ?`
+          ).run(userId, acc.id)
         } else {
           skipped++
         }
@@ -266,7 +269,8 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
    */
   function readAccounts(db: ReturnType<typeof getDb>, userId: number): AccountRow[] {
     return db.prepare(
-      `SELECT a.id AS account_id, a.name AS account_name, a.asset_type, a.invested_total
+      `SELECT a.id AS account_id, a.name AS account_name, a.asset_type, a.invested_total,
+              a.balance
          FROM accounts a
         WHERE a.user_id = ? AND a.is_active = 1
         ORDER BY a.sort_order ASC, a.id ASC`,
@@ -345,16 +349,15 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
       return { code: 2001, data: null, message: `账户 ${foreign.account_id} 不存在或不属于当前用户` }
     }
 
-    const stmt = db.prepare(
-      `INSERT INTO asset_snapshots (user_id, account_id, balance, snapshot_date, source)
-       VALUES (?, ?, ?, ?, 'manual')
-       ON CONFLICT(user_id, account_id, snapshot_date) DO UPDATE SET
-         balance = excluded.balance`,
-    )
-
+    // 快照行由 setManualBalance() 统一写入（upsert），这里不再重复写一遍。
     const run = db.transaction(() => {
       for (const item of body.data.items) {
-        stmt.run(userId, item.account_id, item.balance, date)
+        // 手填 = **覆盖**余额，并把基准线刷到此刻。
+        //
+        // ⚠️ 基准线不能用用户选的 `date`：`date` 可补录到过去，基准线一旦倒退，
+        // 会把「那天之后、今天之前」已生效的账单效果抹掉，而那些账单又仍被判为
+        // 「基准线之外」——删掉还会再减一次。基准线只前进，date 只用于快照行日期。
+        setManualBalance(db, userId, item.account_id, item.balance, { date })
       }
     })
     run()

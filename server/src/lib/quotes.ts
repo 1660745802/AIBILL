@@ -36,25 +36,62 @@ export interface Quote {
 }
 
 /** 把用户输入的代码规范成腾讯能认的形式 */
+/**
+ * 把用户/接口给的代码规范成腾讯行情接口认的形式。
+ *
+ * ⚠️ **大小写敏感**：已带前缀的字母代码必须保留原样。
+ * 实测 `hkHSI` 通而 `hkhsi` 不通；`usAAPL` 通而 `usaapl` 不通。
+ * 所以不能一上来就整串 lowerCase——那正是这些代码失效的原因。
+ * 纯数字才用小写副本做匹配。
+ */
 export function normalizeCode(input: string): string {
-  const s = input.trim().toLowerCase().replace(/\s+/g, '')
-  if (/^(sh|sz|bj|hk|us)\d{5,6}$/.test(s)) return s
-  if (/^hf_/.test(s)) return s
-  if (/^\d{6}$/.test(s)) {
-    // 6 位纯数字：5 开头或 6 开头是沪市，其余深市
-    if (s.startsWith('5') || s.startsWith('6') || s.startsWith('9')) return `sh${s}`
-    return `sz${s}`
+  const raw = String(input).trim().replace(/\s+/g, '')
+  const s = raw.toLowerCase()
+
+  // 带点后缀：518880.sh / 00700.hk / 00700.us
+  const dotted = s.match(/^([0-9a-z]+)\.(sh|sz|bj|hk|us)$/)
+  if (dotted) {
+    if (dotted[2] === 'us') return `us${dotted[1]!.toUpperCase()}`
+    return dotted[2]! + dotted[1]!
   }
+
+  // 已带前缀且含字母 → 保留原大小写（大小写敏感：hkHSI/usAAPL/hf_XAU）
+  if (/^(hk|us|hf)[a-z]/i.test(s) && /[a-z]/i.test(raw.slice(2))) {
+    const prefix = raw.slice(0, 2)
+    return `${prefix === 'HK' ? 'hk' : prefix === 'US' ? 'us' : prefix === 'HF' ? 'hf' : prefix}${raw.slice(2)}`
+  }
+  // 已经是全小写的 hf_xxx（历史数据里存过），提到正确大小写：hf_xau → hf_XAU
+  if (/^hf_[a-z]+$/.test(s)) return `hf_${s.slice(3).toUpperCase()}`
+  // 已带数字前缀且已规范，别再加一次（`usAAPL` 曾被二次加前缀成 `usUSAAPL`）
+  if (/^(sh|sz|bj)\d{6}$/.test(s)) return s
+  if (/^hk\d{4,6}$/.test(s)) return s
+  if (/^us[a-z0-9.]{1,12}$/.test(s)) return s
+
+  // 纯数字：5 位港股、4 位是省略前导零的港股写法(0700)、6 位按首位分沪深
   if (/^\d{5}$/.test(s)) return `hk${s}`
-  if (/^[a-z]+$/.test(s)) return `us${s.toUpperCase()}`
+  if (/^\d{4}$/.test(s)) return `hk0${s}`
+  if (/^\d{6}$/.test(s)) return /^[569]/.test(s) ? `sh${s}` : `sz${s}`
+
+  // 纯字母 → 美股（统一大写，腾讯只认 `usAAPL` 这种）
+  if (/^[a-z.]{2,}$/.test(s)) return `us${s.toUpperCase()}`
   return s
 }
 
-/** 把 20261009161456 / 20261009 这样的时间戳转成 YYYY-MM-DD */
+/**
+ * 行情时间戳 → YYYY-MM-DD。**三个市场三种写法，实测的**：
+ *   A股/ETF  `20261009161456`     紧凑数字
+ *   港股     `2026/10/09 16:08:14` 带斜杠和时分秒
+ *   外盘     `2026-10-10`          标准日期
+ * 只认其中一种，另外两个市场的数据会被**静默丢弃**（解析返回 null，
+ * 上层只看到"接口返回空"）。这个坑真踩过：港股一条都进不来。
+ */
 function toIsoDate(stamp: string): string | null {
-  const d = stamp.slice(0, 8)
-  if (!/^\d{8}$/.test(d)) return null
-  return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`
+  const s = String(stamp).trim()
+  let m = s.match(/^(\d{4})[/-]?(\d{2})[/-]?(\d{2})/)   // 20261009161456 / 2026/10/09 / 2026-10-09
+  if (!m) return null
+  const [, y, mo, d] = m
+  if (Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > 31) return null
+  return `${y}-${mo}-${d}`
 }
 
 /** 解析 A股/ETF/指数（`~` 分隔，88 段） */
@@ -109,7 +146,11 @@ function parseComma(code: string, body: string): Quote | null {
 export function parseQuoteLine(line: string): Quote | null {
   const m = line.match(/^v_([a-z0-9_]+)="([^"]*)"/i)
   if (!m) return null
-  const code = m[1]!.toLowerCase()
+  // ⚠️ **不能 lowerCase**。`holdings.ts` 用 holdings 里的 code 去查这个 Map，
+  // 而 code 是 normalizeCode 的输出（`hkHSI` / `usAAPL` 保留大小写）。
+  // 这里小写化会让 Map 的 key 变成 `hkhsi`，查 `hkHSI` 必然落空 →
+  // 港股指数和美股永远「未取到价」。实测腾讯就是大小写敏感的。
+  const code = m[1]!
   const body = m[2]!
   if (body.includes('~')) return parseTilde(code, body)
   if (body.includes(',')) return parseComma(code, body)

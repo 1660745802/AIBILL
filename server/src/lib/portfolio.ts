@@ -38,6 +38,11 @@ export interface AccountRow {
   asset_type: string
   /** 账户级总投入（分），来自 `accounts.invested_total` */
   invested_total: number | null
+  /**
+   * 权威余额（分），来自 `accounts.balance`。017 之后的单一真源。
+   * 兼容：老调用方不传时退化为「历史里最新一条快照的余额」。
+   */
+  balance?: number | null
 }
 
 /**
@@ -190,13 +195,16 @@ export function buildPortfolio(
   for (const r of accountsIn) {
     const accountId = r.account_id
     const snap = latestByAccount.get(accountId)
-    const balance = snap?.balance ?? 0
+    /* 余额取 `accounts.balance`（权威列），而不是「历史里最新一条快照」。
+       新增账单会实时改这一列，但不会往 asset_snapshots 里插行——所以按快照取
+       会让余额卡在最后一次手填的时刻，正是 017 要修的「账单改了余额不动」。 */
+    const balance = r.balance ?? snap?.balance ?? 0
     const isInvestment = r.asset_type === 'investment'
     const isDebt = balance < 0
     const holdings = holdingsByAccount.get(accountId) ?? null
     const hasHoldings = holdings !== null
 
-    // 现金 = 最新快照的余额；从没填过就是 0（用户口径：不想填就是 0）
+    // 现金 = 账户当前余额；从没填过就是 0（用户口径：不想填就是 0）
     const cash = balance
 
     // 持仓市值：挂了持仓用传进来的市值（行情缺失为 null）；无持仓为 0

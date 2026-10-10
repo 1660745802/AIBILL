@@ -63,9 +63,13 @@ function normalizeInput(raw: string): string {
 }
 
 /** market 前缀从规范化 code 里拆出来：sh518880 → sh；hf_xau → hf */
+/**
+ * 从规范化后的代码里取市场。**不要求前缀后是数字**——
+ * 港股指数（hkHSI）和美股（usAAPL）都是字母，原来的 `\d` 会让它们返回 null。
+ */
 function marketOf(code: string): string | null {
-  const m = code.match(/^(sh|sz|bj|hk|us)\d/)
-  if (m) return m[1]!
+  const m = code.match(/^(sh|sz|bj|hk|us)(?=[0-9a-z])/i)
+  if (m) return m[1]!.toLowerCase()
   if (code.startsWith('hf_')) return 'hf'
   return null
 }

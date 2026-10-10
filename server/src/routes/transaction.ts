@@ -9,6 +9,7 @@ import { getDb } from '../db/index.js'
 import { monthRange } from '../lib/date.js'
 import { budgetProgress, WARN_PERCENT } from '../lib/budget.js'
 import { matchParse, backfillLanding } from '../lib/parse-landing.js'
+import { applyTxn } from '../lib/account-balance.js'
 
 const transactionItemSchema = z.object({
   client_id: z.string().uuid().optional(),
@@ -157,6 +158,10 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
             .prepare('SELECT * FROM transactions WHERE id = ?')
             .get(result.lastInsertRowid) as TransactionRow
           created.push(newRow)
+
+          /* 账户余额跟着账单走：有归属的账单实时加减账户余额快照。
+             没传 account_id 的（旧客户端 / 无归属）返回空数组，行为不变。 */
+          applyTxn(db, newRow, 1, userId)
 
           /* ═══ 落地关联：服务端自己判断这笔是不是某次 AI 解析的结果 ═══
              不依赖客户端上报——它本来就会把 /ai/parse 返回的 items 原样 POST 过来，
@@ -408,13 +413,25 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     const db = getDb()
     const userId = request.user!.userId
 
-    const result = db
-      .prepare(
-        "UPDATE transactions SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL",
-      )
-      .run(Number(id), userId)
+    // 恢复前先取旧值：软删时已经把余额减掉了，这里要加回去。
+    // 必须**先读后写**，否则 deleted_at 一改就查不到了。
+    const before = db
+      .prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL')
+      .get(Number(id), userId) as TransactionRow | undefined
 
-    if (result.changes === 0) {
+    // 事务：UPDATE 与余额回补要么都成，要么都不做
+    const ok = db.transaction(() => {
+      const result = db
+        .prepare(
+          "UPDATE transactions SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL",
+        )
+        .run(Number(id), userId)
+      if (result.changes === 0) return false
+      if (before) applyTxn(db, before, 1, userId)
+      return true
+    })()
+
+    if (!ok) {
       reply.code(404)
       return { code: 3002, data: null, message: '记录不存在或未被删除' }
     }
@@ -479,11 +496,25 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       const userId = request.user!.userId
 
       const existing = db
-        .prepare('SELECT id FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-        .get(Number(id), userId)
+        .prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
+        .get(Number(id), userId) as any
       if (!existing) {
         reply.code(404)
         return { code: 3002, data: null, message: '交易记录不存在' }
+      }
+
+      /* 归属校验：POST 有，PUT 原来没有。
+         漏了它 + applyTxn 不按 user 过滤 ⇒ 用户 A 可以把自己的账单指向
+         用户 B 的账户，直接把 B 的余额改掉。 */
+      for (const [field, label] of [['account_id', '账户'], ['target_account_id', '目标账户']] as const) {
+        const val = (body as any)[field]
+        if (val === undefined || val === null) continue
+        const acc = db
+          .prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ? AND is_active = 1')
+          .get(val, userId)
+        if (!acc) {
+          throw new ValidationError(`${label} ID ${val} 不存在或不属于当前用户`)
+        }
       }
 
       const updates: string[] = []
@@ -508,9 +539,18 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       updates.push("updated_at = datetime('now')")
       params.push(Number(id), userId)
 
-      db.prepare(
-        `UPDATE transactions SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
-      ).run(...params)
+      /* 余额跟着账单走：先把旧值从原账户撤回，再把新值应用到新账户。
+         改金额、改类型、改归属账户都会走到这里——少一步余额就飘了。
+         整段包在事务里：UPDATE 成功但 applyTxn 失败会留下「交易已改、余额没改」
+         的半状态，而且没法回滚。 */
+      db.transaction(() => {
+        db.prepare(
+          `UPDATE transactions SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
+        ).run(...params)
+        const next = db.prepare('SELECT * FROM transactions WHERE id = ?').get(Number(id))
+        applyTxn(db, existing, -1, userId)
+        applyTxn(db, next, 1, userId)
+      })()
 
       const transaction = db.prepare('SELECT * FROM transactions WHERE id = ?').get(Number(id))
       return { code: 0, data: transaction, message: '' }
@@ -518,6 +558,10 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       if (err instanceof z.ZodError) {
         reply.code(400)
         return { code: 2000, data: null, message: err.errors[0].message }
+      }
+      if (err instanceof ValidationError) {
+        reply.code(400)
+        return { code: 2001, data: null, message: err.message }
       }
       throw err
     }
@@ -529,13 +573,24 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     const db = getDb()
     const userId = request.user!.userId
 
-    const result = db
-      .prepare(
-        "UPDATE transactions SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
-      )
-      .run(Number(id), userId)
+    // 软删前取旧值，删完把余额减回去。
+    const before = db
+      .prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
+      .get(Number(id), userId) as TransactionRow | undefined
 
-    if (result.changes === 0) {
+    // 事务：软删与余额回退要么都成，要么都不做
+    const ok = db.transaction(() => {
+      const result = db
+        .prepare(
+          "UPDATE transactions SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
+        )
+        .run(Number(id), userId)
+      if (result.changes === 0) return false
+      if (before) applyTxn(db, before, -1, userId)
+      return true
+    })()
+
+    if (!ok) {
       reply.code(404)
       return { code: 3002, data: null, message: '交易记录不存在' }
     }

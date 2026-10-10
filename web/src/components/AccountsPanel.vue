@@ -124,10 +124,20 @@ async function save() {
     })
     .filter(Boolean) as Array<{ account_id: number; balance: number }>
 
-  if (items.length === 0) { toast.warning('还没有填余额'); return }
+  /* 只提交**真正改动过**的行。
+     提交全部非空行会把「打开页面时预填的、用户没碰过的」也发上去，
+     而那些值是页面加载时的快照——如果期间（另一个标签页 / 手机端 /
+     另一台设备）该账户记了有归属账单，保存会把新余额覆盖回旧值，
+     那笔账单的效果永久消失。 */
+  const dirtyItems = items.filter((it) => {
+    const prev = snapByAccount.value.get(it.account_id)?.cash
+    return prev == null || it.balance !== Math.round(prev)
+  })
+
+  if (dirtyItems.length === 0) { toast.warning('余额没有变化'); return }
   saving.value = true
   try {
-    const { data } = await api.put('/assets/snapshots', { items })
+    const { data } = await api.put('/assets/snapshots', { items: dirtyItems })
     if (data.code === 0) {
       toast.success('已保存')
       await load()

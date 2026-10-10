@@ -268,21 +268,11 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     // === 2. 净资产（单条聚合 SQL，修复 N+1：原每账户 4 个相关子查询） ===
     const accounts = db
       .prepare(
-        `SELECT
-          a.id, a.name, a.icon, a.asset_type,
-          a.initial_balance
-            + COALESCE(SUM(CASE WHEN t.type='income'    THEN t.amount           ELSE 0 END), 0)
-            - COALESCE(SUM(CASE WHEN t.type='expense'   THEN t.amount           ELSE 0 END), 0)
-            + COALESCE(SUM(CASE WHEN t.type='transfer' AND t.target_account_id=a.id THEN t.amount ELSE 0 END), 0)
-            - COALESCE(SUM(CASE WHEN t.type='transfer' AND t.account_id=a.id        THEN t.amount ELSE 0 END), 0)
-          AS balance
+        // 017：余额取 accounts.balance 权威列，不再「期初 + 流水」重算。
+        // 重算会和手填覆盖打架，且 551/553 笔无归属流水让重算几乎恒等于期初值。
+        `SELECT a.id, a.name, a.icon, a.asset_type, a.balance
         FROM accounts a
-        LEFT JOIN transactions t ON (t.account_id = a.id OR t.target_account_id = a.id)
-          AND t.user_id = a.user_id
-          AND t.status = 'confirmed'
-          AND t.deleted_at IS NULL
         WHERE a.user_id = ? AND a.is_active = 1
-        GROUP BY a.id
         ORDER BY a.sort_order ASC, a.id ASC`,
       )
       .all(userId) as Array<{ id: number; name: string; icon: string; asset_type: string; balance: number }>
@@ -635,20 +625,10 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       // 净资产（单条聚合 SQL，修复 N+1）
       const netWorthRow = db
         .prepare(
-          `SELECT COALESCE(SUM(
-            a.initial_balance
-            + COALESCE(SUM(CASE WHEN t.type='income'    THEN t.amount           ELSE 0 END), 0)
-            - COALESCE(SUM(CASE WHEN t.type='expense'   THEN t.amount           ELSE 0 END), 0)
-            + COALESCE(SUM(CASE WHEN t.type='transfer' AND t.target_account_id=a.id THEN t.amount ELSE 0 END), 0)
-            - COALESCE(SUM(CASE WHEN t.type='transfer' AND t.account_id=a.id        THEN t.amount ELSE 0 END), 0)
-          ), 0) AS total
+          // 017：同上，权威列
+        `SELECT COALESCE(SUM(a.balance), 0) AS total
           FROM accounts a
-          LEFT JOIN transactions t ON (t.account_id = a.id OR t.target_account_id = a.id)
-            AND t.user_id = a.user_id
-            AND t.status = 'confirmed'
-            AND t.deleted_at IS NULL
-          WHERE a.user_id = ? AND a.is_active = 1
-          GROUP BY a.id`,
+          WHERE a.user_id = ? AND a.is_active = 1`,
         )
         .get(userId) as { total: number } | undefined
       const netWorth = netWorthRow?.total ?? 0

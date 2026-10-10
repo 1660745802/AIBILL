@@ -237,6 +237,15 @@ async function remove(h: InvestmentItem) {
         <AppIcon name="plus" :size="13" :stroke="2.2" />添加持仓
       </button>
     </div>
+
+    <!-- 代码格式是这件事里最容易卡住的一环：A股 6 位、港股 5 位（可省前导零
+         写成 4 位）、美股字母、港股指数又是字母代码。写错一个字符就静默「未取到价」，
+         用户完全看不出哪里错了。给个能照着填的例子。 -->
+    <p class="hold-codehint">
+      代码：A股/ETF 6 位（如 <code>518880</code>）· 港股 5 位（如 <code>00700</code>，或
+      <code>0700</code>）· 港股指数带字母（如 <code>hkHSI</code>）· 美股字母（如 <code>AAPL</code>）。
+      填好后现价和市值会自动更新。
+    </p>
   </div>
 </template>
 
@@ -307,5 +316,19 @@ async function remove(h: InvestmentItem) {
   border-top: 1px solid var(--color-rule-faint);
 }
 .hold-add-code { width: 9rem; text-align: left; }
+.hold-codehint {
+  margin-top: 0.5rem;
+  font-size: 0.6875rem;
+  line-height: 1.7;
+  color: var(--color-ink-3);
+}
+.hold-codehint code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 0 0.2em;
+  background: var(--color-paper-sunk);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-xs);
+}
 .hold-add-qty { width: 5.5rem; }
 </style>

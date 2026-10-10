@@ -30,7 +30,7 @@ describe('normalizeCode', () => {
   it('已带市场前缀的不动', () => {
     expect(normalizeCode('sh518880')).toBe('sh518880')
     expect(normalizeCode('  SZ159937 ')).toBe('sz159937')
-    expect(normalizeCode('hf_XAU')).toBe('hf_xau')
+    expect(normalizeCode('hf_XAU')).toBe('hf_XAU')
   })
   it('5 位当港股、字母当美股', () => {
     expect(normalizeCode('00700')).toBe('hk00700')
@@ -52,12 +52,14 @@ describe('parseQuoteResponse', () => {
 
   it('一次响应里多条都能解析', () => {
     const qs = parseQuoteResponse(SAMPLE)
-    expect(qs.map((q) => q.code).sort()).toEqual(['hf_xau', 'sh000300', 'sh518880'])
+    // 保留响应里的原始大小写：code 是 holdings 里查 Map 的 key，
+    // 小写化会让港股指数/美股永远查不到（`hf_XAU` 也是同理）
+    expect(qs.map((q) => q.code).sort()).toEqual(['hf_XAU', 'sh000300', 'sh518880'])
   })
 
   it('~ 与 , 两种格式分开解析（外盘字段位置完全不同）', () => {
     const g = parseQuoteResponse(lineOf('hf_XAU'))![0]!
-    expect(g.code).toBe('hf_xau')
+    expect(g.code).toBe('hf_XAU')
     expect(g.price).toBe(4194.39)
     expect(g.quoteDate).toBe('2026-10-10')
   })
@@ -67,7 +69,7 @@ describe('parseQuoteResponse', () => {
     // 真实抓取的那一次：两个 A股标的停在 10-09 收盘，伦敦金已经是 10-10
     expect(byCode.get('sh518880')!.quoteDate).toBe('2026-10-09')
     expect(byCode.get('sh000300')!.quoteDate).toBe('2026-10-09')
-    expect(byCode.get('hf_xau')!.quoteDate).toBe('2026-10-10')
+    expect(byCode.get('hf_XAU')!.quoteDate).toBe('2026-10-10')
   })
 
   it('脏数据返回 null 而不是半个对象', () => {
@@ -117,5 +119,56 @@ describe('fetchQuotes · 全部代码取不到时显式抛错', () => {
     vi.stubGlobal('fetch', spy)
     await expect(fetchQuotes([])).resolves.toEqual([])
     expect(spy).not.toHaveBeenCalled()
+  })
+})
+
+/* ── 港股 / 美股 ──
+   这两个市场的响应结构和 A 股**不同**，不是"也支持一下"那么简单：
+     段数        78（A 股 88）
+     field[30]   `2026/10/09 16:08:14`（A 股是紧凑的 20261009161456）
+   原来只认紧凑格式 → 港股一条都解析不出来，上层只看到「接口返回空」。
+   而且代码**大小写敏感**：`hkHSI` 通而 `hkhsi` 不通，`usAAPL` 通而 `usaapl` 不通。
+   夹具是真实抓取的响应（GBK 已解码）。 */
+describe('港股 / 美股（真实响应夹具）', () => {
+  const SAMPLE = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../fixtures/quotes-hk-us-sample.txt'),
+    'utf-8',
+  )
+  const parsed = parseQuoteResponse(SAMPLE)
+
+  it('三种代码写法都规范到腾讯认的形式', () => {
+    expect(normalizeCode('00700')).toBe('hk00700')       // 5 位
+    expect(normalizeCode('0700')).toBe('hk00700')        // 4 位省略前导零
+    expect(normalizeCode('00700.HK')).toBe('hk00700')     // 带后缀
+    expect(normalizeCode('hk00700')).toBe('hk00700')     // 已规范不重复加前缀
+    expect(normalizeCode('518880')).toBe('sh518880')     // A 股不受影响
+    // 黄金：腾讯只认 hf_XAU（全大写），hf_xau 返回 pv_none_match。
+    // normalizeCode 必须产出和响应 key 一致的写法，否则 Map 对不上 → 永远「未取到价」
+    expect(normalizeCode('hf_XAU')).toBe('hf_XAU')
+    expect(normalizeCode('hf_xau')).toBe('hf_XAU')
+    expect(normalizeCode('hf_XAG')).toBe('hf_XAG')
+  })
+
+  it('已带前缀的字母代码必须保留大小写（hkHSI / usAAPL，不是 hkhsi / usaapl）', () => {
+    expect(normalizeCode('hkHSI')).toBe('hkHSI')
+    expect(normalizeCode('usAAPL')).toBe('usAAPL')
+    expect(normalizeCode('AAPL')).toBe('usAAPL')         // 裸字母才补前缀
+    expect(normalizeCode('usAAPL')).toBe('usAAPL')        // 不能再变成 usUSAAPL
+  })
+
+  it('解析港股：斜杠日期也能取出（原来是这里静默丢的）', () => {
+    const hk = parsed.find((q) => q.code === 'hk00700')!
+    expect(hk.name).toBe('腾讯控股')
+    expect(hk.price).toBeGreaterThan(0)
+    expect(hk.quoteDate).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('解析港股指数与美股', () => {
+    expect(parsed.find((q) => q.code === 'hkHSI')?.name).toBe('恒生指数')
+    expect(parsed.find((q) => q.code === 'usAAPL')?.name).toBe('苹果')
+  })
+
+  it('三家市场的日期格式不同但都能解析出 ISO 日期', () => {
+    for (const q of parsed) expect(q.quoteDate, q.code).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   })
 })

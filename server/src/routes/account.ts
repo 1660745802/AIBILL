@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
+import { setManualBalance } from '../lib/account-balance.js'
 
 const createAccountSchema = z.object({
   name: z.string().min(1, '账户名称不能为空').max(20, '账户名称最多20个字符'),
@@ -22,7 +23,7 @@ const updateAccountSchema = z.object({
   type: z.enum(['cash', 'wechat', 'alipay', 'bank', 'credit', 'other']).optional(),
   icon: z.string().max(10).optional(),
   initial_balance: z.number().int().optional(),
-  current_balance: z.number().int().optional(), // 用户设置目标余额，后端反算 initial_balance
+  current_balance: z.number().int().optional(), // 017 起即 accounts.balance：用户改它 = 手填修正 = 覆盖
   sort_order: z.number().int().min(0).optional(),
   is_active: z.number().int().min(0).max(1).optional(),
 })
@@ -45,12 +46,7 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
       .prepare(
         `SELECT
           a.*,
-          a.initial_balance
-            + COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'income' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
-            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'expense' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
-            + COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'transfer' AND target_account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
-            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = a.user_id AND type = 'transfer' AND account_id = a.id AND status = 'confirmed' AND deleted_at IS NULL), 0)
-          AS current_balance
+          a.balance AS current_balance
         FROM accounts a
         WHERE ${whereClause}
         ORDER BY a.sort_order ASC, a.id ASC`,
@@ -69,10 +65,19 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
 
       const result = db
         .prepare(
-          `INSERT INTO accounts (user_id, name, type, icon, initial_balance, sort_order)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO accounts (user_id, name, type, icon, initial_balance, balance, balance_as_of_txn_id, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(userId, body.name, body.type, body.icon || '💳', body.initial_balance, body.sort_order || 0)
+        .run(
+          userId, body.name, body.type, body.icon || '💳',
+          body.initial_balance,
+          body.initial_balance,
+          // 基准线 = 0：还没有任何流水参与过。
+          // 期初余额是「从一开始就这么多」而非手动修正，所以补录的历史账单
+          // （哪怕业务日期在过去）也必须能加减余额。
+          0,
+          body.sort_order || 0,
+        )
 
       const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(result.lastInsertRowid)
       return { code: 0, data: account, message: '' }
@@ -114,36 +119,39 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
       if (body.sort_order !== undefined) { updates.push('sort_order = ?'); params.push(body.sort_order) }
       if (body.is_active !== undefined) { updates.push('is_active = ?'); params.push(body.is_active) }
 
-      // 处理余额设置：用户传 current_balance（目标余额），反算 initial_balance
+      // 处理余额设置：旧客户端传 current_balance（它屏幕上显示的那个数）。
+      // 017 之后它就是 `accounts.balance`——用户改它 = 手填修正 = **覆盖**。
+      //
+      // 旧逻辑是「目标余额 − 流水净影响 = initial_balance」，那是反向推导，
+      // 会把 551 笔无归属流水的影响错算进来，而且和手填快照打架。
       if (body.current_balance !== undefined) {
-        // 计算当前流水对该账户的净影响
-        const flowResult = db.prepare(`
-          SELECT
-            COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = ? AND type = 'income' AND account_id = ? AND status = 'confirmed' AND deleted_at IS NULL), 0)
-            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = ? AND type = 'expense' AND account_id = ? AND status = 'confirmed' AND deleted_at IS NULL), 0)
-            + COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = ? AND type = 'transfer' AND target_account_id = ? AND status = 'confirmed' AND deleted_at IS NULL), 0)
-            - COALESCE((SELECT SUM(amount) FROM transactions WHERE user_id = ? AND type = 'transfer' AND account_id = ? AND status = 'confirmed' AND deleted_at IS NULL), 0)
-          AS net_flow
-        `).get(userId, Number(id), userId, Number(id), userId, Number(id), userId, Number(id)) as { net_flow: number }
-
-        // initial_balance = 目标余额 - 流水净影响
-        const newInitialBalance = body.current_balance - flowResult.net_flow
-        updates.push('initial_balance = ?')
-        params.push(newInitialBalance)
+        // 覆盖即刷新基准线到此刻。此刻之前就存在的账单已经烤进这个数里了。
+        // 走 setManualBalance（upsert 快照）：之前这里用裸 INSERT，
+        // 同一天改第二次余额会撞 UNIQUE(user_id, account_id, snapshot_date) → 500，
+        // 而且它在 UPDATE 之前执行，所以余额一点没改就失败了。
+        setManualBalance(db, userId, Number(id), body.current_balance)
       } else if (body.initial_balance !== undefined) {
+        // 017 之后 balance 才是读取端唯一真源。**必须走 setManualBalance**：
+        // 直接覆盖 balance 而不推进基准线，会把「基准线之后已生效的账单」抹掉，
+        // 而那些账单之后被删除时又会被再减一次 → 永久差额。
+        setManualBalance(db, userId, Number(id), body.initial_balance)
         updates.push('initial_balance = ?')
         params.push(body.initial_balance)
       }
 
-      if (updates.length === 0) {
+      if (updates.length === 0 && body.current_balance === undefined) {
         reply.code(400)
         return { code: 2000, data: null, message: '没有需要更新的字段' }
       }
 
-      params.push(Number(id), userId)
-      db.prepare(`UPDATE accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`).run(
-        ...params,
-      )
+      // 余额已由 setManualBalance 直接落库；其余字段（名字/图标/排序…）在这里更新。
+      // 两者必须能各走各的：只传 current_balance 时 updates 本来就是空的。
+      if (updates.length > 0) {
+        params.push(Number(id), userId)
+        db.prepare(`UPDATE accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`).run(
+          ...params,
+        )
+      }
 
       const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(Number(id))
       return { code: 0, data: account, message: '' }

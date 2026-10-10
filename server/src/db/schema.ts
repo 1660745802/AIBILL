@@ -372,8 +372,11 @@ export function insertDefaultAccounts(db: any, userId: number): void {
     ['银行卡', 'bank', '💳', 3],
     ['现金', 'cash', '💵', 4],
   ]
+  // balance / balance_as_of_txn_id 也要给值：这两个默认账户是直接 INSERT 的，
+  // 绕过 POST /api/accounts，所以这里自己补上（基准线留空 = 期初口径）。
   const stmt = db.prepare(
-    'INSERT INTO accounts (user_id, name, type, icon, sort_order) VALUES (?, ?, ?, ?, ?)',
+    `INSERT INTO accounts (user_id, name, type, icon, sort_order, balance, balance_as_of_txn_id)
+     VALUES (?, ?, ?, ?, ?, 0, 0)`,
   )
   for (const [name, type, icon, order] of accounts) {
     stmt.run(userId, name, type, icon, order)
@@ -640,4 +643,91 @@ UPDATE accounts SET invested_total = (
 ALTER TABLE investments DROP COLUMN cost_basis;
 ALTER TABLE asset_snapshots DROP COLUMN quantity;
 ALTER TABLE asset_snapshots DROP COLUMN total_invested;
+`
+
+/**
+ * 017 — 账户余额改为「增量调整 + 手填覆盖」的单一真源。
+ *
+ * 之前的两种口径（每次重算的派生 / 手填的每日快照）会打架：仪表读一个数、
+ * 账户页读另一个数。这次统一成：
+ *
+ *     accounts.balance            权威的当前余额
+ *     accounts.balance_as_of_txn_id 基准线：手填时已存在的最大流水 id
+ *
+ * 不变量：**balance == 上次手填的值 + 基准线之后所有有归属流水的增减**。
+ * 因为**从不重放**基准线之前的流水，所以手填的修正永远不会被重复计算。
+ *
+ * 存量回填：优先用最近一次手填快照（用户明确说过那些修正代表「当时看到的
+ * 真实余额」，继续有效），没有快照才退回期初余额。
+ */
+export const migration017 = `
+ALTER TABLE accounts ADD COLUMN balance INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN balance_as_of_txn_id INTEGER NOT NULL DEFAULT 0;
+
+-- ① 有手填快照的账户：以快照为准。
+--    基准线取「快照写入之前就已存在」的流水 id——不是迁移时刻的 MAX(id)。
+--    取错会让「快照之后、迁移之前新建的」有归属流水被当成已烤进而永久丢失。
+UPDATE accounts SET
+  balance = COALESCE((
+    SELECT s.balance FROM asset_snapshots s
+     WHERE s.user_id = accounts.user_id AND s.account_id = accounts.id
+     ORDER BY s.snapshot_date DESC, s.id DESC LIMIT 1
+  ), COALESCE(initial_balance, 0))
+  -- 快照是「那一刻」的余额；此后新建的有归属流水仍然要加减，不能被当成已烤进
+  + COALESCE((SELECT SUM(CASE WHEN t.type='income'  THEN t.amount ELSE 0 END) FROM transactions t
+               WHERE t.user_id = accounts.user_id AND t.account_id = accounts.id
+                 AND t.status='confirmed' AND t.deleted_at IS NULL
+                 AND t.created_at > (SELECT s2.created_at FROM asset_snapshots s2
+                                      WHERE s2.user_id = accounts.user_id AND s2.account_id = accounts.id
+                                      ORDER BY s2.snapshot_date DESC, s2.id DESC LIMIT 1)), 0)
+  - COALESCE((SELECT SUM(CASE WHEN t.type='expense' THEN t.amount ELSE 0 END) FROM transactions t
+               WHERE t.user_id = accounts.user_id AND t.account_id = accounts.id
+                 AND t.status='confirmed' AND t.deleted_at IS NULL
+                 AND t.created_at > (SELECT s2.created_at FROM asset_snapshots s2
+                                      WHERE s2.user_id = accounts.user_id AND s2.account_id = accounts.id
+                                      ORDER BY s2.snapshot_date DESC, s2.id DESC LIMIT 1)), 0)
+  + COALESCE((SELECT SUM(t.amount) FROM transactions t
+               WHERE t.user_id = accounts.user_id AND t.type='transfer'
+                 AND t.target_account_id = accounts.id AND t.status='confirmed' AND t.deleted_at IS NULL
+                 AND t.created_at > (SELECT s2.created_at FROM asset_snapshots s2
+                                      WHERE s2.user_id = accounts.user_id AND s2.account_id = accounts.id
+                                      ORDER BY s2.snapshot_date DESC, s2.id DESC LIMIT 1)), 0)
+  - COALESCE((SELECT SUM(t.amount) FROM transactions t
+               WHERE t.user_id = accounts.user_id AND t.type='transfer'
+                 AND t.account_id = accounts.id AND t.status='confirmed' AND t.deleted_at IS NULL
+                 AND t.created_at > (SELECT s2.created_at FROM asset_snapshots s2
+                                      WHERE s2.user_id = accounts.user_id AND s2.account_id = accounts.id
+                                      ORDER BY s2.snapshot_date DESC, s2.id DESC LIMIT 1)), 0),
+  balance_as_of_txn_id = COALESCE((
+    SELECT MAX(t.id) FROM transactions t
+     WHERE t.user_id = accounts.user_id
+       AND t.created_at <= (
+         SELECT s2.created_at FROM asset_snapshots s2
+          WHERE s2.user_id = accounts.user_id AND s2.account_id = accounts.id
+          ORDER BY s2.snapshot_date DESC, s2.id DESC LIMIT 1)
+  ), 0)
+WHERE EXISTS (SELECT 1 FROM asset_snapshots s WHERE s.user_id = accounts.user_id AND s.account_id = accounts.id);
+
+-- ② 没有手填快照的账户：基准线 = 0 ⇒ 所有有归属流水都参与加减，
+--    所以必须在这里**重放一遍存量流水**，否则迁移当天就违反自己声明的不变量。
+--    判据用 EXISTS(snapshot) 而不是 balance_as_of_txn_id = 0——
+--    后者会把「有快照但该用户一笔账都没记过」的账户误判为无快照，
+--    用 initial_balance 覆盖掉快照值（实测：快照 88888 → 迁移后 0）。
+UPDATE accounts SET
+  balance = COALESCE(initial_balance, 0)
+    + COALESCE((SELECT SUM(CASE WHEN t.type='income'  THEN t.amount ELSE 0 END) FROM transactions t
+                 WHERE t.user_id = accounts.user_id AND t.account_id = accounts.id
+                   AND t.status='confirmed' AND t.deleted_at IS NULL), 0)
+    - COALESCE((SELECT SUM(CASE WHEN t.type='expense' THEN t.amount ELSE 0 END) FROM transactions t
+                 WHERE t.user_id = accounts.user_id AND t.account_id = accounts.id
+                   AND t.status='confirmed' AND t.deleted_at IS NULL), 0)
+    + COALESCE((SELECT SUM(t.amount) FROM transactions t
+                 WHERE t.user_id = accounts.user_id AND t.type='transfer'
+                   AND t.target_account_id = accounts.id
+                   AND t.status='confirmed' AND t.deleted_at IS NULL), 0)
+    - COALESCE((SELECT SUM(t.amount) FROM transactions t
+                 WHERE t.user_id = accounts.user_id AND t.type='transfer'
+                   AND t.account_id = accounts.id
+                   AND t.status='confirmed' AND t.deleted_at IS NULL), 0)
+WHERE NOT EXISTS (SELECT 1 FROM asset_snapshots s WHERE s.user_id = accounts.user_id AND s.account_id = accounts.id);
 `

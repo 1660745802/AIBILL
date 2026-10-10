@@ -289,6 +289,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES (...);
 | **014** | **investments_and_quotes** | 新建 `investments`（持仓）+ `investment_quotes`（行情历史） |
 | **015** | **ai_parse_filters_backfill** | 幂等补建 `ai_parse_filters`（修生产库缺表，见下 §10） |
 | **016** | **drop_holding_cost_basis** | 删三列冗余/误导性字段 + 加 `accounts.invested_total`（见下 §10.5） |
+| **017** | **account_balance_single_source** | 账户余额归一：加 `accounts.balance` / `balance_as_of_txn_id`（见下 §11） |
 
 > ⚠️ migration 012 曾被原地改写：早期版本重建过 `ai_parse_logs`（放宽 `status` CHECK 加 `filtered`），
 > 并被误应用到**生产库**（记录名 `parse_landing_tracking`）。当前代码里 012 是「新建 `ai_parse_filters`」版，
@@ -406,7 +407,7 @@ asset_snapshots.total_invested   总投入搬到 accounts
 
 | 数据 | 谁写 | 接口 |
 |---|---|---|
-| 现金 | 用户手填（每日，可补录任意日期） | `PUT /api/assets/snapshots` |
+| 现金 | `accounts.balance`（017 起唯一真源）：有归属账单实时加减 + 手填覆盖 | `PUT /api/assets/snapshots` |
 | 份额 | 用户手填（低频，加/减仓） | `POST/PATCH /api/investments` |
 | 总投入 | 用户手填（只在存/取钱时） | `PUT /api/assets/accounts/:id` |
 | 行情 | **定时任务**（盘中每小时 + 收盘后） | 无接口，`scheduler.ts` 写入 |
@@ -418,3 +419,42 @@ asset_snapshots.total_invested   总投入搬到 accounts
 > ⚠️ 行情抓取**必须挂在 `runScheduledTasks` 里**。曾经 `processQuoteFetch` 写好了却没有调用者，
 > 结果是 `investment_quotes` 永远 0 行、持仓永远「未取到价」、账户总价值永远算不出。
 > 回归测试见 `tests/lib/scheduler-quotes.test.ts`。
+
+## 11. 账户余额模型（migration 017）
+
+余额有且只有一个真源：**`accounts.balance`**。它由两条路径共同维护：
+
+| 路径 | 行为 | 实现 |
+|---|---|---|
+| 有归属的账单增删改 | **增量加减** | `lib/account-balance.ts` 的 `applyTxn()` |
+| 手填修正 | **覆盖** | 同文件 `setManualBalance()` |
+
+**不变量**
+
+```
+balance == 上次手填的值 + 基准线之后新建的有归属流水的增减
+```
+
+**基准线 `accounts.balance_as_of_txn_id`**：手填时记下当前 `MAX(transactions.id)`，
+只有 `id > 基准线` 的账单参与加减。
+
+为什么用流水 id 而不是日期或时间戳：
+
+- **日期 + `<=`**：手填当天下午记的账单（业务日期就是今天）会被判成「已含」而永久跳过，
+  直接推翻「我改了余额，后续有新账单余额跟着变」。
+- **`created_at` 时间戳**：同一秒内无法区分先后，`<` / `<=` 各错一边。
+- **自增 id**：单调、无精度问题，且与业务日期解耦——补录昨天的账也会影响当前余额。
+
+**没有归属就不动账户**：551/553 笔历史流水没有 `account_id`，`deltasFor()` 对它们返回空数组，
+旧客户端（从不传 `account_id`）行为完全不变。
+
+**迁移回填**
+
+| 账户情况 | balance | 基准线 |
+|---|---|---|
+| 有手填快照 | 快照值 + 快照**之后**新建的有归属流水 | 快照写入前已存在的 `MAX(id)` |
+| 无手填快照 | `initial_balance` + **全部**有归属流水（重放） | `0` |
+
+> ⚠️ 判据是 `EXISTS(asset_snapshots)`，不能用 `balance_as_of_txn_id = 0`——
+> 后者会把「有快照但该用户一笔账都没记过」的账户误判为无快照，用 `initial_balance`
+> 覆盖掉快照值。
