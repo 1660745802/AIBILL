@@ -208,8 +208,13 @@ const monthProgress = computed(() => {
         <section class="sheet">
           <header class="flex items-center justify-between px-3.5 py-2.5"
                   style="border-bottom: 1px solid var(--color-rule); background: var(--color-paper-sunk)">
-            <span class="ledger-label ledger-label-solid text-[0.6875rem] font-semibold tracking-[0.06em]"
-                  style="color: var(--color-ink-3)">最近交易</span>
+            <div class="flex items-baseline gap-2 min-w-0">
+              <span class="ledger-label ledger-label-solid text-[0.6875rem] font-semibold tracking-[0.06em]"
+                    style="color: var(--color-ink-3)">最近交易</span>
+              <!-- 说清范围：这一列取的是**全库最新**，不随上方周期变。
+                   不写的话「本月已记 0 笔」正下方列着几笔账，用户会以为是 bug。 -->
+              <span class="text-[0.625rem]" style="color: var(--color-ink-4)">不限当前周期</span>
+            </div>
             <router-link to="/ledger" class="act">全部 →</router-link>
           </header>
 
@@ -241,7 +246,7 @@ const monthProgress = computed(() => {
         </section>
       </div>
 
-      <!-- ═══ 侧栏 ═══ -->
+  <!-- ═══ 侧栏 ═══ -->
       <aside class="space-y-6 lg:sticky lg:top-6 min-w-0">
         <!-- 资产配置 -->
         <section class="surface p-4">
@@ -281,13 +286,11 @@ const monthProgress = computed(() => {
           </EmptyState>
         </section>
 
-        <!-- 快捷入口：只留导航里没有的。账本 / 助手 / 记一笔
-             分别是侧栏项、侧栏项、侧栏动作，再列一遍只会让人不知道该点哪个。 -->
-        <router-link to="/trash" class="sheet sheet-row sheet-row-click">
-          <AppIcon name="trash" :size="16" class="text-ink-3" />
-          <span class="flex-1 text-[0.8125rem]" style="color: var(--color-ink-1)">回收站</span>
-          <AppIcon name="chevronRight" :size="14" class="chev-link" />
-        </router-link>
+        <!--
+          以前这里还有一张「回收站」卡片，但侧栏「系统 › 回收站」是同一个功能——
+          同一个功能两个入口，用户会犹豫该点哪个。仪表盘只该放财务读数，
+          回收站不属于「结算」，所以去掉了。入口仍在侧栏。
+        -->
       </aside>
     </div>
   </div>
