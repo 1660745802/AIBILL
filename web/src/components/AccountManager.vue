@@ -155,7 +155,8 @@ const activeTotal = computed(
     <div class="am-head">
       <span class="am-title">账户</span>
       <div class="am-head-right">
-        <span class="am-total amt">
+        <span class="am-total amt" title="各账户现金合计；理财账户的持仓市值不在这里">
+          <span class="am-total-cap">现金合计</span>
           <Money :value="activeTotal" size="sm" :tone="activeTotal < 0 ? 'expense' : 'muted'" sign="none" />
         </span>
         <button @click="showAdd = !showAdd" class="btn btn-quiet btn-sm">
@@ -226,12 +227,19 @@ const activeTotal = computed(
           <span class="am-row-name">{{ acc.name }}</span>
           <span class="am-row-type">{{ typeLabel(acc.asset_type) }}</span>
         </div>
-        <Money
-          class="am-row-amt"
-          :value="acc.current_balance ?? acc.initial_balance"
-          size="md" :tone="(acc.current_balance ?? acc.initial_balance) < 0 ? 'expense' : 'neutral'"
-          sign="none"
-        />
+        <!--
+          这里显示的是 `accounts.balance`，语义是**现金**。对理财账户来说
+          总价值 = 现金 + 持仓市值，而持仓不在这里（去资产页/投资页），
+          所以标出「现金」，避免被读成「这个账户一共多少钱」而和仪表盘对不上。
+        -->
+        <span class="am-row-amt">
+          <span v-if="acc.asset_type === 'investment'" class="am-row-amt-cap">现金</span>
+          <Money
+            :value="acc.current_balance ?? acc.initial_balance"
+            size="md" :tone="(acc.current_balance ?? acc.initial_balance) < 0 ? 'expense' : 'neutral'"
+            sign="none"
+          />
+        </span>
         <AppIcon :name="editingId === acc.id ? 'chevronUp' : 'chevronDown'" :size="15" class="am-chev text-ink-4" />
       </div>
 
@@ -385,7 +393,9 @@ const activeTotal = computed(
   white-space: nowrap;
 }
 .am-row-type { font-size: 0.625rem; color: var(--color-ink-4); white-space: nowrap; }
-.am-row-amt { flex-shrink: 0; }
+.am-row-amt { flex-shrink: 0; display: inline-flex; align-items: baseline; gap: 0.25rem; }
+.am-row-amt-cap { font-size: 0.5625rem; color: var(--color-ink-4); }
+.am-total-cap { font-size: 0.5625rem; color: var(--color-ink-4); }
 .am-chev { flex-shrink: 0; }
 
 .am-edit-ops { display: flex; align-items: center; gap: 0.5rem; }

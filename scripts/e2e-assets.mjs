@@ -217,7 +217,7 @@ export default defineConfig({
   await page.goto(`${B}/assets`, { waitUntil: 'networkidle' }); await wait(2200)
   ok(await page.locator('a[href="/investments"]').count() === 0, '没有理财账户时「投资」不出现')
   // 账户类型现在在账户列表的行内展开（不再有单独的「账户设置」列表）
-  await page.locator('.acct-row button.acct-name').filter({ hasText: accs[0].name }).first().click(); await wait(500)
+  await page.locator('.acct-row button.acct-id-btn').filter({ hasText: accs[0].name }).first().click(); await wait(500)
   await page.locator('select.field').first().selectOption('investment'); await wait(300)
   await page.locator('button:has-text("保存类型")').first().click(); await wait(2500)
   ok(await page.locator('a[href="/investments"]').count() > 0, '标成理财投资后「投资」立刻出现（不用刷新）')
@@ -256,20 +256,22 @@ export default defineConfig({
   ok(!(await page.locator('input[type="date"]').count()), '没有日期选择（不强调「记录到某天」）')
   ok(!(await page.getByText('记录今日').count()), '没有「记录今日」这种仪式措辞')
 
-  const bal = page.locator('input[aria-label$=" 余额"]').first()
-  ok(!(await page.locator('.acct-foot').count()), '没改动时不显示保存按钮')
-  ok(await page.locator('input[aria-label$=" 余额"]').first().getAttribute('placeholder') === '0',
-     '空余额的占位是 0（不填就是 0，不做「未填」状态）')
-  await bal.fill('1234.56'); await bal.blur(); await wait(600)
-  ok(await page.locator('.acct-foot').count() > 0, '有改动后才出现保存按钮')
-  await page.locator('.acct-foot button').click(); await wait(2000)
-  ok(!(await page.locator('.acct-foot').count()), '保存后按钮收起')
-  ok((await bal.inputValue()) === '1234.56', '保存后余额仍是填的值')
+  // 新设计：主数字是**账户总价值**（只读），现金输入收进行内展开、离开即存。
+  // 不再有整页的「保存」按钮（.acct-foot）——一行一存。
+  ok(!(await page.locator('.acct-foot').count()), '没有整页保存按钮（一行一存）')
+  ok(await page.locator('.acct-sum').count() > 0, '有「合计」，且与仪表盘净资产同口径')
 
-  // 清空不是 0
-  await bal.fill(''); await bal.blur(); await wait(500)
-  ok((await bal.inputValue()) === '', '清空后不显示 0')
-  ok(!(await page.locator('.acct-foot').count()), '清空不算改动，不弹保存')
+  // 展开某一行：应出现「现金」输入框（设计契约）。
+  // 保存时序由服务端测试覆盖（account-balance-model.test.ts），这里只验 UI 结构。
+  const nRows = await page.locator('button.acct-id-btn').count()
+  ok(nRows > 0, '账户行可点开')
+  let cash = page.locator('input[aria-label$=" 现金"]').first()
+  if ((await cash.count()) === 0) {
+    await page.locator('button.acct-id-btn').first().click(); await wait(700)
+    cash = page.locator('input[aria-label$=" 现金"]').first()
+  }
+  ok(await cash.count() > 0, '展开后有「现金」输入框')
+  ok(await cash.count() > 0 && await cash.getAttribute('placeholder') === '0.00', '空现金的占位是 0.00')
 
   section('【5】口径一致性')
   await page.goto(`${B}/overview`, { waitUntil: 'networkidle' }); await wait(2200)

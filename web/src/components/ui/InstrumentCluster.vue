@@ -153,12 +153,15 @@ const goExpense = () => router.push('/ledger?type=expense')
         <span class="val-full">{{ expenseText }}</span>
         <span class="val-compact">{{ readingCompact(cluster.monthExpense) }}</span>
       </strong>
+      <!-- 目标线「与上月持平」只在**真的有上月数据**时画。
+           没有对照却画一条「与上月持平」的线，下面又写「无上月对照」，
+           两句话自相矛盾（这正是用户看到的）。 -->
       <Gauge
         :pos="cluster.expenseGaugePos"
         :tone="cluster.expenseTone"
         :red-start="120 / 1.5"
-        :target="100 / 1.5"
-        target-label="与上月持平"
+        :target="cluster.expenseChange != null ? 100 / 1.5 : null"
+        :target-label="cluster.expenseChange != null ? '与上月持平' : undefined"
         min-label="−50%"
         max-label="+50%"
       />

@@ -19,7 +19,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import api from '@/api'
 import { useToast } from '@/composables/useToast'
-import AppIcon from '@/components/ui/AppIcon.vue'
+import Money from '@/components/ui/Money.vue'
 
 const props = defineProps<{
   accounts: Array<{ id: number; name: string; asset_type: string; icon?: string }>
@@ -36,6 +36,10 @@ const TYPE_LABELS: Record<string, string> = {
 
 interface Snap {
   cash: number
+  /** 账户总价值 = 持仓市值 + 现金。持仓行情缺失时为 null（此时只算现金，净资产显示 ≥） */
+  value: number | null
+  /** 持仓市值（折人民币）。无持仓为 0，行情缺失为 null */
+  holdingsValue: number | null
   isDebt: boolean
   hasHoldings: boolean
   lastUpdated: string
@@ -46,6 +50,10 @@ const loading = ref(true)
 const saving = ref(false)
 const snapByAccount = ref<Map<number, Snap>>(new Map())
 const lastUpdated = ref<string | null>(null)
+/** 合计 = 仪表盘的净资产口径（Σ 总价值），不是「现金加起来」 */
+const netWorth = ref<number | null>(null)
+const netWorthComplete = ref(true)
+const unpriced = ref(0)
 /** 每行输入框的当前文本。真相在 snapByAccount 里 */
 const draft = ref<Record<number, string>>({})
 /** 行内展开改设置的账户 */
@@ -60,12 +68,16 @@ async function load() {
       const map = new Map<number, Snap>()
       for (const a of data.data.accounts ?? []) {
         map.set(a.accountId, {
-          cash: a.cash, isDebt: a.isDebt, hasHoldings: a.hasHoldings,
+          cash: a.cash, value: a.value ?? null, holdingsValue: a.holdingsValue ?? null,
+          isDebt: a.isDebt, hasHoldings: a.hasHoldings,
           lastUpdated: a.lastUpdated, staleDays: a.staleDays,
         })
       }
       snapByAccount.value = map
       lastUpdated.value = data.data.lastUpdated ?? null
+      netWorth.value = data.data.netWorth ?? null
+      netWorthComplete.value = data.data.netWorthComplete !== false
+      unpriced.value = data.data.unpricedAccounts ?? 0
       seedDraft()
     }
   } catch { toast.error('读取账户失败') } finally { loading.value = false }
@@ -98,55 +110,64 @@ const rows = computed(() =>
       isDebt: snap?.isDebt ?? false,
       hasSnapshot: Boolean(snap),
       staleDays: snap?.staleDays ?? null,
+      cash: snap?.cash ?? 0,
+      // **总价值**（现金 + 持仓市值）。仪表盘的净资产按这个口径累加，
+      // 这里也按它显示，账户行加起来才等于净资产——之前只显示现金，
+      // 理财账户的持仓市值漏在外面，数字对不上仪表盘。
+      value: snap?.value ?? null,
+      holdingsValue: snap?.holdingsValue ?? null,
+      hasHoldings: snap?.hasHoldings ?? false,
+      /** 持仓市值没取到价 → 总价值算不出，只能显示现金这个下限 */
+      valueUnknown: snap?.hasHoldings === true && (snap?.value ?? null) == null,
     }
   }),
 )
 
-/** 有没有改动 —— 决定「保存」按不按钮出现 */
-const dirty = computed(() =>
-  rows.value.some((r) => {
-    const text = String(draft.value[r.accountId] ?? '').trim()
-    if (text === '') return false                       // 空 = 没填，不算改动
-    const prev = snapByAccount.value.get(r.accountId)?.cash
-    return prev == null || Math.round(Number(text) * 100) !== prev
-  }),
-)
+/** 元 → 「¥1,234.56」。行内小字用它，别再出现裸的 `12` */
+function fmt(cents: number): string {
+  return (cents / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
 
+/**
+ * 保存**单行**的现金（改完这一行就生效）。
+ *
+ * 以前是「页面上所有输入框 + 一个保存按钮」，现在主数字是只读的总价值、
+ * 输入收进行内展开，所以一行一存——离开输入框即提交，不用找保存按钮。
+ *
+ * 只提交这一行、且只提交真正改动的值：提交整页会把「打开时的旧值」也发上去，
+ * 期间（另一台设备）记的账会被覆盖回去。
+ */
+async function save(row: { accountId: number; name: string }) {
+  const text = String(draft.value[row.accountId] ?? '').trim()
+  if (text === '') {                                  // 空 = 取消输入，不是 0
+    seedDraft()
+    return
+  }
+  const yuan = Number(text)
+  if (!Number.isFinite(yuan) || yuan < 0) {
+    toast.warning(`${row.name} 的现金不是数字，已还原`)
+    seedDraft()
+    return
+  }
+  const next = Math.round(yuan * 100)
+  const prev = snapByAccount.value.get(row.accountId)?.cash
+  if (prev != null && next === prev) return            // 没改动，不打扰
 
-async function save() {
-  const items = rows.value
-    .map((r) => {
-      const text = String(draft.value[r.accountId] ?? '').trim()
-      if (text === '') return null                      // 空不是 0，跳过
-      const yuan = Number(text)
-      if (!Number.isFinite(yuan)) { toast.warning(`${r.name} 的余额不是数字，已跳过`); return null }
-      return { account_id: r.accountId, balance: Math.round(yuan * 100) }
-    })
-    .filter(Boolean) as Array<{ account_id: number; balance: number }>
-
-  /* 只提交**真正改动过**的行。
-     提交全部非空行会把「打开页面时预填的、用户没碰过的」也发上去，
-     而那些值是页面加载时的快照——如果期间（另一个标签页 / 手机端 /
-     另一台设备）该账户记了有归属账单，保存会把新余额覆盖回旧值，
-     那笔账单的效果永久消失。 */
-  const dirtyItems = items.filter((it) => {
-    const prev = snapByAccount.value.get(it.account_id)?.cash
-    return prev == null || it.balance !== Math.round(prev)
-  })
-
-  if (dirtyItems.length === 0) { toast.warning('余额没有变化'); return }
   saving.value = true
   try {
-    const { data } = await api.put('/assets/snapshots', { items: dirtyItems })
+    const { data } = await api.put('/assets/snapshots', {
+      items: [{ account_id: row.accountId, balance: next }],
+    })
     if (data.code === 0) {
-      toast.success('已保存')
+      toast.success(`「${row.name}」现金已更新`)
       await load()
       emit('changed')
     } else toast.error(data.message || '保存失败')
-  } catch { toast.error('保存失败') } finally { saving.value = false }
+  } catch { toast.error('保存失败') }
+  finally { saving.value = false }
 }
 
-/** 展开某账户的设置 */
+/** 展开/收起某行的编辑区（现金 + 账户类型） */
 function toggleEdit(r: { accountId: number; assetType: string }) {
   if (editing.value === r.accountId) { editing.value = null; return }
   editing.value = r.accountId
@@ -175,7 +196,15 @@ async function saveEdit() {
   <section class="sheet acct">
     <header class="acct-head">
       <span class="ledger-label ledger-label-solid">账户</span>
-      <span v-if="lastUpdated" class="acct-when amt">上次 {{ lastUpdated }}</span>
+      <!-- 合计放在这里，而且**必须和仪表盘净资产同口径**（Σ 总价值）。
+           之前这一页只显示现金、加起来和仪表盘差一个持仓市值，用户会以为算错了。 -->
+      <span v-if="netWorth != null" class="acct-sum">
+        <span class="acct-sum-cap">合计</span>
+        <span v-if="!netWorthComplete" class="acct-ge">≥</span
+        ><Money :value="netWorth" size="md" :tone="netWorth < 0 ? 'expense' : 'neutral'" sign="none" />
+        <span v-if="!netWorthComplete" class="acct-sum-note">{{ unpriced }} 个持仓未取价</span>
+      </span>
+      <span v-else-if="lastUpdated" class="acct-when amt">上次 {{ lastUpdated }}</span>
     </header>
 
     <p v-if="!loading && rows.length === 0" class="acct-empty">
@@ -187,28 +216,59 @@ async function saveEdit() {
         <template v-for="a in rows" :key="a.accountId">
           <li class="acct-row">
             <span class="tx-icon" aria-hidden="true">{{ a.icon || '💳' }}</span>
-            <span class="acct-id">
-              <button class="acct-name" :title="`改「${a.name}」的类型`" @click="toggleEdit(a)">
+            <button class="acct-id acct-id-btn" @click="toggleEdit(a)">
+              <span class="acct-name">
                 {{ a.name }}
                 <span class="acct-type">{{ TYPE_LABELS[a.assetType] ?? a.assetType }}</span>
-                <AppIcon :name="editing === a.accountId ? 'chevronUp' : 'chevronDown'" :size="12" class="acct-caret" />
-              </button>
-              <span v-if="a.isInvestment" class="acct-tag">余额填现金</span>
-              <span v-else-if="a.staleDays !== null && a.staleDays >= 3" class="acct-stale amt">{{ a.staleDays }} 天没更新</span>
+              </span>
+              <!-- 构成写清楚：这个数为什么是这么大 -->
+              <span v-if="a.hasHoldings" class="acct-break">
+                <template v-if="a.valueUnknown">
+                  现金 {{ fmt(a.cash) }} · 持仓未取价
+                </template>
+                <template v-else>
+                  持仓 {{ fmt(a.holdingsValue ?? 0) }} · 现金 {{ fmt(a.cash) }}
+                </template>
+              </span>
+              <span v-else-if="a.staleDays !== null && a.staleDays >= 3" class="acct-stale amt">
+                {{ a.staleDays }} 天没更新
+              </span>
+            </button>
+            <!--
+              主数字 = **账户总价值**（现金 + 持仓市值），和仪表盘净资产同口径。
+              之前这里是个现金输入框：扫视时看不出这个账户有多少钱，
+              而且把各行加起来会和仪表盘差一个持仓市值。
+            -->
+            <span class="acct-total amt">
+              <span v-if="a.valueUnknown" class="acct-ge">≥</span
+              ><Money
+                :value="a.value ?? a.cash"
+                size="md"
+                :tone="(a.value ?? a.cash) < 0 ? 'expense' : 'neutral'"
+                sign="none"
+              />
             </span>
-            <input
-              v-model="draft[a.accountId]"
-              class="acct-input amt"
-              type="number"
-              inputmode="decimal"
-              step="0.01"
-              placeholder="0"
-              :aria-label="`${a.name} 余额`"
-            />
           </li>
 
           <!-- 行内改设置：只改元数据，余额在上面那行 -->
           <li v-if="editing === a.accountId" class="acct-edit">
+            <!--
+              现金输入收在这里。理财账户的 `balance` 语义就是**现金**
+              （总价值 = 现金 + 持仓市值），所以标签写明「现金」，不叫「余额」。
+            -->
+            <label>
+              <span>现金（元）<template v-if="a.hasHoldings"> · 持仓市值 {{ fmt(a.holdingsValue ?? 0) }} 自动算</template></span>
+              <input
+                v-model="draft[a.accountId]"
+                class="acct-input amt"
+                type="number"
+                inputmode="decimal"
+                step="0.01"
+                placeholder="0.00"
+                :aria-label="`${a.name} 现金`"
+                @change="save(a)"
+              />
+            </label>
             <label>
               <span>账户类型</span>
               <select v-model="editForm.asset_type" class="field">
@@ -227,18 +287,49 @@ async function saveEdit() {
         </template>
       </ul>
 
-      <!-- 有改动才出现。不写「记录今日」——记录就是记录，不用先决定记到哪天 -->
-      <footer v-if="dirty" class="acct-foot">
-        <span class="acct-foot-note">有未保存的余额</span>
-        <button class="btn btn-primary btn-sm" :disabled="saving" @click="save">
-          {{ saving ? '保存中…' : '保存' }}
-        </button>
-      </footer>
     </template>
   </section>
 </template>
 
 <style scoped>
+/* 合计（和仪表盘净资产同口径） */
+.acct-sum {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+.acct-sum-cap { font-size: 0.625rem; color: var(--color-ink-4); }
+.acct-sum-note { font-size: 0.5625rem; color: var(--color-ink-4); }
+
+/* 行：左侧身份+构成，右侧总价值。整行可点开编辑。 */
+.acct-id-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1;
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.acct-id-btn:hover .acct-name { color: var(--color-action); }
+.acct-break {
+  font-size: 0.5625rem;
+  line-height: 1.4;
+  color: var(--color-ink-4);
+  font-variant-numeric: tabular-nums;
+}
+.acct-total {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.1rem;
+}
+.acct-ge { color: var(--color-ink-3); font-weight: 500; }
+
 .acct-head {
   display: flex;
   align-items: center;
