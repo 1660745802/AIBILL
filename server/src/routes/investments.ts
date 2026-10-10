@@ -235,6 +235,11 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
         updatedAt: h.updatedAt,
         // 市值：行情缺失时为 null，**不编 0** —— UI 显示「—」而不是「归零了」
         marketValue: h.marketValue,
+        // 币种相关：外币要折人民币，UI 要标出原币和用了哪个汇率。
+        // 漏传会让界面显示成「待补汇率 → CNY」——币种那一格是空的。
+        marketValueNative: h.marketValueNative,
+        currency: h.currency,
+        fxRate: h.fxRate,
         valued: h.valued,
         quote: h.quote
           ? { name: h.quote.name, price: h.quote.price, quoteDate: h.quote.quoteDate, changeRate: h.quote.changeRate }

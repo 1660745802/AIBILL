@@ -290,13 +290,22 @@ async function remove(h: InvestmentItem) {
 }
 .hold-row:first-child { border-top: 0; }
 .hold-id { min-width: 0; }
+/* 左侧身份区：名称是主，代码是副。两行行距收紧到像一个整体，
+   不然名字和代码看起来是两个无关的东西。 */
+.hold-id { display: flex; flex-direction: column; line-height: 1.25; }
 .hold-name {
   display: block;
   font-size: 0.8125rem;
   color: var(--color-ink-1);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.hold-code { display: block; font-family: var(--font-mono); font-size: 0.625rem; color: var(--color-ink-4); }
+.hold-code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  letter-spacing: 0.01em;
+  color: var(--color-ink-4);
+}
 .hold-qty { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.625rem; color: var(--color-ink-3); }
 .hold-input {
   height: 1.75rem;
