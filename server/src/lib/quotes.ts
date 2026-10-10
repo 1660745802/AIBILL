@@ -86,6 +86,35 @@ export function normalizeCode(input: string): string {
 }
 
 /**
+ * 行情时间戳 → `YYYY-MM-DD HH:MM:SS`。**三个市场三种写法，实测的**：
+ *   A股/ETF  `20261009161450`
+ *   港股     `2026/10/09 16:08:08`
+ *   外盘     `2026-10-09`
+ *
+ * 不归一的话，`investment_quotes.quoted_at` 会按市场存成三种格式，
+ * 前端显示出来就是原始串（用户看到 `行情更新于 20261009161456`）。
+ */
+export function toIsoDateTime(stamp: string): string | null {
+  const s = String(stamp).trim()
+  if (!s) return null
+  // 紧凑：20261009161450（可能只有日期 20261009）
+  let m = s.match(/^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?$/)
+  if (m) {
+    const [, y, mo, d, hh = '00', mm = '00', ss = '00'] = m
+    if (Number(mo) > 12 || Number(d) > 31) return null
+    return `${y}-${mo}-${d} ${hh}:${mm}:${ss}`
+  }
+  // 带分隔：2026/10/09 16:08:08、2026-10-09 16:08:08、2026-10-09T16:08:08Z
+  m = s.match(/^(\d{4})[/-](\d{2})[/-](\d{2})[ T]?(\d{2})?:?(\d{2})?:?(\d{2})?/)
+  if (m) {
+    const [, y, mo, d, hh = '00', mm = '00', ss = '00'] = m
+    if (Number(mo) > 12 || Number(d) > 31) return null
+    return `${y}-${mo}-${d} ${hh}:${mm}:${ss}`
+  }
+  return null
+}
+
+/**
  * 行情时间戳 → YYYY-MM-DD。**三个市场三种写法，实测的**：
  *   A股/ETF  `20261009161456`     紧凑数字
  *   港股     `2026/10/09 16:08:14` 带斜杠和时分秒
@@ -118,7 +147,7 @@ function parseTilde(code: string, body: string): Quote | null {
     prevClose: Number.isFinite(prev) && prev > 0 ? prev : null,
     changeRate: Number.isFinite(Number(f[32])) ? Number(f[32]) : null,
     quoteDate,
-    quoteAt: (f[30] ?? '').length >= 14 ? f[30]! : quoteDate,
+    quoteAt: toIsoDateTime(String(f[30] ?? '')) ?? `${quoteDate} 00:00:00`,
   }
 }
 
@@ -147,7 +176,8 @@ function parseComma(code: string, body: string): Quote | null {
     prevClose: Number.isFinite(prev) && prev > 0 ? prev : null,
     changeRate: Number.isFinite(prev) && prev > 0 ? ((price - prev) / prev) * 100 : null,
     quoteDate,
-    quoteAt: time ? `${quoteDate} ${time}` : quoteDate,
+    // 外盘没有 f[30]（段数和 A 股不同），时间在 f[6]
+    quoteAt: toIsoDateTime(time ? `${quoteDate} ${time}` : quoteDate) ?? `${quoteDate} 00:00:00`,
   }
 }
 
@@ -194,7 +224,7 @@ function parseFx(code: string, body: string): Quote | null {
     prevClose: Number.isFinite(prev) && prev > 0 ? prev : null,
     changeRate: null, // 汇率的涨跌幅对估值没用，不编
     quoteDate: toIsoDate(String(f[5] ?? '')) ?? '',
-    quoteAt: toIsoDate(String(f[5] ?? '')) ?? '',
+    quoteAt: toIsoDateTime(String(f[5] ?? '')) ?? `${toIsoDate(String(f[5] ?? '')) ?? ''} 00:00:00`,
   }
 }
 

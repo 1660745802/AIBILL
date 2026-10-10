@@ -18,7 +18,7 @@ import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { normalizeCode, fetchQuotes, currencyOf, fxCodesFor, type Quote } from '../lib/quotes.js'
-import { storeQuotes, loadLatestFxRates } from '../lib/investments-repo.js'
+import { storeQuotes, loadLatestFxRates, loadQuoteStatus } from '../lib/investments-repo.js'
 import { fetchFxRates } from '../lib/fx.js'
 import { shouldFetchQuotes } from '../services/scheduler.js'
 import { loadValuedHoldings } from '../lib/investments-repo.js'
@@ -275,7 +275,14 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
       }
     } catch { /* 自愈是尽力而为 */ }
 
-    return { code: 0, data: { items }, message: '' }
+    // 行情状态要**从数据里算**：用户打开页面就该看到「上次更新 X」，
+    // 而不是只有点过刷新才知道。schedule 让前端能解释「为什么没自动更新」。
+    const quote = loadQuoteStatus(db, userId)
+    return {
+      code: 0,
+      data: { items, quote: { ...quote, schedule: shouldFetchQuotes() } },
+      message: '',
+    }
   })
 
   /**

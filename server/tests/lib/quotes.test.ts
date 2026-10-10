@@ -9,7 +9,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { normalizeCode, parseQuoteResponse, parseQuoteLine, fetchQuotes } from '../../src/lib/quotes.js'
 
 import { readFileSync } from 'node:fs'
-import { currencyOf, fxCodesFor } from '../../src/lib/quotes.js'
+import { currencyOf, fxCodesFor, toIsoDateTime } from '../../src/lib/quotes.js'
 import { valueHolding, groupByAccount } from '../../src/lib/holdings.js'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -267,5 +267,44 @@ describe('外币持仓折人民币', () => {
     const got = m.get(1)!
     // HK$20,000 × 0.85 = ¥17,000；¥800 不折
     expect(got.marketValue).toBe(Math.round(2000000 * 0.85) + 80000)
+  })
+})
+
+/* 时间戳归一：三个市场三种格式，不统一就会被原样显示出来 */
+describe('toIsoDateTime', () => {
+  it('A 股紧凑格式', () => {
+    expect(toIsoDateTime('20261009161450')).toBe('2026-10-09 16:14:50')
+    expect(toIsoDateTime('20261009')).toBe('2026-10-09 00:00:00')
+  })
+  it('港股斜杠格式（之前会原样透传，页面显示成一串数字）', () => {
+    expect(toIsoDateTime('2026/10/09 16:08:08')).toBe('2026-10-09 16:08:08')
+  })
+  it('已有 ISO 格式保持不变', () => {
+    expect(toIsoDateTime('2026-10-09 16:14:56')).toBe('2026-10-09 16:14:56')
+    expect(toIsoDateTime('2026-10-09T16:14:56Z')).toBe('2026-10-09 16:14:56')
+  })
+  it('月份/日期越界返回 null，不编时间', () => {
+    expect(toIsoDateTime('20261309161450')).toBeNull()
+    expect(toIsoDateTime('20261099161450')).toBeNull()
+    expect(toIsoDateTime('')).toBeNull()
+    expect(toIsoDateTime('乱七八糟')).toBeNull()
+  })
+})
+
+describe('解析结果里的 quoteAt 已归一', () => {
+  it('A 股 → ISO（用真实抓取的夹具）', () => {
+    const SAMPLE = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../fixtures/quotes-sample.txt'),
+      'utf-8',
+    )
+    const q = parseQuoteResponse(SAMPLE).find((x) => x.code === 'sh518880')!
+    expect(q.quoteAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+    expect(q.quoteAt.startsWith(q.quoteDate)).toBe(true)
+  })
+  it('港股斜杠 → ISO', () => {
+    const q = parseQuoteLine(
+      'v_hk00100="100~MINIMAX-W~00100~213.000~210~211~1~2~3~4~5~6~7~8~9~10~11~12~13~14~15~16~17~18~19~20~21~22~23~24~2026/10/09 16:08:08~26~27"',
+    )
+    expect(q?.quoteAt).toBe('2026-10-09 16:08:08')
   })
 })

@@ -118,6 +118,44 @@ export function loadLatestFxRates(db: Db): Map<string, number> {
   return out
 }
 
+/**
+ * 行情状态：这批持仓**最后一次拿到价是什么时候**。
+ *
+ * 为什么要从数据里算，而不是让前端记：用户打开页面就该看到「上次更新 X」，
+ * 而不是只有点过刷新才知道。前端 ref 只在手动刷新时赋值 → 页面加载时永远是空的，
+ * 显示成「行情未获取过」，而实际上库里早有数据。
+ */
+export function loadQuoteStatus(db: Db, userId: number): {
+  lastAt: string | null
+  lastDate: string | null
+  pricedCount: number
+  totalCount: number
+} {
+  const holdings = loadHoldings(db, userId).filter((h) => h.isActive)
+  if (holdings.length === 0) {
+    return { lastAt: null, lastDate: null, pricedCount: 0, totalCount: 0 }
+  }
+  const codes = [...new Set(holdings.map((h) => h.code))]
+  const placeholders = codes.map(() => '?').join(',')
+  const row = db.prepare(
+    `SELECT MAX(quoted_at) AS last_at, MAX(quote_date) AS last_date
+       FROM investment_quotes
+      WHERE code IN (${placeholders})`,
+  ).get(...codes) as { last_at: string | null; last_date: string | null } | undefined
+
+  // 有多少个标的真的取到了价（用于「2/3 个已取价」这类口径）
+  const priced = db.prepare(
+    `SELECT count(DISTINCT code) c FROM investment_quotes WHERE code IN (${placeholders})`,
+  ).get(...codes) as { c: number }
+
+  return {
+    lastAt: row?.last_at ?? null,
+    lastDate: row?.last_date ?? null,
+    pricedCount: priced.c,
+    totalCount: codes.length,
+  }
+}
+
 export function loadAccountHoldings(db: Db, userId: number): Map<number, AccountHoldings> {
   const holdings = loadHoldings(db, userId).filter((h) => h.isActive)
   const quotes = loadLatestQuotes(db, holdings.map((h) => h.code))

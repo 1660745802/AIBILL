@@ -83,6 +83,8 @@ async function load() {
     ])
     if (accRes.data.code === 0) accounts.value = accRes.data.data.items
     if (portRes.data.code === 0) positions.value = portRes.data.data.accounts
+    const listRes = await api.get('/investments')
+    if (listRes.data.code === 0) quoteStatus.value = listRes.data.data.quote ?? null
 
     const next: typeof draft.value = {}
     for (const a of investAccounts.value) {
@@ -149,6 +151,27 @@ const pct = (v: number | null) => (v == null ? '' : `（${(v * 100).toFixed(1)}%
    之前「未取到价」是个死胡同：定时抓取有交易时段门禁（周末/夜间静默跳过），
    页面既不说为什么，也不给任何入口。用户只能干等。
    现在给个按钮，而且**如实说为什么**：没抓过 / 代码不对 / 网络不通。*/
+/**
+ * 时间戳 → 「10-09 16:08」。
+ *
+ * 要兼容**三种历史格式**——`quoted_at` 是按市场存的，老数据里同时存在：
+ *   A股   20261009161450
+ *   港股  2026/10/09 16:08:08
+ *   新数据 2026-10-09 16:08:08（服务端已归一）
+ */
+function fmtQuoteTime(at: string): string {
+  if (!at) return ''
+  let m = at.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/)
+  if (m) return `${m[2]}-${m[3]} ${m[4]}:${m[5]}`
+  m = at.match(/^(\d{4})[/-](\d{2})[/-](\d{2})[ T](\d{2}):(\d{2})/)
+  if (m) return `${m[2]}-${m[3]} ${m[4]}:${m[5]}`
+  m = at.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/)
+  if (m) return `${m[2]}-${m[3]} ${m[4]}:${m[5]}`
+  m = at.match(/^(\d{4})[/-](\d{2})[/-](\d{2})/)
+  if (m) return `${m[2]}-${m[3]}`
+  return at
+}
+
 /** 账户类型的中文标签（投资页账户头上用） */
 const ASSET_LABEL: Record<string, string> = {
   investment: '理财投资', liquid: '活期', savings: '定期',
@@ -156,25 +179,36 @@ const ASSET_LABEL: Record<string, string> = {
 }
 
 const refreshing = ref(false)
-const scheduleNote = ref<string | null>(null)   // 为什么没有自动更新
-const quoteNote = ref<string | null>(null)      // 刚才这一次的结果
-const quoteBad = ref<string[]>([])              // 取不到价的代码
-const quoteAt = ref<string | null>(null)        // 行情时刻（来自行情自带日期）
+const quoteNote = ref<string | null>(null)      // 刚才这一次的结果（临时反馈）
+/**
+ * 行情状态**来自服务端数据**，不是前端自己记的。
+ *
+ * 之前是一个只在手动刷新时赋值的 ref，于是页面一加载就显示「行情未获取过」——
+ * 哪怕库里早有数据。用户根本看不到「上一次刷新时间」。
+ */
+const quoteStatus = ref<{
+  lastAt: string | null
+  lastDate: string | null
+  pricedCount: number
+  totalCount: number
+  schedule?: { fetch: boolean; reason: string }
+} | null>(null)
 
 async function refreshQuotes() {
   refreshing.value = true
   quoteNote.value = null
-  quoteBad.value = []
   try {
     const { data } = await api.post('/investments/quotes/refresh')
     if (data.code !== 0) { toast.error(data.message || '刷新失败'); return }
     const d = data.data
-    scheduleNote.value = d.schedule?.fetch ? null : d.schedule?.reason || null
-    quoteAt.value = d.at
+    quoteNote.value = d.missing?.length
+      ? `${d.fetched} 个已更新，${d.missing.length} 个取不到价`
+      : `已更新 ${d.fetched} 个标的`
+    // 刷新完重新拉一次列表：状态和时间都从数据里来
+    await load()
 
     if (d.total === 0) { toast.info('没有活跃持仓，无需刷新行情'); return }
 
-    quoteBad.value = (d.missing ?? []).map((m: any) => m.code)
     if (d.network === false) {
       quoteNote.value = '行情接口连不上，稍后再试'
       toast.error(quoteNote.value)
@@ -186,13 +220,13 @@ async function refreshQuotes() {
       : `已更新 ${d.fetched} 个标的`
 
     if (d.missing?.length) {
-      // 拿不到的不静默：逐个说清原因，并指向修改入口
+      // 拿不到的不静默：逐个说清原因
       const codes = d.missing.map((m: any) => m.code).join('、')
       toast.warning(`${codes} 取不到价，检查代码是否填对`)
     } else {
       toast.success(quoteNote.value)
     }
-    refreshAll()
+    cluster.loadPortfolio()
   } catch {
     toast.error('刷新失败')
   } finally { refreshing.value = false }
@@ -211,9 +245,22 @@ async function refreshQuotes() {
          还是系统没跑。 -->
     <div class="quote-bar">
       <div class="quote-bar-info">
-        <span v-if="quoteAt" class="quote-at">上次刷新 {{ quoteAt.slice(5, 16) }}</span>
-        <span v-else class="quote-at quote-at-quiet">行情未获取过</span>
-        <span v-if="scheduleNote" class="quote-gate">自动更新：{{ scheduleNote }}</span>
+        <!--
+          时间来自服务端数据（库里最新一条行情），不是前端记的——
+          这样打开页面就能看到「上次更新 X」，不必先点一次刷新。
+        -->
+        <span v-if="quoteStatus?.lastAt" class="quote-at">
+          行情更新于 {{ fmtQuoteTime(quoteStatus.lastAt) }}
+          <span v-if="quoteStatus.pricedCount < quoteStatus.totalCount" class="quote-partial">
+            （{{ quoteStatus.pricedCount }}/{{ quoteStatus.totalCount }} 个标的）
+          </span>
+        </span>
+        <span v-else-if="quoteStatus && quoteStatus.totalCount > 0" class="quote-at quote-at-quiet">
+          还没有取到过行情
+        </span>
+        <span v-if="quoteStatus?.schedule && !quoteStatus.schedule.fetch" class="quote-gate">
+          自动更新暂停：{{ quoteStatus.schedule.reason }}
+        </span>
         <span v-if="quoteNote" class="quote-note">{{ quoteNote }}</span>
       </div>
       <button
@@ -404,6 +451,7 @@ async function refreshQuotes() {
 .quote-at-quiet { color: var(--color-ink-4); }
 .quote-gate { color: var(--color-warn, var(--color-ink-3)); }
 .quote-note { color: var(--color-ink-2); font-weight: 500; }
+.quote-partial { color: var(--color-ink-4); }
 .inv-act-hint {
   color: var(--color-action);
   cursor: pointer;
