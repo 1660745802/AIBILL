@@ -582,6 +582,21 @@ select.field {
 .field-hint { font-size: 0.6875rem; color: var(--color-ink-3); margin-top: 0.3125rem; }
 .field-error { font-size: 0.6875rem; color: var(--color-expense); margin-top: 0.3125rem; }
 
+/* ── 数字输入框：去掉浏览器画的上下微调箭头 ──
+   金额/数量框要的是「键盘给数字」，不是一对容易被误点的步进按钮：
+   桌面端很碍眼，鼠标滚轮划过还会静默改数。
+   语义仍然是 type=number —— 数字键盘、min/max/step、输入校验都保留，
+   只是不画那两个箭头。放全局一处，避免每个组件各写一遍。 */
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
 /* ═══════════════ 标记 chip ═══════════════ */
 .chip {
   display: inline-flex;
