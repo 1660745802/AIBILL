@@ -11,6 +11,12 @@ import { appLog as log } from './logger.js'
 import crypto from 'node:crypto'
 import { fetchQuotes, currencyOf, fxCodesFor } from '../lib/quotes.js'
 import { storeQuotes } from '../lib/investments-repo.js'
+import { fetchFxRates } from '../lib/fx.js'
+
+/** 兜底源的日期只有「今天」可用——它本身不带行情时间戳 */
+function today(): string {
+  return new Date().toISOString().slice(0, 10)
+}
 import { applyTxn } from '../lib/account-balance.js'
 
 /**
@@ -260,13 +266,23 @@ export async function processFxRateFetch(): Promise<void> {
   ).all() as Array<{ code: string }>
   if (rows.length === 0) return
 
-  const needFx = fxCodesFor(rows.map((r) => currencyOf(r.code)))
-  if (needFx.length === 0) return
+  const currencies = [...new Set(rows.map((r) => currencyOf(r.code)))]
+  if (currencies.every((c) => c === 'CNY')) return
 
   try {
-    const quotes = await fetchQuotes(needFx)
+    // 主源腾讯 + 兜底 ECB，见 lib/fx.ts
+    const { rates, source } = await fetchFxRates(currencies)
+    const quotes = [...rates].map(([ccy, rate]) => ({
+      code: `wh${ccy}CNY`,
+      name: `${ccy}人民币`,
+      price: rate,
+      prevClose: null,
+      changeRate: null,
+      quoteDate: today(),
+      quoteAt: today(),
+    }))
     if (quotes.length > 0) storeQuotes(db, quotes)
-    log('info', 'fx', `汇率已更新 ${quotes.length}/${needFx.length}`)
+    log('info', 'fx', `汇率已更新 ${quotes.length} 个（来源 ${source}）`)
   } catch (err) {
     // 汇率失败不影响股价抓取，只记一笔
     log('warn', 'fx', `汇率抓取失败（维持旧汇率）: ${err instanceof Error ? err.message : String(err)}`)

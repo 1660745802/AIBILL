@@ -19,6 +19,7 @@ import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { normalizeCode, fetchQuotes, currencyOf, fxCodesFor, type Quote } from '../lib/quotes.js'
 import { storeQuotes, loadLatestFxRates } from '../lib/investments-repo.js'
+import { fetchFxRates } from '../lib/fx.js'
 import { shouldFetchQuotes } from '../services/scheduler.js'
 import { loadValuedHoldings } from '../lib/investments-repo.js'
 
@@ -145,11 +146,13 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
 
     const codes = rows.map((r) => r.code)
 
-    // 顺带取汇率：外币持仓要折人民币
-    const needFx = fxCodesFor(codes.map(currencyOf))
+    // 顺带取汇率：外币持仓要折人民币。
+    // 股价和汇率分开取——汇率有自己的兜底源（lib/fx.ts），不该被股价的失败带崩。
+    const currencies = [...new Set(codes.map(currencyOf))]
+    const fxPromise = fetchFxRates(currencies).catch(() => ({ rates: new Map<string, number>(), source: 'none' as const }))
     let quotes: Quote[]
     try {
-      quotes = await fetchQuotes([...codes, ...needFx])
+      quotes = await fetchQuotes(codes)
     } catch (err) {
       // 网络/接口挂了要单独报：这跟「代码不对」是两回事，用户该做什么完全不同
       return {
@@ -160,6 +163,7 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
           network: false,
           results: [],
           fx: {},
+          fxSource: 'none',
           missing: codes.map((c) => ({ code: c, reason: '行情接口连不上，稍后再试' })),
         },
         message: '行情接口连不上，稍后再试',
@@ -172,11 +176,16 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
     const got = new Map(quotes.map((q) => [q.code, q]))
     const results: Array<{ code: string; ok: boolean; price?: number; quoteDate?: string; changeRate?: number | null; reason?: string }> = []
     const missing: Array<{ code: string; reason: string }> = []
+    // 汇率（腾讯或 ECB 兜底）单独落库
+    const fxRes = await fxPromise
     const fx: Record<string, number> = {}
-    for (const q of quotes) {
-      if (q.code.toLowerCase().startsWith('wh') && q.code.endsWith('CNY')) {
-        fx[q.code.slice(2, q.code.length - 3)] = q.price
-      }
+    const today = new Date().toISOString().slice(0, 10)
+    for (const [ccy, rate] of fxRes.rates) fx[ccy] = rate
+    if (fxRes.rates.size > 0) {
+      storeQuotes(db, [...fxRes.rates].map(([ccy, rate]) => ({
+        code: `wh${ccy}CNY`, name: `${ccy}人民币`, price: rate,
+        prevClose: null, changeRate: null, quoteDate: today, quoteAt: today,
+      })))
     }
 
     for (const code of codes) {
@@ -199,7 +208,7 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
 
     return {
       code: 0,
-      data: { ...base, fetched: results.filter((r) => r.ok).length, network: true, results, missing, fx },
+      data: { ...base, fetched: results.filter((r) => r.ok).length, network: true, results, missing, fx, fxSource: fxRes.source },
       message: results.every((r) => r.ok)
         ? `已更新 ${results.length} 个标的`
         : `${results.filter((r) => r.ok).length} 个已更新，${missing.length} 个取不到价`,
@@ -254,7 +263,13 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
       const missing = [...new Set(items.map((h) => h.currency))]
         .filter((c) => c !== 'CNY' && !haveFx.has(c))
       if (missing.length > 0) {
-        void fetchQuotes(fxCodesFor(missing)).then((qs) => {
+        // 主源腾讯 + 兜底 ECB（见 lib/fx.ts），拿不到就保持「待补汇率」
+        void fetchFxRates(missing).then(({ rates }) => {
+          const today = new Date().toISOString().slice(0, 10)
+          const qs = [...rates].map(([ccy, rate]) => ({
+            code: `wh${ccy}CNY`, name: `${ccy}人民币`, price: rate,
+            prevClose: null, changeRate: null, quoteDate: today, quoteAt: today,
+          }))
           if (qs.length > 0) storeQuotes(getDb(), qs)
         }).catch(() => {/* 后台补失败不影响本次响应 */})
       }

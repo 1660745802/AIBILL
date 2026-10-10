@@ -55,6 +55,12 @@ export function normalizeCode(input: string): string {
     return dotted[2]! + dotted[1]!
   }
 
+  /* 外汇：`whHKDCNY` / `whUSDCNY`（wh + 两个三字母币种）。
+     **必须排在「纯字母=美股」之前**——否则 `whHKDCNY` 会小写成 whhkdcny、
+     被当成全是字母的代码，落到美股那条变成 `usWHHKDCNY`，腾讯不认，
+     于是汇率整条链路取不到（界面一直显示「待补汇率」）。 */
+  if (/^wh[a-z]{6}$/i.test(s)) return `wh${raw.slice(2).toUpperCase()}`
+
   // 已带前缀且含字母 → 保留原大小写（大小写敏感：hkHSI/usAAPL/hf_XAU）
   if (/^(hk|us|hf)[a-z]/i.test(s) && /[a-z]/i.test(raw.slice(2))) {
     const prefix = raw.slice(0, 2)
@@ -62,6 +68,8 @@ export function normalizeCode(input: string): string {
   }
   // 已经是全小写的 hf_xxx（历史数据里存过），提到正确大小写：hf_xau → hf_XAU
   if (/^hf_[a-z]+$/.test(s)) return `hf_${s.slice(3).toUpperCase()}`
+  // 已全小写的 wh 也一样：whhkdcny → whHKDCNY
+  if (/^wh[a-z]{6}$/.test(s)) return `wh${s.slice(2).toUpperCase()}`
   // 已带数字前缀且已规范，别再加一次（`usAAPL` 曾被二次加前缀成 `usUSAAPL`）
   if (/^(sh|sz|bj)\d{6}$/.test(s)) return s
   if (/^hk\d{4,6}$/.test(s)) return s
