@@ -280,7 +280,11 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
     const quote = loadQuoteStatus(db, userId)
     return {
       code: 0,
-      data: { items, quote: { ...quote, schedule: shouldFetchQuotes() } },
+      data: {
+        items,
+        // 按用户**实际持有的市场**报时段：只持 A 股的人不该被告知「美股盘中」
+        quote: { ...quote, schedule: shouldFetchQuotes(new Date(), quote.markets.length ? quote.markets : ['cn']) },
+      },
       message: '',
     }
   })

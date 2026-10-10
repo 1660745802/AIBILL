@@ -289,7 +289,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES (...);
 | **014** | **investments_and_quotes** | 新建 `investments`（持仓）+ `investment_quotes`（行情历史） |
 | **015** | **ai_parse_filters_backfill** | 幂等补建 `ai_parse_filters`（修生产库缺表，见下 §10） |
 | **016** | **drop_holding_cost_basis** | 删三列冗余/误导性字段 + 加 `accounts.invested_total`（见下 §10.5） |
-| **017** | **account_balance_single_source** | 账户余额归一：加 `accounts.balance` / `balance_as_of_txn_id`（见下 §11） |
+| **017** | **account_balance_single_source** | 账户余额归一：加 `accounts.balance` / `balance_as_of_txn_id`（见下 §12） |
 
 > ⚠️ migration 012 曾被原地改写：早期版本重建过 `ai_parse_logs`（放宽 `status` CHECK 加 `filtered`），
 > 并被误应用到**生产库**（记录名 `parse_landing_tracking`）。当前代码里 012 是「新建 `ai_parse_filters`」版，
@@ -410,7 +410,7 @@ asset_snapshots.total_invested   总投入搬到 accounts
 | 现金 | `accounts.balance`（017 起唯一真源）：有归属账单实时加减 + 手填覆盖 | `PUT /api/assets/snapshots` |
 | 份额 | 用户手填（低频，加/减仓） | `POST/PATCH /api/investments` |
 | 总投入 | 用户手填（只在存/取钱时） | `PUT /api/assets/accounts/:id` |
-| 行情 | **定时任务**（盘中每小时 + 收盘后） | 无接口，`scheduler.ts` 写入 |
+| 行情 | **定时任务**，每 15 分钟检查一次（`QUOTE_REFRESH_MINUTES` 可调），**按市场分别判断时段** | 无接口，`scheduler.ts` 写入 |
 
 > ⚠️ `POST /api/assets/snapshot`（旧口径：按「期初余额 + 流水」回算）**跳过理财账户**。
 > 它写的是同一个 `balance` 列，但对理财账户回算出来是「总价值」语义（含持仓），
@@ -420,7 +420,47 @@ asset_snapshots.total_invested   总投入搬到 accounts
 > 结果是 `investment_quotes` 永远 0 行、持仓永远「未取到价」、账户总价值永远算不出。
 > 回归测试见 `tests/lib/scheduler-quotes.test.ts`。
 
-## 11. 账户余额模型（migration 017）
+## 11. 行情抓取时段（按市场）
+
+A股 / 港股 / 美股 的开市时间**完全不同**，所以门禁必须按市场算——
+只判断「是不是 A 股盘中」会让港股收盘价和美股永远抓不到。
+
+| 市场 | 当地 | **北京时间** | 代码前缀 |
+|---|---|---|---|
+| A股 | 9:30-11:30 / 13:00-15:00 | 同左 | `sh` `sz` `bj` |
+| 港股 | 9:30-12:00 / 13:00-16:00 | 同左（**比 A 股晚 1 小时收盘**） | `hk` |
+| 美股 | 9:30-16:00 ET | **21:30-04:00**（夏令时）/ 22:30-05:00（冬令时） | `us` `hf_` |
+
+实测各时刻是否抓（北京）：
+
+```
+北京     A股    港股    美股
+10:00    ✅     ✅      —
+15:20    ✅     ✅      —      ← A股收盘捕获；港股还在交易
+16:20     —     ✅      —      ← 港股收盘捕获
+22:00     —      —     ✅      ← 美股盘中
+02:00     —      —     ✅
+```
+
+美股跨午夜，窗口用「21:25 到次日 05:40」的宽窗口覆盖夏令时/冬令时；
+多抓的那段拿到的是上一交易日收盘价，有 `UNIQUE(code, quote_date, quoted_at)`
+去重，不会写脏数据。
+
+### 两个必须注意的坑
+
+**① 时区**：判断必须用**北京时间**，不能用 `now.getHours()`。
+容器通常跑在 UTC，用本地时间会让门禁整体错 8 小时——北京盘中（UTC 02:00）
+被判成「非交易时段」，北京夜里反而去抓。`beijingNow()` / `beijingDate()`
+负责换算，中国不实行夏令时所以固定 UTC+8 是对的。
+
+**② 节假日**：不维护交易日历（要年年更新，还挡不住台风临时休市），
+而是**从数据推断**——盘中去抓一次，如果行情自带的日期**不是今天**，
+说明该市场今天没开市，当日不再抓。只在「开盘够久之后」才下这个结论
+（刚开盘拿到的可能还是上一交易日的日期）。
+
+---
+
+## 12. 账户余额模型（migration 017）
 
 余额有且只有一个真源：**`accounts.balance`**。它由两条路径共同维护：
 

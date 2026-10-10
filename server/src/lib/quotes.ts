@@ -196,6 +196,22 @@ export function currencyOf(code: string): string {
   return 'CNY' // sh / sz / bj / 未知
 }
 
+/** 三个市场的交易时段完全不同，所以取价要按市场分开判断。 */
+export type Market = 'cn' | 'hk' | 'us'
+
+/**
+ * 从代码推市场。
+ *
+ * 和 `currencyOf` 同源但**不是一回事**：伦敦金 `hf_XAU` 用美元计价（币种 USD），
+ * 但它的交易时段跟美股走（不是港股）。
+ */
+export function marketOfCode(code: string): Market {
+  const c = String(code).toLowerCase()
+  if (c.startsWith('hk')) return 'hk'
+  if (c.startsWith('us') || c.startsWith('hf_')) return 'us'
+  return 'cn' // sh / sz / bj
+}
+
 /** 折人民币需要的汇率代码（腾讯 `wh` 前缀就是外汇） */
 export function fxCodesFor(currencies: string[]): string[] {
   return [...new Set(currencies)]

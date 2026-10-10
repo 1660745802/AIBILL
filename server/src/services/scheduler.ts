@@ -2,14 +2,14 @@
  * 定时任务模块
  * - 订阅自动记账：到期的 auto_record 订阅自动生成交易
  * - 回收站自动清理：软删除超过 30 天的记录永久删除
- * - 行情抓取：盘中每小时 + 收盘后，写入 investment_quotes
+ * - 行情抓取：盘中每 15 分钟 + 收盘后，写入 investment_quotes
  *
- * 在 app 启动时注册，每小时执行一次检查
+ * 在 app 启动时注册，每 15 分钟执行一次检查（URL 门禁决定是否真抓）
  */
 import { getDb } from '../db/index.js'
 import { appLog as log } from './logger.js'
 import crypto from 'node:crypto'
-import { fetchQuotes, currencyOf, fxCodesFor } from '../lib/quotes.js'
+import { fetchQuotes, currencyOf, fxCodesFor, marketOfCode, type Market } from '../lib/quotes.js'
 import { storeQuotes } from '../lib/investments-repo.js'
 import { fetchFxRates } from '../lib/fx.js'
 
@@ -202,45 +202,95 @@ export async function runScheduledTasks(): Promise<void> {
     log('warn', 'scheduler', `汇率任务异常: ${err instanceof Error ? err.message : String(err)}`)
   })
 
-  const gate = shouldFetchQuotes()
-  if (gate.fetch) {
-    // 行情抓取是 async 且会失败（非官方接口），必须自己吞错，
-    // 不能让它把上面几个同步任务的结果带崩
-    await processQuoteFetch().catch((err) => {
-      log('warn', 'scheduler', `行情抓取异常: ${err instanceof Error ? err.message : String(err)}`)
-    })
-  }
+  // 门禁在 processQuoteFetch 内部按**市场**判断（A股/港股/美股时段不同），
+  // 这里不预先拦——否则美股（北京夜里）永远进不来。
+  await processQuoteFetch().catch((err) => {
+    log('warn', 'scheduler', `行情抓取异常: ${err instanceof Error ? err.message : String(err)}`)
+  })
 
   log('info', 'scheduler', '定时任务执行完毕')
 }
 
 
 /* ══════════════════════════════════════════════════════════
-   行情抓取：盘中每小时 + 收盘后
+   行情抓取：盘中每 15 分钟 + 收盘后
    ══════════════════════════════════════════════════════════ */
 
 /**
- * 什么时候该抓。三个时段，理由不同：
+ * 取**北京时间的**星期与「当天已过分钟数」。
  *
- *  - 盘中（9:30-11:30 / 13:00-15:00）：每小时一次。盘中价格对净资产这个量级
- *    影响很小，分钟级是浪费；小时级足够看出当天浮盈的变化。
- *  - 收盘后（15:00-15:40）：**这次最重要**。收盘价是净资产的锚，
- *    净值曲线和「今天值多少」都应该以它为准。
- *  - 其它时段：不抓。夜间跑同一个价，写进去只是伪造新鲜度。
+ * ⚠️ 不能用 `now.getHours()` / `now.getDay()`——那是**服务器本地时间**，
+ * 而容器通常跑在 UTC。这个坑真踩过：容器 `date` 是 `Sat Oct 10 12:45 UTC`，
+ * 北京时间已经是 20:45，门禁于是按 UTC 小时判断：
+ *   北京 10:00（盘中）= UTC 02:00 → `getHours()=2` → 判成「非交易时段」，不抓
+ *   北京 18:00（收盘）= UTC 10:00 → 判成「盘中」，抓
+ * 结果是**盘中一次都不抓、收盘后反而在抓**，而且完全静默。
  *
- * 用**服务器本地时间**判断即可：A 股是单一时区，自部署没有跨时区部署的动机。
+ * A 股只有北京时间一个时区，所以写死 UTC+8 是正确的（中国不实行夏令时）。
  */
-export function shouldFetchQuotes(now = new Date()): { fetch: boolean; reason: string } {
-  const day = now.getDay()
+function beijingNow(now: Date): { day: number; mins: number } {
+  const utcMins = now.getUTCHours() * 60 + now.getUTCMinutes()
+  const mins = (utcMins + 8 * 60) % 1440
+  // 加 8 小时若跨过 UTC 午夜，北京日期要 +1 天
+  const day = mins < utcMins ? (now.getUTCDay() + 1) % 7 : now.getUTCDay()
+  return { day, mins }
+}
+
+/** 北京日期 YYYY-MM-DD（用于和行情自带日期比对，判断今天是不是交易日） */
+export function beijingDate(now = new Date()): string {
+  const utc = now.getTime() + now.getTimezoneOffset() * 60_000
+  const bj = new Date(utc + 8 * 60 * 60_000)
+  return `${bj.getFullYear()}-${String(bj.getMonth() + 1).padStart(2, '0')}-${String(bj.getDate()).padStart(2, '0')}`
+}
+
+const MARKET_LABEL: Record<Market, string> = { cn: 'A股', hk: '港股', us: '美股' }
+
+/**
+ * 各市场交易时段（**北京时间**，当天分钟数）。收盘后各留一小段缓冲，
+ * 用来捕获收盘价——收盘价是净资产的锚。
+ *
+ *  | 市场 | 当地 | 北京时间 |
+ *  |---|---|---|
+ *  | A股  | 9:30-11:30 / 13:00-15:00 | 同左 |
+ *  | 港股 | 9:30-12:00 / 13:00-16:00 | 同左（**比 A 股晚 1 小时收盘**） |
+ *  | 美股 | 9:30-16:00 ET | **21:30-04:00**（夏令时）/ 22:30-05:00（冬令时） |
+ *
+ * 美股跨午夜，所以 window 会绕回 0 点。这里用「21:25 到次日 05:10」的宽窗口
+ * 把夏令时/冬令时都覆盖住——多抓的那段拿到的是上一交易日收盘价，
+ * 有 `UNIQUE(code, quote_date, quoted_at)` 去重，不会写脏数据。
+ */
+const SESSIONS: Record<Market, Array<[number, number]>> = {
+  // 收盘后各留 ~40 分钟：收盘价要等清算所结算才定下来，
+  // 这段里反复抓拿到的是同一个价，有 UNIQUE 去重，不会写脏数据。
+  cn: [[9 * 60 + 25, 11 * 60 + 35], [12 * 60 + 55, 15 * 60 + 40]],
+  hk: [[9 * 60 + 25, 12 * 60 + 5], [12 * 60 + 55, 16 * 60 + 40]],
+  us: [[21 * 60 + 25, 24 * 60 - 1], [0, 5 * 60 + 40]],
+}
+
+/**
+ * 什么时候该抓。
+ *
+ * **必须传市场**：只判断「现在是不是 A 股的盘中」会让港股收盘价（16:00）
+ * 和美股（北京夜里）永远抓不到——港股的日 K 会一直停在 15:00 那个价。
+ *
+ * 这里只管「时间窗口」，不管「今天是不是交易日」——节假日靠
+ * `processQuoteFetch` 里的数据推断（拿回来的行情日期不是今天 ⇒ 今天休市），
+ * 这样春节/国庆/台风临时休市都不用维护日历。
+ */
+export function shouldFetchQuotes(
+  now = new Date(),
+  markets: Market[] = ['cn'],
+): { fetch: boolean; reason: string; market?: Market } {
+  const { day, mins } = beijingNow(now)
   if (day === 0 || day === 6) return { fetch: false, reason: '周末休市' }
 
-  const mins = now.getHours() * 60 + now.getMinutes()
-  const inSession = (mins >= 9 * 60 + 25 && mins <= 11 * 60 + 35)
-    || (mins >= 12 * 60 + 55 && mins <= 15 * 60 + 5)
-  if (inSession) return { fetch: true, reason: '盘中' }
-
-  if (mins > 15 * 60 + 5 && mins <= 15 * 60 + 40) return { fetch: true, reason: '收盘后' }
-
+  for (const m of markets) {
+    for (const [from, to] of SESSIONS[m]) {
+      if (mins >= from && mins <= to) {
+        return { fetch: true, reason: `${MARKET_LABEL[m]}盘中`, market: m }
+      }
+    }
+  }
   return { fetch: false, reason: '非交易时段' }
 }
 
@@ -289,30 +339,72 @@ export async function processFxRateFetch(): Promise<void> {
   }
 }
 
-export async function processQuoteFetch(): Promise<void> {
+/**
+ * 记住「某个北京日期已确认休市」。
+ *
+ * 节假日（春节/国庆在周中）和临时休市（台风）没法靠星期判断，而维护一张
+ * 交易日历要年年更新、还挡不住临时休市。所以**从数据推断**：
+ * 盘中去抓一次，如果拿回来的行情日期**不是今天**，说明今天根本没开市。
+ *
+ * 只记一天，日期一变自动失效。
+ */
+/** 每个市场各自的「今天已确认休市」——A股休市不代表美股也休。 */
+const marketClosedOn: Record<Market, string | null> = { cn: null, hk: null, us: null }
+
+export function marketClosedDate(market: Market): string | null {
+  return marketClosedOn[market]
+}
+
+/** 仅供测试：清掉「今日休市」缓存（模块级状态会跨用例残留） */
+export function resetMarketClosedCache(): void {
+  for (const k of Object.keys(marketClosedOn) as Market[]) marketClosedOn[k] = null
+}
+
+/** 判断「休市」要等够久：开盘头几分钟拿到的可能还是上一交易日的日期 */
+function deepEnoughBeijng(now: Date, market: Market): boolean {
+  const { mins } = beijingNow(now)
+  if (market === 'us') return mins >= 22 * 60 || mins <= 5 * 60  // 美股跨夜
+  return mins >= 10 * 60
+}
+
+export async function processQuoteFetch(now = new Date()): Promise<void> {
   const db = getDb()
   const rows = db.prepare(
     `SELECT DISTINCT code FROM investments WHERE is_active = 1 AND code IS NOT NULL`,
   ).all() as Array<{ code: string }>
-
   if (rows.length === 0) return
 
-  const codes = rows.map((r) => r.code)
+  // 按市场分组：A股 / 港股 / 美股 的交易时段完全不同
+  const byMarket = new Map<Market, string[]>()
+  for (const r of rows) {
+    const m = marketOfCode(r.code)
+    byMarket.set(m, [...(byMarket.get(m) ?? []), r.code])
+  }
+
+  const today = beijingDate(now)
+  // 只抓「此刻在交易时段内」且「今天还没被判定休市」的市场
+  const targets = [...byMarket.keys()].filter((m) => {
+    if (marketClosedOn[m] === today) return false
+    return shouldFetchQuotes(now, [m]).fetch
+  })
+  if (targets.length === 0) return
+
+  const codes = targets.flatMap((m) => byMarket.get(m) ?? [])
   try {
-    // 汇率由 processFxRateFetch 单独抓（不走门禁），这里只管股价
     const quotes = await fetchQuotes(codes)
-    const stmt = db.prepare(
-      `INSERT OR IGNORE INTO investment_quotes
-         (code, name, price, prev_close, change_rate, quote_date, quoted_at, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'tencent')`,
-    )
-    const write = db.transaction(() => {
-      for (const q of quotes) {
-        stmt.run(q.code, q.name, q.price, q.prevClose, q.changeRate, q.quoteDate, q.quoteAt)
+    if (quotes.length > 0) storeQuotes(db, quotes)
+    log('info', 'quotes', `已更新 ${quotes.length}/${codes.length} 个标的（${targets.map((m) => MARKET_LABEL[m]).join('/')}）`)
+
+    /* 逐市场识别节假日 / 临时休市：拿回来的行情日期不是今天 ⇒ 该市场今天没开市。
+       只在**盘中较深处**才下结论——刚开盘时拿到上一交易日的日期可能只是还没切过来，
+       误判会让一整天都不再抓。 */
+    for (const m of targets) {
+      const mine = quotes.filter((q) => marketOfCode(q.code) === m)
+      if (mine.length > 0 && !mine.some((q) => q.quoteDate === today) && deepEnoughBeijng(now, m)) {
+        marketClosedOn[m] = today
+        log('info', 'quotes', `${MARKET_LABEL[m]} ${today} 非交易日（行情停在 ${mine[0]!.quoteDate}），今日不再抓`)
       }
-    })
-    write()
-    log('info', 'quotes', `已更新 ${quotes.length}/${codes.length} 个标的行情`)
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     // 这条要留痕：接口改格式/被限流时，这是唯一能查到的线索
@@ -323,8 +415,26 @@ export async function processQuoteFetch(): Promise<void> {
 let intervalId: NodeJS.Timeout | null = null
 
 /**
+ * 调度间隔（分钟）。
+ *
+ * 默认 **15 分钟**——因为盘中价格是「净资产」的直接输入，小时级太粗：
+ * 早上记的账可能一整天看不到当天的浮盈变化。
+ *
+ * 重复抓取不会写重复行：`investment_quotes` 有
+ * `UNIQUE(code, quote_date, quoted_at)`，而 `quoted_at` 用的是**行情自带的
+ * 时间戳**，同一时刻抓多少次都落成一条。所以调密是安全的。
+ *
+ * 真正决定「要不要抓」的是 `shouldFetchQuotes()` 的门禁（盘中 / 收盘后），
+ * 这个间隔只决定「多久检查一次」。休市时段这一跳什么都不做。
+ */
+export function intervalMinutes(): number {
+  const n = Number(process.env.QUOTE_REFRESH_MINUTES)
+  return Number.isFinite(n) && n > 0 ? n : 15
+}
+
+/**
  * 启动定时任务（app 启动时调用）
- * 每小时执行一次，启动时也立即执行一次
+ * 每 15 分钟执行一次（`QUOTE_REFRESH_MINUTES` 可调），启动时也立即执行一次
  */
 export function startScheduler(): void {
   // 启动后延迟 5 秒执行第一次（等 DB 初始化完毕）
@@ -332,12 +442,12 @@ export function startScheduler(): void {
     void runScheduledTasks()
   }, 5000)
 
-  // 每小时执行
+  const minutes = intervalMinutes()
   intervalId = setInterval(() => {
     void runScheduledTasks()
-  }, 60 * 60 * 1000)
+  }, minutes * 60 * 1000)
 
-  log('info', 'scheduler', '定时任务调度器已启动（每小时执行）')
+  log('info', 'scheduler', `定时任务调度器已启动（每 ${minutes} 分钟检查一次）`)
 }
 
 /**

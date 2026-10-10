@@ -7,6 +7,7 @@
  * 之前各写了一遍，容易漂移。
  */
 import type { getDb } from '../db/index.js'
+import { marketOfCode } from './quotes.js'
 import { groupByAccount, valueHolding, type AccountHoldings, type Holding, type HoldingValuation, type QuoteLite } from './holdings.js'
 
 type Db = ReturnType<typeof getDb>
@@ -130,10 +131,12 @@ export function loadQuoteStatus(db: Db, userId: number): {
   lastDate: string | null
   pricedCount: number
   totalCount: number
+  /** 该用户实际持有的市场（A股/港股/美股），前端据此解释「为什么没自动更新」 */
+  markets: Array<'cn' | 'hk' | 'us'>
 } {
   const holdings = loadHoldings(db, userId).filter((h) => h.isActive)
   if (holdings.length === 0) {
-    return { lastAt: null, lastDate: null, pricedCount: 0, totalCount: 0 }
+    return { lastAt: null, lastDate: null, pricedCount: 0, totalCount: 0, markets: [] }
   }
   const codes = [...new Set(holdings.map((h) => h.code))]
   const placeholders = codes.map(() => '?').join(',')
@@ -148,11 +151,13 @@ export function loadQuoteStatus(db: Db, userId: number): {
     `SELECT count(DISTINCT code) c FROM investment_quotes WHERE code IN (${placeholders})`,
   ).get(...codes) as { c: number }
 
+  const markets = [...new Set(holdings.map((h) => marketOfCode(h.code)))]
   return {
     lastAt: row?.last_at ?? null,
     lastDate: row?.last_date ?? null,
     pricedCount: priced.c,
     totalCount: codes.length,
+    markets,
   }
 }
 

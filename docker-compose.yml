@@ -20,3 +20,6 @@ services:
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-gpt-4o-mini}
       - DB_PATH=/app/data/bill.db
+      # 行情刷新间隔（分钟）。默认 15——只在盘中/收盘后真的抓，
+      # 休市时段这一跳什么都不做。想更密/更疏改这里即可。
+      - QUOTE_REFRESH_MINUTES=${QUOTE_REFRESH_MINUTES:-15}

@@ -2,7 +2,7 @@
 /**
  * 某理财账户的持仓（配置低频：一个月动一次）
  *
- * 只记 **代码 + 股数**。现价由系统每小时抓，市值 = 股数 × 现价。
+ * 只记 **代码 + 股数**。现价由系统每 15 分钟抓（盘中），市值 = 股数 × 现价。
  * 单只**不算盈亏**——用户要求「投入不要针对单只持仓股，计算总投入就可以」，
  * 盈亏只有一个数在账户级（见 Investments.vue 顶部读数）。
  *
@@ -153,7 +153,7 @@ async function remove(h: InvestmentItem) {
     <div class="hold-head">
       <span class="ledger-label ledger-label-solid">持仓</span>
       <span class="hold-hint">
-        现价每小时自动更新
+        盘中每 15 分钟自动更新
         <template v-if="unpricedCount > 0"> · {{ unpricedCount }} 个待取价</template>
       </span>
     </div>
