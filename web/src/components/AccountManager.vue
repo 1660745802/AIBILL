@@ -340,7 +340,18 @@ const activeTotal = computed(
 .am-head-right { display: flex; align-items: center; gap: 0.5rem; }
 .am-total { color: var(--color-ink-3); }
 
-.am-form, .am-edit { padding: 0.75rem 0.875rem; display: flex; flex-direction: column; gap: 0.625rem; }
+.am-form, .am-edit {
+  padding: 0.75rem 0.875rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+/* 字段限宽：桌面宽屏下名称框会被拉到 900px、下拉 800px，中间全是空气。
+   但**动作行不限宽**——按钮该贴卡片右边缘，不该跟着字段缩到中间。 */
+.am-form > div,
+.am-edit > div:not(.am-edit-ops) {
+  max-width: 34rem;
+}
 .am-label {
   font-size: 0.5625rem;
   line-height: 1;
@@ -360,8 +371,9 @@ const activeTotal = computed(
 }
 /* 余额是数字，不需要占满整行——右侧留白是浪费 */
 .am-bal { width: 9rem; text-align: right; }
-/* 余额 + 类型并排：两个都是低频字段，不该各占一行 */
-.am-cols { display: grid; grid-template-columns: 9rem 1fr; gap: 0.625rem; }
+/* 余额 + 类型并排：两个都是低频字段，不该各占一行。
+   类型给固定宽度而不是 1fr——一个「理财投资」的下拉不需要 800px。 */
+.am-cols { display: grid; grid-template-columns: 9rem minmax(0, 10rem); gap: 0.625rem; }
 
 .am-row-main { display: flex; align-items: baseline; gap: 0.375rem; min-width: 0; flex: 1; }
 .am-row-name {

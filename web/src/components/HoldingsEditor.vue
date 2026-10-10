@@ -32,6 +32,9 @@ const toast = useToast()
 /** 币种符号：不标的话「213.000」会被读成 ¥213 */
 const CURRENCY_SIGN: Record<string, string> = { HKD: 'HK$', USD: 'US$' } as const
 
+/** 代码格式提示：默认收起，避免每个账户重复一大段说明 */
+const showCodeHint = ref(false)
+
 const holdings = ref<InvestmentItem[]>([])
 const loading = ref(true)
 const saving = ref(false)
@@ -196,10 +199,11 @@ async function remove(h: InvestmentItem) {
             </div>
           </template>
           <!-- 取不到价/缺汇率时带上代码和原因 -->
+          <!-- 只说事实，不再重复「点刷新行情」——那个动作页面顶部只有一个入口，
+               三处都写就成了噪音。 -->
           <span v-else-if="h.quote && !h.fxRate" class="hold-noquote">
             待补汇率
             <span class="hold-nq-code">{{ h.currency }} → CNY</span>
-            <span class="hold-nq-hint">点「刷新行情」取汇率</span>
           </span>
           <span v-else class="hold-noquote">
             未取到价
@@ -263,23 +267,36 @@ async function remove(h: InvestmentItem) {
     <!-- 代码格式是这件事里最容易卡住的一环：A股 6 位、港股 5 位（可省前导零
          写成 4 位）、美股字母、港股指数又是字母代码。写错一个字符就静默「未取到价」，
          用户完全看不出哪里错了。给个能照着填的例子。 -->
-    <p class="hold-codehint">
-      代码：A股/ETF 6 位（如 <code>518880</code>）· 港股 5 位（如 <code>00700</code>，或
-      <code>0700</code>）· 港股指数带字母（如 <code>hkHSI</code>）· 美股字母（如 <code>AAPL</code>）。
-      填好后现价和市值会自动更新。
+    <!--
+      代码格式提示收起来。它**每个账户重复一遍**，占掉大半版面，
+      而它只在第一次填代码时才有用。默认一行「代码怎么填？」，点开才展开。
+    -->
+    <button
+      v-if="!showCodeHint"
+      class="hold-hint-btn"
+      type="button"
+      @click="showCodeHint = true"
+    >代码怎么填？</button>
+    <p v-else class="hold-codehint">
+      A股/ETF 6 位（<code>518880</code>）· 港股 5 位（<code>00700</code>，或省前导零
+      <code>0700</code>）· 港股指数带字母（<code>hkHSI</code>）· 美股字母（<code>AAPL</code>）。
+      填好后现价和市值自动更新。
+      <button class="hold-hint-close" type="button" @click="showCodeHint = false">收起</button>
     </p>
   </div>
 </template>
 
 <style scoped>
+/* 「持仓」和右侧提示不该被拉到卡片两端（宽屏下像两个不相干的东西） */
+.hold { max-width: 44rem; }
 .hold-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
+  align-items: baseline;
+  gap: 0.625rem;
 }
 .hold-hint { font-size: 0.625rem; color: var(--color-ink-4); }
 .hold-list { margin-top: 0.5rem; }
+.hold-hint { margin-left: auto; }
 .hold-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto auto;
@@ -357,7 +374,14 @@ async function remove(h: InvestmentItem) {
   font-size: 0.6875rem;
   color: var(--color-ink-3);
 }
-.hold-empty { padding: 0.75rem 0; font-size: 0.8125rem; color: var(--color-ink-3); }
+/* 空态是引导不是内容：小一号、贴紧下面的添加入口，不占一大块 */
+.hold-empty {
+  margin: 0.375rem 0 0.5rem;
+  padding: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--color-ink-4);
+}
 .hold-add {
   display: flex;
   flex-wrap: wrap;
@@ -369,10 +393,33 @@ async function remove(h: InvestmentItem) {
 }
 .hold-add-code { width: 9rem; text-align: left; }
 .hold-codehint {
-  margin-top: 0.5rem;
-  font-size: 0.6875rem;
-  line-height: 1.7;
+  margin-top: 0.375rem;
+  font-size: 0.625rem;
+  line-height: 1.65;
+  color: var(--color-ink-4);
+}
+.hold-hint-btn {
+  margin-top: 0.375rem;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--color-ink-4);
+  font-size: 0.625rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.hold-hint-btn:hover { color: var(--color-ink-2); }
+.hold-hint-close {
+  margin-left: 0.375rem;
+  padding: 0;
+  background: none;
+  border: 0;
   color: var(--color-ink-3);
+  font-size: 0.625rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .hold-codehint code {
   font-family: var(--font-mono);

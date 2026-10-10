@@ -65,6 +65,15 @@ function positionOf(id: number): Position | null {
   return positions.value.find((p) => p.accountId === id) ?? null
 }
 
+/**
+ * 账户还没配（没持仓、没现金、没填总投入）——
+ * 这时读数区是三个 ¥0.00 相加，纯噪音。改用一个空态，把注意力引到下一步。
+ */
+function isBare(acc: Account): boolean {
+  const p = positionOf(acc.id)
+  return !p?.hasHoldings && (p?.cash ?? 0) === 0 && acc.invested_total == null
+}
+
 async function load() {
   loading.value = true
   try {
@@ -80,7 +89,9 @@ async function load() {
       const p = positionOf(a.id)
       next[a.id] = {
         invested: a.invested_total != null ? String(a.invested_total / 100) : '',
-        cash: p ? String(p.cash / 100) : '',
+        // 0 时留空：预填一个 0 看起来像「用户填过」，而且和总投入的
+        // placeholder 行为不一致
+        cash: p && p.cash !== 0 ? String(p.cash / 100) : '',
         busy: false,
       }
     }
@@ -238,14 +249,14 @@ async function refreshQuotes() {
                  之前标签在数字**下面**，和下面 .inv-cell 的 label/value 顺序不一致，
                  同一屏里两种排版规则，眼睛要来回切换。 -->
             <!--
-              主读数必须**始终有一个数字**。之前 value==null 时整个 header 是空的
-              （`<!---->`），页面于是没有任何主导数字，全是小标签——「主体不突出」
-              就是这么来的。
-
+              主读数必须始终有一个数字。之前 value 为空时整个 header 是空的，
+              页面于是没有任何主导数字，全是小标签——「主体不突出」就是这么来的。
               总价值 = 持仓市值 + 现金；持仓还没取到价时现金是已知的下限，
-              所以显示「≥ ¥现金」，而不是给一片空白。
+              所以显示「≥ 现金」，而不是给一片空白。
             -->
-            <span class="inv-value">
+            <!-- 空账户不摆一个 ¥0.00：那既不是读数也不是信息，只是噪音。
+                 有内容之后才出现主读数。 -->
+            <span class="inv-value" v-if="!isBare(acc)">
               <span class="inv-value-cap">{{ positionOf(acc.id)?.value != null ? '总价值' : '总资产下限' }}</span>
               <span class="amt" v-if="positionOf(acc.id)?.value != null">
                 <Money :value="positionOf(acc.id)!.value!" size="lg" tone="neutral" sign="none" />
@@ -256,9 +267,15 @@ async function refreshQuotes() {
             </span>
           </header>
 
+          <!-- 空账户：不摆三个 ¥0.00，直接说下一步做什么。
+               一句就够，不再单独占一行加一个大空块。 -->
+          <div v-if="isBare(acc)" class="inv-bare">
+            还没有内容 —— 在下面配持仓，或填一下总投入 / 现金。
+          </div>
+
           <!-- 读数：按「持仓市值 + 现金 = 总价值」「总投入 → 浮动盈亏」两组，
                不再四个格子平铺——平铺看不出哪个是加数、哪个是结果。 -->
-          <div class="inv-readings">
+          <div v-else class="inv-readings">
             <!-- 第一组：总价值的构成 -->
             <div class="inv-group">
               <div class="inv-cell">
@@ -445,11 +462,13 @@ async function refreshQuotes() {
 
 /* 读数分成两组：先看总价值怎么来的，再看投了多少赚了多少。
    四格平铺看不出加数和结果，读者得自己在脑子里做加法。 */
+/* 限宽：宽屏下读数/表单不该被拉到屏幕两端（两个输入框中间隔半个屏幕） */
 .inv-readings {
   display: flex;
   flex-direction: column;
   gap: 0.625rem;
-  padding: 0 0.875rem 0.75rem;
+  padding: 0.125rem 0.875rem 0.75rem;
+  max-width: 44rem;
 }
 .inv-group {
   display: flex;
@@ -460,6 +479,13 @@ async function refreshQuotes() {
 .inv-group-pnl {
   padding-top: 0.5rem;
   border-top: 1px dashed var(--color-rule-faint);
+}
+/* 空账户：一句引导，而不是三个 0.00 相加 */
+.inv-bare {
+  padding: 0 0.875rem 0.625rem;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--color-ink-4);
 }
 .inv-op { font-size: 0.75rem; color: var(--color-ink-4); padding-bottom: 0.125rem; }
 /* cell 内部排版：标签固定高度（避免有的标签换行把数字顶歪）、
@@ -484,10 +510,22 @@ async function refreshQuotes() {
   background: var(--color-paper-sunk);
   border-top: 1px solid var(--color-rule-faint);
 }
-.inv-form-grid { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+/* 限宽：宽屏下两个输入框被拉到卡片两端、中间空一大片，读起来像两个孤立的框。
+   限宽后它们自然靠在一起。 */
+.inv-form-grid {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  max-width: 30rem;
+}
 /* 输入块的 label 排版和读数 label 保持同一套（大小/颜色/间距），
-   这样「看」和「改」两块的节奏是一致的，不会感觉是两套设计。 */
-.inv-form label { display: flex; flex-direction: column; flex: 1; min-width: 8rem; }
+   「看」和「改」两块节奏一致，不会感觉是两套设计。 */
+.inv-form label {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 14rem;
+  min-width: 8rem;
+}
 .inv-form label > span {
   font-size: 0.5625rem;
   line-height: 1;
