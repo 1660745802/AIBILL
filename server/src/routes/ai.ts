@@ -16,6 +16,14 @@ import { buildParsePrompt } from '../ai/prompts.js'
 import { extractJsonArray, validateParsedItems, ParseError } from '../ai/parser.js'
 import { matchCategory } from '../ai/category-matcher.js'
 import { quickParse } from '../ai/quick-parser.js'
+import {
+  classifyNotification,
+  shouldCallAi,
+  requiresCorroboration,
+  verifyParsed,
+} from '../ai/verify.js'
+import { rememberParse } from '../lib/parse-landing.js'
+import { recordFiltered } from '../lib/parse-filter.js'
 
 const parseInputSchema = z.object({
   input: z.string().min(1, '输入不能为空').max(3000, '输入过长'),
@@ -129,6 +137,37 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         return {
           code: 0,
           data: { items: result, raw_input: body.input, parse_log_id: logId, source: 'quick' },
+          message: '',
+        }
+      }
+
+      /* ═══ 入站分流：判断这条通知值不值得花一次模型调用 ═══
+         顺序很重要：**必须在 quickParse 之后**。
+         分流的规则是按通知形态写的（无货币单位 + 无交易动词 → 噪声），
+         而 quickParse 处理的正是「午饭32」这种手打短句——它没有货币单位、
+         也没有交易动词，先分流会把它们全丢掉。
+         （tests/routes/memories.test.ts 里的两个用例就是抓这个的。）
+
+         线上实测 1419 条通知里 759 条（53%）是纯噪声，日志的「空结果率」
+         因此基本没有诊断价值——分不清「模型不行」和「这是条广告」。
+         分流把这类记录在调模型前挡掉，写进独立表 ai_parse_filters
+         （不往 ai_parse_logs.status 里塞 'filtered'——那个字段有 CHECK 约束，
+         为它重建一张 1419 行的表不值得），于是「省了多少」是一个可数的指标。 */
+      const classification = classifyNotification(body.input)
+      if (!shouldCallAi(classification)) {
+        const durationMs = Date.now() - startTime
+        recordFiltered(db, {
+          userId,
+          rawInput: body.input,
+          cleanedInput,
+          stage: 'inbound',
+          tier: classification.tier,
+          reasons: classification.reasons,
+          durationMs,
+        })
+        return {
+          code: 0,
+          data: { items: [], raw_input: body.input, source: 'prefilter' },
           message: '',
         }
       }
@@ -258,6 +297,34 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         }
       })
 
+      // ═══ 出站校验（方案 B）═══════════════════════════════
+      // 只丢「确定是噪声」的形态，不动「看起来像真交易」的。
+      // 判定依据是文本形态，不是金额佐证——
+      // `订单已消费 您的订单【小铁台球】39.9…已成功消费` 里的 39.9 后面没有货币单位，
+      // 但它是一笔真实消费（线上已落地），必须放行给客户端。
+      const verified = verifyParsed(
+        body.input,
+        result,
+        requiresCorroboration(classification),
+      )
+      if (verified.verdict === 'drop') {
+        const durationMs = Date.now() - startTime
+        recordFiltered(db, {
+          userId,
+          rawInput: body.input,
+          cleanedInput,
+          stage: 'outbound',
+          tier: classification.tier,
+          reasons: [verified.reason],
+          durationMs,
+        })
+        return {
+          code: 0,
+          data: { items: [], raw_input: body.input, source: 'postfilter' },
+          message: '',
+        }
+      }
+
       // Log success
       const durationMs = Date.now() - startTime
       const logId = insertParseLog(db, {
@@ -270,6 +337,9 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         errorMessage: null,
         durationMs,
       })
+
+      // 记下这次解析的指纹，等 /transactions 写入时回关联（见 lib/parse-landing.ts）
+      rememberParse(userId, logId, result as any, body.input)
 
       return {
         code: 0,

@@ -9,6 +9,24 @@ describe('AI Parser', () => {
   const today = '2026-07-30'
 
   describe('extractJsonArray', () => {
+    // 线上实测：模型偶尔把整个数组再包一层 JSON 字符串。
+    // 没有兜底时，一笔完全正常的交易会被判成「无法从 AI 响应中提取有效 JSON」。
+    it('should unwrap double-encoded JSON string', () => {
+      const inner = '[{"type":"income","amount":14322.83,"category":"工资","description":"招商银行工资入账","date":"2026-10-08","account":"银行卡"}]'
+      const result = extractJsonArray(JSON.stringify(inner))
+      expect(result).toHaveLength(1)
+      expect(result[0].amount).toBe(14322.83)
+    })
+
+    // 另一类线上失败：prompt 的示例写的是单个对象，模型就返回单个对象。
+    // 配合 prompts.ts 里「最外层必须是数组」的修正，两边一起治。
+    it('should wrap a bare object into an array', () => {
+      const obj = '{"type":"expense","amount":39.90,"category":"娱乐","description":"小铁台球两小时消费","date":"2026-10-10","account":""}'
+      const result = extractJsonArray(obj)
+      expect(result).toHaveLength(1)
+      expect(result[0].amount).toBe(39.9)
+    })
+
     it('should parse plain JSON array', () => {
       const input = '[{"type":"expense","amount":32,"category":"餐饮","description":"午饭","date":"2026-07-30","account":"微信"}]'
       const result = extractJsonArray(input)

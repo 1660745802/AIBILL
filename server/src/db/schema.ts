@@ -435,3 +435,48 @@ CREATE INDEX IF NOT EXISTS idx_subscriptions_due
   ON subscriptions(user_id, next_payment_date)
   WHERE status = 'active' AND auto_record = 1;
 `
+
+/**
+ * Migration 012: 落地追踪 + 预筛记录（不重建任何已有表）
+ *
+ * 背景：
+ * 1. `ai_parse_logs.final_items` 845 条全空、`user_modified` 恒为 0，
+ *    `ai_memories` 零行——服务端没有「AI 抽的数到底进没进账本」这个事实。
+ * 2. 1419 条日志里 759 条（53%）是被入站分流挡下的纯噪声，
+ *    它们混在 `status` 里把「空结果率」这个指标彻底污染了。
+ *
+ * 两条决策：
+ * - **不重建 ai_parse_logs**。为了加一个 `filtered` 状态去 DROP+RENAME 一张
+ *   1419 行的表，收益不抵风险（虽然实测只要 8.6ms 且在事务里）。改为新建一张
+ *   独立的小表记录「这次没调模型」——语义上也更准：**没调模型不是一次解析，
+ *   它是另一个事件**，本来就不该和解析结果混在一个 status 里。
+ * - `transactions` 只做 ADD COLUMN。SQLite 的 ADD COLUMN 是纯元数据操作，
+ *   不重写表、不动已有行。
+ */
+export const migration012 = `
+-- 1) 交易关联回解析日志：ADD COLUMN 不重建表
+ALTER TABLE transactions ADD COLUMN parse_log_id INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_transactions_parse_log
+  ON transactions(parse_log_id);
+
+-- 2) 被规则挡下、没有调用模型的记录（入站分流 / 出站校验）
+CREATE TABLE IF NOT EXISTS ai_parse_filters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  raw_input TEXT NOT NULL,
+  cleaned_input TEXT,
+  -- inbound = 调模型前挡下；outbound = 模型给了结果后判定为噪声
+  stage TEXT NOT NULL CHECK(stage IN ('inbound', 'outbound')),
+  -- classifyNotification 的档位：0=命中噪声 4=无任何信号
+  tier INTEGER NOT NULL,
+  reasons TEXT,
+  -- 判定本身花掉的毫秒数（分流是纯字符串匹配，应当 <1ms）
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_parse_filters_user    ON ai_parse_filters(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_parse_filters_stage   ON ai_parse_filters(stage);
+CREATE INDEX IF NOT EXISTS idx_ai_parse_filters_created ON ai_parse_filters(created_at);
+`

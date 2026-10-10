@@ -213,7 +213,7 @@ describe('Memory Routes', () => {
       expect(body.data.items[0].description).toBe('午饭')
     })
 
-    it('complex input should fail without AI key', async () => {
+    it('无金额且无交易动词的描述在预筛就短路，不消耗 AI 调用', async () => {
       const res = await app.inject({
         method: 'POST',
         url: '/api/ai/parse',
@@ -221,7 +221,25 @@ describe('Memory Routes', () => {
         payload: { input: '昨天在星巴克请朋友喝了两杯拿铁，用信用卡付的' },
       })
       const body = JSON.parse(res.payload)
-      // Complex input goes to AI, which fails without key
+      // 预筛在调模型前就返回空：原文既无「带货币单位的数字」也无交易动词，
+      // 模型不可能抽出一个正确金额（prompt 里本来就是「无法识别金额 → 输出 []」），
+      // 所以不调比调完再判空更省。code=0 + items=[] 表示「确认没有账目」，
+      // 而不是错误——这里没有失败发生。
+      expect(res.statusCode).toBe(200)
+      expect(body.code).toBe(0)
+      expect(body.data.items).toEqual([])
+      expect(body.data.source).toBe('prefilter')
+    })
+
+    it('带金额的复杂输入仍会走到 AI（无 key 时报错）', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/ai/parse',
+        headers: authHeaders(user1Token),
+        payload: { input: '星巴克两杯拿铁 信用卡支付 68.00元' },
+      })
+      const body = JSON.parse(res.payload)
+      // 金额+支付动词 → 档 1 → 调 AI；无 key 则失败
       expect([502, 504, 200]).toContain(res.statusCode)
       expect(body.code).not.toBe(0)
     })

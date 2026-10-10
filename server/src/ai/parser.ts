@@ -22,6 +22,30 @@ export function extractJsonArray(text: string): ParsedTransaction[] {
   try {
     const parsed = JSON.parse(text)
     if (Array.isArray(parsed)) return parsed
+    // 模型有时会把整个数组再包一层 JSON 字符串："[{\"type\":...}]"
+    // 实测约 1/8 的真账会这样，直接抛错等于把一笔正常交易判成解析失败。
+    if (typeof parsed === 'string') {
+      try {
+        const inner = JSON.parse(parsed)
+        if (Array.isArray(inner)) return inner
+      } catch {
+        // 继续尝试其他方式
+      }
+    }
+  } catch {
+    // 继续尝试其他方式
+  }
+
+  // 单个对象也接受，包成数组返回。
+  // 为什么需要：prompt 里的示例历史上写的是 `{...}` 而不是 `[{...}]`，
+  // 模型会照着示例返回对象，导致整笔正常交易被判为解析失败（线上约 25%）。
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      if (typeof (parsed as any).amount === 'number' || typeof (parsed as any).type === 'string') {
+        return [parsed as unknown as ParsedTransaction]
+      }
+    }
   } catch {
     // 继续尝试其他方式
   }
@@ -32,6 +56,7 @@ export function extractJsonArray(text: string): ParsedTransaction[] {
     try {
       const parsed = JSON.parse(codeBlockMatch[1])
       if (Array.isArray(parsed)) return parsed
+      if (parsed && typeof parsed === 'object') return [parsed as unknown as ParsedTransaction]
     } catch {
       // 继续
     }

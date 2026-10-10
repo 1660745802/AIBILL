@@ -90,6 +90,14 @@ function buildFullPrompt(ctx: PromptContext): string {
 - **account**：明确提到的账户名，否则 ""
 - **target_account**：仅 transfer 时填
 
+### 汇总类数字不是单笔金额
+- 原文出现「共N笔」「昨日共N笔」「合计N笔」时，那些数字是**总额**
+- 不得把总额按笔数平摊成 N 条。只能输出一条总额，或返回 []
+
+### 识别不出交易就返回空
+- 促销/活动/红包/领券/行程提醒/自家 App 的统计播报，都不是账目，返回 []
+- 宁可返回 []，也不要编造一个金额
+
 ### 特殊规则
 - 银行扣款+零钱充值 → transfer（银行卡→微信/支付宝）
 - 单笔订单只输出 1 个对象（用合计金额）
@@ -101,8 +109,10 @@ function buildFullPrompt(ctx: PromptContext): string {
 只输出 JSON 数组，无 markdown 代码块，无解释文字。
 
 \`\`\`
-{"type":"...","amount":数字,"category":"分类名","description":"描述","date":"YYYY-MM-DD","account":"","target_account":""}
+[{"type":"...","amount":数字,"category":"分类名","description":"描述","date":"YYYY-MM-DD","account":"","target_account":""}]
 \`\`\`
+
+注意：即使只有一笔，**最外层也必须是数组** \`[...]\`。不要只输出单个对象 \`{...}\`。
 
 支出分类：${ctx.expenseCategories.join('、')}
 收入分类：${ctx.incomeCategories.join('、')}
