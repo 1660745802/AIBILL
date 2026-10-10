@@ -253,32 +253,37 @@ async function saveEdit() {
           <!-- 行内改设置：只改元数据，余额在上面那行 -->
           <li v-if="editing === a.accountId" class="acct-edit">
             <!--
-              现金输入收在这里。理财账户的 `balance` 语义就是**现金**
-              （总价值 = 现金 + 持仓市值），所以标签写明「现金」，不叫「余额」。
+              现金输入收在这里。理财账户的 `balance` 语义是**现金**
+              （总价值 = 现金 + 持仓市值），所以叫「现金」不叫「余额」。
+
+              原来标签后面还缀着「· 持仓市值 355,901.70 自动算」——上面那行已经
+              写了「持仓 ¥355,901.70 · 现金 ¥0.00」的构成，重复一遍反而挤歪布局。
             -->
-            <label>
-              <span>现金（元）<template v-if="a.hasHoldings"> · 持仓市值 {{ fmt(a.holdingsValue ?? 0) }} 自动算</template></span>
-              <input
-                v-model="draft[a.accountId]"
-                class="acct-input amt"
-                type="number"
-                inputmode="decimal"
-                step="0.01"
-                placeholder="0.00"
-                :aria-label="`${a.name} 现金`"
-                @change="save(a)"
-              />
-            </label>
-            <label>
-              <span>账户类型</span>
-              <select v-model="editForm.asset_type" class="field">
-                <option v-for="(label, key) in TYPE_LABELS" :key="key" :value="key">{{ label }}</option>
-              </select>
-            </label>
-            <label v-if="editForm.asset_type === 'credit'">
-              <span>额度（元）</span>
-              <input v-model.number="editForm.credit_limit" class="field amt" type="number" step="0.01" />
-            </label>
+            <div class="acct-edit-fields">
+              <label>
+                <span>现金（元）</span>
+                <input
+                  v-model="draft[a.accountId]"
+                  class="field amt acct-cash"
+                  type="number"
+                  inputmode="decimal"
+                  step="0.01"
+                  placeholder="0.00"
+                  :aria-label="`${a.name} 现金`"
+                  @change="save(a)"
+                />
+              </label>
+              <label>
+                <span>账户类型</span>
+                <select v-model="editForm.asset_type" class="field">
+                  <option v-for="(label, key) in TYPE_LABELS" :key="key" :value="key">{{ label }}</option>
+                </select>
+              </label>
+              <label v-if="editForm.asset_type === 'credit'">
+                <span>额度（元）</span>
+                <input v-model.number="editForm.credit_limit" class="field amt" type="number" step="0.01" />
+              </label>
+            </div>
             <div class="acct-edit-ops">
               <button class="btn btn-quiet btn-sm" @click="editing = null">取消</button>
               <button class="btn btn-primary btn-sm" @click="saveEdit">保存类型</button>
@@ -388,9 +393,33 @@ async function saveEdit() {
   background: var(--color-paper-sunk);
   border-top: 1px solid var(--color-rule-faint);
 }
-.acct-edit label { display: flex; flex-direction: column; gap: 0.25rem; }
-.acct-edit label > span { font-size: 0.625rem; color: var(--color-ink-3); }
-.acct-edit-ops { margin-left: auto; display: flex; gap: 0.375rem; }
+.acct-edit { align-items: flex-end; }
+/* 字段用同一套网格：同高、标签基线对齐。
+   之前是两个 flex 容器各自按内容撑开，输入框窄、下拉框宽，高度和基线都对不上。
+
+   比例是定死的而不是均分：现金是个数字，用窄框；类型是词，用中框；
+   信用卡额度出现时占剩下的宽。均分会让「0」独占半屏。 */
+.acct-edit-fields {
+  display: grid;
+  grid-template-columns: minmax(7rem, 9rem) minmax(9rem, 12rem) minmax(0, 1fr);
+  gap: 0.625rem;
+  align-items: end;
+  flex: 1;
+  min-width: 0;
+}
+.acct-edit-fields label { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.acct-edit-fields label > span {
+  font-size: 0.5625rem;
+  line-height: 1;
+  color: var(--color-ink-4);
+  letter-spacing: 0.02em;
+  margin-bottom: 0.25rem;
+  white-space: nowrap;
+}
+/* 输入框和下拉走同一套尺寸，否则一个高一截 */
+.acct-edit-fields .field { width: 100%; }
+.acct-cash { text-align: right; }
+.acct-edit-ops { display: flex; gap: 0.375rem; flex-shrink: 0; }
 .acct-foot {
   display: flex;
   align-items: center;
