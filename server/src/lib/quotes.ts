@@ -21,7 +21,14 @@
  */
 
 const ENDPOINT = 'https://qt.gtimg.cn/q='
-const TIMEOUT_MS = 8000
+/**
+ * 上游超时（毫秒）。
+ *
+ * 对外暴露不是为了复用，而是为了让**冷却窗口的下界**可以被测试守护：
+ * 后台补汇率的闸门（`FX_BACKFILL_COOLDOWN_MS`）必须比「一次请求的最坏耗时」
+ * 更长，否则上一次尝试还没回来窗口就开了，等于没有闸门。详见 `quote-acquisition`。
+ */
+export const QUOTES_TIMEOUT_MS = 8000
 
 export interface Quote {
   /** 规范化代码，小写带市场前缀，如 sh518880 / sz159937 / hf_xau */
@@ -270,21 +277,55 @@ export function parseQuoteResponse(text: string): Quote[] {
 }
 
 /**
+ * 上游失败的**种类**。
+ *
+ * 以前调用方只能靠匹配错误文案（`/返回空/`）来猜是「限流了」还是「代码不认」，
+ * 而文案是 sibling 模块里的一句中文——它一改，失败分类就静默失效。
+ * 现在把分类放在类型上，判据就是 `instanceof QuoteFetchError` + `kind`。
+ */
+export type QuoteFetchFailureKind =
+  /** 连上了，但状态码不对（限流 429 / 5xx） */
+  | 'upstream_status'
+  /** 连上了、回了，但一条都解析不出来：代码全不认，或上游改了格式 */
+  | 'empty_response'
+  /** 根本没连上：DNS / 连接 / 超时 / 中断（这些异常**不包装**，保留原始身份） */
+  | 'upstream_unreachable'
+
+/** 抛在 `fetchQuotes` 里的带种类错误。网络层的原始异常不会被包成它。 */
+export class QuoteFetchError extends Error {
+  readonly kind: QuoteFetchFailureKind
+  /** `upstream_status` 时带上状态码，日志里直接可读 */
+  readonly status?: number
+
+  constructor(kind: QuoteFetchFailureKind, message: string, status?: number) {
+    super(message)
+    this.name = 'QuoteFetchError'
+    this.kind = kind
+    this.status = status
+  }
+}
+
+/**
  * 批量取价。一次请求拿全部标的——实测 `q=sh518880,sz159937,sh000300` 三个都回来了。
  * 失败显式抛错：调用方要靠这个决定「不写快照」，静默返回空会造出假数据。
+ *
+ * 已知的两类失败抛 `QuoteFetchError`（带 `kind`）；**网络异常原样抛出**——
+ * 调用方把「不是 QuoteFetchError」归为不可达即可，原始错误留着更好排查。
  */
 export async function fetchQuotes(codes: string[]): Promise<Quote[]> {
   const list = [...new Set(codes.map(normalizeCode).filter(Boolean))]
   if (list.length === 0) return []
 
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  const timer = setTimeout(() => ctrl.abort(), QUOTES_TIMEOUT_MS)
   try {
     const res = await fetch(ENDPOINT + list.join(','), {
       signal: ctrl.signal,
       headers: { Referer: 'https://gu.qq.com/' },
     })
-    if (!res.ok) throw new Error(`行情接口返回 ${res.status}`)
+    if (!res.ok) {
+      throw new QuoteFetchError('upstream_status', `行情接口返回 ${res.status}`, res.status)
+    }
     const buf = await res.arrayBuffer()
     let text: string
     try {
@@ -293,7 +334,9 @@ export async function fetchQuotes(codes: string[]): Promise<Quote[]> {
       text = new TextDecoder('utf-8').decode(buf)   // 没有 full-icu 时退回，别整个挂掉
     }
     const quotes = parseQuoteResponse(text)
-    if (quotes.length === 0) throw new Error('行情接口返回空（可能改格式了或被限流）')
+    if (quotes.length === 0) {
+      throw new QuoteFetchError('empty_response', '行情接口返回空（可能改格式了或被限流）')
+    }
     return quotes
   } finally {
     clearTimeout(timer)

@@ -11,6 +11,7 @@ import { marketOfCode } from './quotes.js'
 import { groupByAccount, valueHolding, type AccountHoldings, type Holding, type HoldingValuation, type QuoteLite } from './holdings.js'
 
 type Db = ReturnType<typeof getDb>
+export type { Db }
 
 interface InvestmentRow {
   id: number
@@ -82,21 +83,34 @@ export function loadLatestQuotes(db: Db, codes: string[]): Map<string, QuoteLite
 /**
  * 把行情落库。**三处共用**（定时抓取 / 手动刷新 / 新增持仓后自动取）——
  * 之前各写各的 SQL，口径会悄悄漂移。
+ *
+ * `source` 落在**每一条**而不是整批一个值：兜底源拿到的汇率和腾讯拿到的汇率
+ * 可能同时进这张表（主源只覆盖部分币种时）。以前这里写死 `'tencent'`，
+ * 于是 ECB 补的汇率在库里也标成腾讯——事后根本分不出这条数是哪来的。
+ * 未传时仍默认 `'tencent'`（历史兼容：直接写库的测试/迁移路径不受影响）。
+ *
+ * @returns **实际写进去的行数**（被 UNIQUE 去重掉的不算）。旧调用方忽略返回值即可。
  */
 export function storeQuotes(db: Db, quotes: Array<{
   code: string; name: string | null; price: number; prevClose: number | null
   changeRate: number | null; quoteDate: string; quoteAt: string
-}>): void {
+  source?: string
+}>): number {
   const stmt = db.prepare(
     `INSERT OR IGNORE INTO investment_quotes
        (code, name, price, prev_close, change_rate, quote_date, quoted_at, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'tencent')`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   )
+  let written = 0
   db.transaction(() => {
     for (const q of quotes) {
-      stmt.run(q.code, q.name, q.price, q.prevClose, q.changeRate, q.quoteDate, q.quoteAt)
+      written += stmt.run(
+        q.code, q.name, q.price, q.prevClose, q.changeRate, q.quoteDate, q.quoteAt,
+        q.source ?? 'tencent',
+      ).changes
     }
   })()
+  return written
 }
 
 /**

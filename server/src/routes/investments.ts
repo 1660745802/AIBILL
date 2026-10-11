@@ -17,11 +17,11 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
-import { normalizeCode, fetchQuotes, currencyOf, fxCodesFor, type Quote } from '../lib/quotes.js'
-import { storeQuotes, loadLatestFxRates, loadQuoteStatus } from '../lib/investments-repo.js'
-import { fetchFxRates } from '../lib/fx.js'
+import { normalizeCode, currencyOf, marketOfCode } from '../lib/quotes.js'
 import { shouldFetchQuotes } from '../services/scheduler.js'
-import { loadValuedHoldings } from '../lib/investments-repo.js'
+import { loadLatestFxRates, loadQuoteStatus, loadValuedHoldings, type Db } from '../lib/investments-repo.js'
+import { acquireAndStorePrices, acquireAndStoreFxRates, backfillFxRates } from '../lib/quote-acquisition.js'
+import { appLog as log } from '../services/logger.js'
 
 const createSchema = z.object({
   account_id: z.number().int().positive(),
@@ -99,14 +99,31 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
    * 用户预期很合理：加完持仓就该看到价，而不是显示「待取价」、
    * 还得自己去找「刷新行情」按钮。定时抓取的交易时段门禁不该拖累这个动作。
    *
-   * 取不到就取不到（返回 null），不为了"看起来有用"编一个数。
+   * 取不到就取不到（**不编一个数**），也不为了「看起来有用」编。
+   * 这里仍然是**阻塞 + 吞错**：写入不能被上游可用性绑架，
+   * 账户和股数已经落库了，价只是暂时没有。
+   *
+   * 抓取/落库/降级事实都在 quote-acquisition module 内；这里只留
+   * 「这个入口要吞掉错误」这一个策略。
    */
-  async function autoFetchQuotes(db: any, codes: string[]): Promise<void> {
-    const want = [...codes.map(normalizeCode).filter(Boolean), ...fxCodesFor(codes.map(currencyOf))]
-    if (want.length === 0) return
+  async function autoFetchQuotes(db: Db, codes: string[]): Promise<void> {
+    if (codes.length === 0) return
+    // 外币持仓要折人民币，必须走 `fetchFxRates` 的**兜底链**（主源腾讯 → ECB）。
+    // 以前这里是自己拼 `wh*CNY` 塞进股价请求，绕过了 ECB——腾讯 fx 端点一挂，
+    // 新增港/美股持仓就永远「待补汇率」，而响应仍然回「已添加持仓」。
+    //
+    // 股价与汇率**并发**发起：两段都是纯网络等待，串行会让最坏耗时**相加**
+    // （股价 8s + 汇率主源 8s + 兜底源 8s = 24s），而 POST 是阻塞返回的，
+    // 外币持仓的用户会直接感受成「加个持仓卡很久」。
+    // CNY-only 的持仓根本不需要汇率那次请求，不发起它。
+    const currencies = [...new Set(codes.map(currencyOf))]
+    const fxWanted = currencies.some((c) => c !== 'CNY')
     try {
-      const quotes = await fetchQuotes(want)
-      if (quotes.length > 0) storeQuotes(db, quotes)
+      const tasks: Promise<unknown>[] = [acquireAndStorePrices(db, codes)]
+      if (fxWanted) tasks.push(acquireAndStoreFxRates(db, currencies))
+      // allSettled 而不是 all：后者的第一个 rejection 会让另一个的 rejection 没人接
+      // （未处理的 promise 警告）。本入口不回报，所以两段都跑完即可，失败照旧吞。
+      await Promise.allSettled(tasks)
     } catch {
       // 网络/接口挂了不阻塞写入：账户和股数已经落库了，
       // 价只是暂时没有，用户可以手动刷新。宁可显示「待取价」也不假算。
@@ -132,7 +149,14 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
 
     // 回报调度状态：让用户知道**为什么没有自动更新**（周末休市 / 非交易时段），
     // 而不是只看到「未取到价」——反馈差的根子就在这里
-    const schedule = shouldFetchQuotes()
+    //
+    // ⚠️ 必须按**该用户实际持仓的市场**算。之前这里是无参调用
+    // `shouldFetchQuotes()`，默认 `['cn']`，于是只持港股/美股的用户拿到的
+    // 解释永远是 A 股时段（只持美股的用户在 22:00 刷新会看到「非交易时段」，
+    // 而美股正在盘中）。时段判断只有一处实现（scheduler），这里只负责把
+    // 「本用户持有哪些市场」这个事实喂给它。响应字段不变（已发布端点）。
+    const markets = [...new Set(rows.map((r) => marketOfCode(r.code)))]
+    const schedule = shouldFetchQuotes(new Date(), markets.length ? markets : ['cn'])
     const now = (db.prepare(`SELECT datetime('now') t`).get() as { t: string }).t
     const base = { total: rows.length, schedule, at: now }
 
@@ -147,14 +171,17 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
     const codes = rows.map((r) => r.code)
 
     // 顺带取汇率：外币持仓要折人民币。
-    // 股价和汇率分开取——汇率有自己的兜底源（lib/fx.ts），不该被股价的失败带崩。
+    // 汇率和股价**并发**取、各自落库：汇率有自己的兜底源（lib/fx.ts），
+    // 不该被股价的失败带崩；反过来也一样。
     const currencies = [...new Set(codes.map(currencyOf))]
-    const fxPromise = fetchFxRates(currencies).catch(() => ({ rates: new Map<string, number>(), source: 'none' as const }))
-    let quotes: Quote[]
-    try {
-      quotes = await fetchQuotes(codes)
-    } catch (err) {
-      // 网络/接口挂了要单独报：这跟「代码不对」是两回事，用户该做什么完全不同
+    const fxPromise = acquireAndStoreFxRates(db, currencies).catch(() => null)
+
+    // 抓取 + 落库 + 降级事实全在 module 内；这里只决定怎么**说**给用户
+    const acq = await acquireAndStorePrices(db, codes)
+    if (!acq.reachable) {
+      // 网络/接口挂了要单独报：这跟「代码不对」是两回事，用户该做什么完全不同。
+      // 响应契约一字不改（已发布端点）。
+      void fxPromise
       return {
         code: 0,
         data: {
@@ -170,23 +197,13 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // 落库走同一份实现（storeQuotes），三处共用口径
-    storeQuotes(db, quotes)
-
-    const got = new Map(quotes.map((q) => [q.code, q]))
+    const got = acq.byCode
     const results: Array<{ code: string; ok: boolean; price?: number; quoteDate?: string; changeRate?: number | null; reason?: string }> = []
     const missing: Array<{ code: string; reason: string }> = []
-    // 汇率（腾讯或 ECB 兜底）单独落库
+    // 汇率（腾讯或 ECB 兜底）已经由 module 落库，这里只把结果说给用户
     const fxRes = await fxPromise
     const fx: Record<string, number> = {}
-    const today = new Date().toISOString().slice(0, 10)
-    for (const [ccy, rate] of fxRes.rates) fx[ccy] = rate
-    if (fxRes.rates.size > 0) {
-      storeQuotes(db, [...fxRes.rates].map(([ccy, rate]) => ({
-        code: `wh${ccy}CNY`, name: `${ccy}人民币`, price: rate,
-        prevClose: null, changeRate: null, quoteDate: today, quoteAt: today,
-      })))
-    }
+    for (const [ccy, rate] of fxRes?.rates ?? []) fx[ccy] = rate
 
     for (const code of codes) {
       const norm = normalizeCode(code)
@@ -208,7 +225,7 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
 
     return {
       code: 0,
-      data: { ...base, fetched: results.filter((r) => r.ok).length, network: true, results, missing, fx, fxSource: fxRes.source },
+      data: { ...base, fetched: results.filter((r) => r.ok).length, network: true, results, missing, fx, fxSource: fxRes?.source ?? 'none' },
       message: results.every((r) => r.ok)
         ? `已更新 ${results.length} 个标的`
         : `${results.filter((r) => r.ok).length} 个已更新，${missing.length} 个取不到价`,
@@ -257,21 +274,43 @@ export async function investmentRoutes(app: FastifyInstance): Promise<void> {
 
     /* 自愈：缺哪个币种的汇率就在后台补一次。
        之前「待补汇率」要等用户点刷新，而汇率本来就不该要用户管。
-       fire-and-forget，不拖慢本次响应；下次进来就有值了。 */
+       fire-and-forget，不拖慢本次响应；下次进来就有值了。
+
+       ⚠️ 它是**用户没主动要求**的补齐，所以必须自己管住请求量：
+       `backfillFxRates` **先同步盖 60s cooldown 时间戳、再发请求**——
+       窗口覆盖一次尝试的最坏超时，因此**无需 single-flight**：第二个调用必然
+       撞在冷却上，与第一个不可能重叠。没有这道闸门，上游一挂，
+       用户每刷一次投资页就放大一次请求——而它跟定时任务共用同一个出口 IP
+       和同一个非官方接口，拖垮的是全局行情。
+
+       被闸门挡下**不写日志**（那是每次 GET 的常态，记它就等于往 app_logs 灌流水账）；
+       只有真的去取过的结果才落 warn / info——这段以前是完全静默的。 */
     try {
       const haveFx = loadLatestFxRates(db)
       const missing = [...new Set(items.map((h) => h.currency))]
         .filter((c) => c !== 'CNY' && !haveFx.has(c))
       if (missing.length > 0) {
         // 主源腾讯 + 兜底 ECB（见 lib/fx.ts），拿不到就保持「待补汇率」
-        void fetchFxRates(missing).then(({ rates }) => {
-          const today = new Date().toISOString().slice(0, 10)
-          const qs = [...rates].map(([ccy, rate]) => ({
-            code: `wh${ccy}CNY`, name: `${ccy}人民币`, price: rate,
-            prevClose: null, changeRate: null, quoteDate: today, quoteAt: today,
-          }))
-          if (qs.length > 0) storeQuotes(getDb(), qs)
-        }).catch(() => {/* 后台补失败不影响本次响应 */})
+        void backfillFxRates(db, missing)
+          .then(({ attempted, acquisition }) => {
+            // ⚠️ 只记**真的去取过**的结果。被冷却闸门挡下是每次 GET 的常态，
+            // 为它写日志 = app_logs 变成「用户每刷一次就加一行」的流水账。
+            if (attempted.length === 0 || !acquisition) return
+            if (acquisition.missing.length > 0) {
+              log('warn', 'fx', `汇率自愈未补齐：${acquisition.missing.join(',')}（维持旧汇率）`, {
+                requested: attempted.join(','),
+                errors: acquisition.errors.join(' | '),
+              })
+            } else if (acquisition.stored > 0) {
+              log('info', 'fx', `汇率自愈已补 ${acquisition.stored} 个（来源 ${acquisition.source}）`, {
+                currencies: [...acquisition.rates.keys()].join(','),
+              })
+            }
+          })
+          .catch((err) => {
+            // 后台补失败不影响本次响应，但要留痕：否则「一直待补汇率」无迹可寻
+            log('warn', 'fx', `汇率自愈异常（维持旧汇率）: ${err instanceof Error ? err.message : String(err)}`)
+          })
       }
     } catch { /* 自愈是尽力而为 */ }
 

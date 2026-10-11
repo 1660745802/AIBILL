@@ -9,14 +9,9 @@
 import { getDb } from '../db/index.js'
 import { appLog as log } from './logger.js'
 import crypto from 'node:crypto'
-import { fetchQuotes, currencyOf, fxCodesFor, marketOfCode, type Market } from '../lib/quotes.js'
-import { storeQuotes } from '../lib/investments-repo.js'
-import { fetchFxRates } from '../lib/fx.js'
+import { currencyOf, marketOfCode, type Market } from '../lib/quotes.js'
+import { acquireAndStorePrices, acquireAndStoreFxRates } from '../lib/quote-acquisition.js'
 
-/** 兜底源的日期只有「今天」可用——它本身不带行情时间戳 */
-function today(): string {
-  return new Date().toISOString().slice(0, 10)
-}
 import { applyTxn } from '../lib/account-balance.js'
 
 /**
@@ -255,7 +250,7 @@ const MARKET_LABEL: Record<Market, string> = { cn: 'A股', hk: '港股', us: '�
  *  | 港股 | 9:30-12:00 / 13:00-16:00 | 同左（**比 A 股晚 1 小时收盘**） |
  *  | 美股 | 9:30-16:00 ET | **21:30-04:00**（夏令时）/ 22:30-05:00（冬令时） |
  *
- * 美股跨午夜，所以 window 会绕回 0 点。这里用「21:25 到次日 05:10」的宽窗口
+ * 美股跨午夜，所以 window 会绕回 0 点。这里用「21:25 到次日 05:40」的宽窗口
  * 把夏令时/冬令时都覆盖住——多抓的那段拿到的是上一交易日收盘价，
  * 有 `UNIQUE(code, quote_date, quoted_at)` 去重，不会写脏数据。
  */
@@ -319,23 +314,19 @@ export async function processFxRateFetch(): Promise<void> {
   const currencies = [...new Set(rows.map((r) => currencyOf(r.code)))]
   if (currencies.every((c) => c === 'CNY')) return
 
-  try {
-    // 主源腾讯 + 兜底 ECB，见 lib/fx.ts
-    const { rates, source } = await fetchFxRates(currencies)
-    const quotes = [...rates].map(([ccy, rate]) => ({
-      code: `wh${ccy}CNY`,
-      name: `${ccy}人民币`,
-      price: rate,
-      prevClose: null,
-      changeRate: null,
-      quoteDate: today(),
-      quoteAt: today(),
-    }))
-    if (quotes.length > 0) storeQuotes(db, quotes)
-    log('info', 'fx', `汇率已更新 ${quotes.length} 个（来源 ${source}）`)
-  } catch (err) {
-    // 汇率失败不影响股价抓取，只记一笔
-    log('warn', 'fx', `汇率抓取失败（维持旧汇率）: ${err instanceof Error ? err.message : String(err)}`)
+  // 取（主源 + ECB 兜底）与落库都在 quote-acquisition module 内；
+  // 这里只决定**记什么**。汇率失败不抛错也不阻塞股价抓取。
+  const acq = await acquireAndStoreFxRates(db, currencies)
+  if (acq.stored > 0) {
+    log('info', 'fx', `汇率已更新 ${acq.stored} 个（来源 ${acq.source}）`, {
+      currencies: [...acq.rates.keys()].join(','),
+    })
+  }
+  if (acq.missing.length > 0) {
+    // 失败原因在 errors 里：上游改格式/限流时，这是唯一能查到的线索
+    log('warn', 'fx', `汇率未补齐 ${acq.missing.join(',')}（维持旧汇率）`, {
+      errors: acq.errors.join(' | '),
+    })
   }
 }
 
@@ -390,25 +381,30 @@ export async function processQuoteFetch(now = new Date()): Promise<void> {
   if (targets.length === 0) return
 
   const codes = targets.flatMap((m) => byMarket.get(m) ?? [])
-  try {
-    const quotes = await fetchQuotes(codes)
-    if (quotes.length > 0) storeQuotes(db, quotes)
-    log('info', 'quotes', `已更新 ${quotes.length}/${codes.length} 个标的（${targets.map((m) => MARKET_LABEL[m]).join('/')}）`)
+  // 抓取 + 落库 + 降级事实在 module 内；这里的策略只有两个：
+  // 「只抓当前在交易时段且未被判定休市的市场」与「节假日从数据推断」。
+  const acq = await acquireAndStorePrices(db, codes)
+  if (!acq.reachable) {
+    // 失败**不写任何快照**：写一条错的价格比不写更危险——
+    // 页面上会显示一个看起来很新的假数字。这条要留痕：
+    // 接口改格式/被限流时，这是唯一能查到的线索。
+    log('warn', 'quotes', `行情抓取失败（保持旧数据，不写快照）: ${acq.degraded[0]?.detail ?? ''}`)
+    return
+  }
+  log('info', 'quotes', `已更新 ${acq.stored}/${codes.length} 个标的（${targets.map((m) => MARKET_LABEL[m]).join('/')}）`)
+  if (acq.unknown.length > 0) {
+    log('info', 'quotes', `${acq.unknown.length} 个代码上游未返回：${acq.unknown.join(',')}`)
+  }
 
-    /* 逐市场识别节假日 / 临时休市：拿回来的行情日期不是今天 ⇒ 该市场今天没开市。
-       只在**盘中较深处**才下结论——刚开盘时拿到上一交易日的日期可能只是还没切过来，
-       误判会让一整天都不再抓。 */
-    for (const m of targets) {
-      const mine = quotes.filter((q) => marketOfCode(q.code) === m)
-      if (mine.length > 0 && !mine.some((q) => q.quoteDate === today) && deepEnoughBeijng(now, m)) {
-        marketClosedOn[m] = today
-        log('info', 'quotes', `${MARKET_LABEL[m]} ${today} 非交易日（行情停在 ${mine[0]!.quoteDate}），今日不再抓`)
-      }
+  /* 逐市场识别节假日 / 临时休市：拿回来的行情日期不是今天 ⇒ 该市场今天没开市。
+     只在**盘中较深处**才下结论——刚开盘时拿到上一交易日的日期可能只是还没切过来，
+     误判会让一整天都不再抓。 */
+  for (const m of targets) {
+    const mine = acq.quotes.filter((q) => marketOfCode(q.code) === m)
+    if (mine.length > 0 && !mine.some((q) => q.quoteDate === today) && deepEnoughBeijng(now, m)) {
+      marketClosedOn[m] = today
+      log('info', 'quotes', `${MARKET_LABEL[m]} ${today} 非交易日（行情停在 ${mine[0]!.quoteDate}），今日不再抓`)
     }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    // 这条要留痕：接口改格式/被限流时，这是唯一能查到的线索
-    log('warn', 'quotes', `行情抓取失败（保持旧数据，不写快照）: ${msg}`)
   }
 }
 

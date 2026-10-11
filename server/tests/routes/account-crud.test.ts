@@ -9,10 +9,20 @@
  *
  * 另外：新建账户时必须能一次选对类型（活期/定期/理财投资/信用卡等），
  * 否则要建完再去资产页改一遍——同一个设置两个入口，第二个藏得最深。
+ *
+ * 本文件会 POST 持仓，而 POST 会自动取价——所以上游必须 mock 掉，
+ * 否则它在偷偷连腾讯（已被 tests/setup.ts 的外发守卫拓出来）。
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApp, teardownApp, createUser, authHeaders } from '../helpers.js'
+
+vi.mock('../../src/lib/quotes.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/lib/quotes.js')>()
+  // 工厂会被提升到文件顶部，不能直接引用文件顶部的 import（TDZ）——运行时再拿
+  const { offlineFetchQuotes } = await import('../offline-quotes.js')
+  return { ...actual, fetchQuotes: offlineFetchQuotes }
+})
 
 describe('账户的增加与删除', () => {
   let app: FastifyInstance

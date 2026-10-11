@@ -9,15 +9,27 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const fetchQuotes = vi.fn().mockResolvedValue([
+/**
+ * 上游目录（离线）：按请求的代码过滤，认得的给、不认的给不出——
+ * **一条都给不出来就抛**，与真实 `fetchQuotes` 一致。
+ * 这个 mock 也同时被 `lib/fx.ts` 的主源用到（它就是问腾讯要 `wh*CNY`）。
+ */
+const CATALOG = [
   { code: 'sh518880', name: '黄金ETF华安', price: 8.617, prevClose: 8.474, changeRate: 1.69, quoteDate: '2026-10-10', quoteAt: '20261010150000' },
-])
+  { code: 'hk00700', name: '腾讯控股', price: 424.8, prevClose: 411.4, changeRate: 3.26, quoteDate: '2026-10-10', quoteAt: '2026-10-10 16:00:00' },
+  { code: 'whHKDCNY', name: 'HKD人民币', price: 0.8525, prevClose: null, changeRate: null, quoteDate: '2026-10-10', quoteAt: '2026-10-10 16:00:00' },
+]
+const fetchQuotes = vi.fn(async (codes: string[]) => {
+  const out = CATALOG.filter((q) => codes.includes(q.code))
+  if (out.length === 0) throw new Error('行情接口返回空（可能改格式了或被限流）')
+  return out
+})
 vi.mock('../../src/lib/quotes.js', async (orig) => ({
   ...(await orig<typeof import('../../src/lib/quotes.js')>()),
   fetchQuotes,
 }))
 
-const { shouldFetchQuotes, runScheduledTasks, intervalMinutes } = await import('../../src/services/scheduler.js')
+const { shouldFetchQuotes, runScheduledTasks, intervalMinutes, processQuoteFetch } = await import('../../src/services/scheduler.js')
 const { initDb, getDb } = await import('../../src/db/index.js')
 
 describe('shouldFetchQuotes —— 只在盘中与收盘后抓', () => {
@@ -271,5 +283,82 @@ describe('节假日识别（从数据推断，不维护日历）', () => {
     await processQuoteFetch()
     expect(marketClosedDate('cn')).not.toBe('2026-10-14')  // 不标记
     vi.useRealTimers()
+  })
+})
+
+/* ══════════════════════════════════════════════════════════════
+   汇率链路与失败事实（收敛到 quote-acquisition 之后的行为）
+   ══════════════════════════════════════════════════════════════ */
+describe('汇率任务走 FX 链路，来源不许硬编码', () => {
+  /** 只留一个外币持仓（港股）的干净库 */
+  function seedHk() {
+    const db = initDb()
+    db.exec('DELETE FROM investments; DELETE FROM investment_quotes; DELETE FROM accounts; DELETE FROM users;')
+    const uid = Number(db.prepare(
+      "INSERT INTO users (username, password_hash, role) VALUES ('fxuser', 'x', 'user')",
+    ).run().lastInsertRowid)
+    const acc = Number(db.prepare(
+      "INSERT INTO accounts (user_id, name, asset_type) VALUES (?, '港股账户', 'investment')",
+    ).run(uid).lastInsertRowid)
+    db.prepare(
+      `INSERT INTO investments (user_id, account_id, code, name, market, kind, quantity)
+       VALUES (?, ?, 'hk00700', '腾讯', 'hk', 'stock', 100)`,
+    ).run(uid, acc)
+    return db
+  }
+
+  beforeEach(async () => {
+    const { resetMarketClosedCache } = await import('../../src/services/scheduler.js')
+    resetMarketClosedCache()
+    fetchQuotes.mockClear()
+  })
+
+  it('外币持仓：定时任务既抓行情也抓汇率，汇率行带**真实**来源与行情日期', async () => {
+    const db = seedHk()
+    // 北京 10:00（港/A 股盘中）
+    vi.setSystemTime(new Date('2026-10-09T02:00:00Z'))
+    await runScheduledTasks()
+    vi.useRealTimers()
+
+    // 股价与汇率是两次上游请求（汇率自己走主源→兜底链）
+    const calls = fetchQuotes.mock.calls.map((c) => (c as unknown as string[][])[0])
+    expect(calls).toContainEqual(['hk00700'])
+    expect(calls).toContainEqual(['whHKDCNY'])
+
+    const fxRows = db.prepare(
+      "SELECT code, price, source, quote_date FROM investment_quotes WHERE code LIKE 'wh%'",
+    ).all() as Array<{ code: string; price: number; source: string; quote_date: string }>
+    // ⚠️ 以前 storeQuotes 写死 source='tencent'，兜底源拿到的也标成腾讯
+    expect(fxRows).toEqual([
+      { code: 'whHKDCNY', price: 0.8525, source: 'tencent', quote_date: '2026-10-10' },
+    ])
+    // 股价也真的落库了
+    expect(db.prepare("SELECT count(*) c FROM investment_quotes WHERE code = 'hk00700'").get())
+      .toEqual({ c: 1 })
+  })
+
+  it('行情抓取失败：一行都不写、也不抛（等下一次跳再试）', async () => {
+    const db = seedHk()
+    vi.setSystemTime(new Date('2026-10-09T02:00:00Z'))   // 北京 10:00，门禁开着
+    fetchQuotes.mockRejectedValueOnce(new Error('行情接口返回 429'))
+    await expect(processQuoteFetch()).resolves.toBeUndefined()
+    vi.useRealTimers()
+
+    // 汇率不写（这条只测股价路径，processFxRateFetch 没跑）
+    expect(db.prepare('SELECT count(*) c FROM investment_quotes').get()).toEqual({ c: 0 })
+  })
+
+  it('部分代码上游没给：不抛，只是没那些行（不会整个失败）', async () => {
+    const db = seedHk()
+    db.prepare(
+      `INSERT INTO investments (user_id, account_id, code, name, market, kind, quantity)
+       SELECT user_id, account_id, 'hk0100', '不认的', 'hk', 'stock', 1 FROM investments LIMIT 1`,
+    ).run()
+    vi.setSystemTime(new Date('2026-10-09T02:00:00Z'))
+    await expect(processQuoteFetch()).resolves.toBeUndefined()
+    vi.useRealTimers()
+
+    expect(db.prepare("SELECT count(*) c FROM investment_quotes WHERE code = 'hk00700'").get()).toEqual({ c: 1 })
+    expect(db.prepare("SELECT count(*) c FROM investment_quotes WHERE code = 'hk0100'").get()).toEqual({ c: 0 })
   })
 })

@@ -6,7 +6,7 @@
  * 快照日期必须来自行情而不是「今天」。
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { normalizeCode, parseQuoteResponse, parseQuoteLine, fetchQuotes } from '../../src/lib/quotes.js'
+import { normalizeCode, parseQuoteResponse, parseQuoteLine, fetchQuotes, QuoteFetchError } from '../../src/lib/quotes.js'
 
 import { readFileSync } from 'node:fs'
 import { currencyOf, fxCodesFor, toIsoDateTime } from '../../src/lib/quotes.js'
@@ -97,23 +97,42 @@ describe('fetchQuotes · 全部代码取不到时显式抛错', () => {
     return bytes.buffer.slice(0, bytes.byteLength)
   }
 
-  it('所有代码都返回空段 → 解析结果为 0 → fetchQuotes 抛「返回空」', async () => {
+  it('所有代码都返回空段 → 抛 QuoteFetchError(kind=empty_response)', async () => {
     // 写错的代码 / 退市：腾讯回 v_sh999999="";
     const body = 'v_sh999999="";\nv_sz888888="";\n'
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
       arrayBuffer: async () => gbkBody(body),
     })))
-    await expect(fetchQuotes(['999999', '888888'])).rejects.toThrow(/返回空/)
+    const err = await fetchQuotes(['999999', '888888']).catch((e: unknown) => e)
+    // 文案仍在（给人看），但**分类靠 kind**——上游文案变了也不会走偏
+    expect(err).toBeInstanceOf(QuoteFetchError)
+    expect((err as QuoteFetchError).kind).toBe('empty_response')
+    expect((err as Error).message).toMatch(/返回空/)
   })
 
-  it('接口非 200 也显式抛错，不静默返回空', async () => {
+  it('接口非 200 → QuoteFetchError(kind=upstream_status, status)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: false,
       status: 429,
       arrayBuffer: async () => new ArrayBuffer(0),
     })))
-    await expect(fetchQuotes(['518880'])).rejects.toThrow(/429/)
+    const err = await fetchQuotes(['518880']).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(QuoteFetchError)
+    expect((err as QuoteFetchError).kind).toBe('upstream_status')
+    expect((err as QuoteFetchError).status).toBe(429)
+    expect((err as Error).message).toMatch(/429/)
+  })
+
+  /**
+   * 网络异常**不被包装**：调用方判定「不是 QuoteFetchError ⇒ 不可达」，
+   * 原始错误（DNS/连接/中断）的身份得留着才好排查。
+   */
+  it('网络层异常不是 QuoteFetchError（上游不可达）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed') }))
+    const err = await fetchQuotes(['518880']).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(TypeError)
+    expect(err).not.toBeInstanceOf(QuoteFetchError)
   })
 
   it('空代码列表直接返回空数组，不发请求也不抛错', async () => {
