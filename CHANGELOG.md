@@ -64,6 +64,24 @@
   `feature-removal-plan.md`（未执行、且针对的端点已重建）
 - `CONTRIBUTING.md` 补入**读生产库只能用只读连接**的硬规则与事故经过
 
+**架构深化（模块收口，不改既有响应契约）**
+
+- **净资产读模型下沉**：`lib/portfolio.ts` 新增 `assetComposition`（分组 / 占比 /
+  三态）与 `hasReadings`，前端 `cluster` store 只投影不再做口径仲裁；修复零快照但
+  有持仓时漏算市值、纯负债用户被误报「还没记过余额」、portfolio 请求失败静默回退到
+  现金口径等问题。旧字段与路径全部保留
+- **账户余额写入 seam 封装**：新增 `recordBalanceSamples`，legacy `POST /assets/snapshot`
+  不再有推进基线的裸 SQL；严格保持 skip / 理财停用过滤 / 响应契约；module 内加归属校验；
+  `PUT /accounts/:id` 请求级原子化（重名统一 `400 / 3001`，不再透出 SQLite 原文）；
+  `applyTxn` 的 `userId` 收紧为必填；`INSERT OR IGNORE` → `ON CONFLICT(...) DO NOTHING`
+- **行情采集编排收拢**：新增 `lib/quote-acquisition.ts`，五个取价 / 落库调用点收敛，
+  失败语义统一为 `reachable / unknown / degraded` 且一律不抛；来源与行情日期按真实
+  provider（腾讯 / ECB）落库不再硬编码；新增持仓自动取价走 ECB 兜底；后台汇率自愈加
+  60s 冷却闸门防请求放大；`QuoteFetchError` 携带 kind，分类不再匹配错误文案
+- **测试离线化**：行情 / 汇率相关测试改用离线 provider 夹具，`tests/setup.ts` 加
+  「禁止真实外发」守卫（吞错的外发也会判红），`vitest` 开 `unstubGlobals`；
+  测试计数 348 → 406（28 个文件）
+
 ### 界面重做：仪表读数（Instrument）—— 替换上一版的「账本纸」
 
 > 上一版「账本纸」的设计规格已整体重写（见 `docs/UI-DESIGN.md`）。改动原因见该文件 §0：

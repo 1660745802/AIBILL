@@ -3,7 +3,7 @@
 > **Base URL**: `http(s)://<host>:3000/api`
 > **认证**: 除 `/health`、`/api/auth/*`、`/api/config/notification-rules` 外均需 `Authorization: Bearer <jwt>`
 > **响应格式**: 统一 `{ code: 0, data: <T>, message: "" }`
-> **路由总数**: 80（基于 `server/src/routes/*.ts` 2026-09 重构）
+> **路由**: 见 `server/src/routes/*.ts`（本文档列出主要端点，非逐一枚举）
 
 > ⚠️ **已废弃接口（deprecated，2026-10）**
 > 以下接口在 Web 前端已下线（页面与导航入口移除）。**接口与数据表暂时保留**，供两端对齐排期后一并移除，
@@ -236,6 +236,21 @@
 | DELETE | **删除账户**（软删，可还原）。连带清掉该账户的余额快照与持仓 |
 | POST `/api/accounts/:id/restore` | 还原误删的账户 |
 
+> `PUT /api/accounts/:id` 是**请求级原子**的：改余额（会同时写一行快照凭证）与改其它字段
+> 在同一个事务里。任一步失败则整单不生效——例如同一请求里既改 `current_balance`
+> 又把 `name` 改成已存在的名字，余额**不会**被写进去。
+>
+> 失败响应与 `POST /api/accounts` 统一：
+
+| 场景 | HTTP | `code` | `message` |
+|---|---|---|---|
+| 账户不存在 / 不属于当前用户 | 404 | 3002 | `账户不存在` |
+| 没有任何可更新字段 | 400 | 2000 | `没有需要更新的字段` |
+| `name` 与该用户已有账户重名 | 400 | 3001 | `账户名称已存在` |
+
+> 曾经重名会抛成 `SQLITE_CONSTRAINT_UNIQUE` → **HTTP 500 且把 SQLite 原文透给客户端**，
+> 而余额已经被覆盖、快照行也已经写进去了。两处都已修。
+
 `account.type`（付款渠道，历史字段）：`cash | wechat | alipay | bank | credit | other`
 `account.asset_type`（**账户种类**，UI 按它分组、决定要不要出现「投资」页）：
 `liquid | savings | investment | credit | loan | property | other`
@@ -326,14 +341,93 @@
 返回 `{ net_worth, total_assets, total_liabilities, by_type: [...], accounts: [...] }`。**单条聚合 SQL**（已修 N+1）。
 净资产口径与 `/api/stats/dashboard` 一致：负余额计负债，正余额计资产（详见上方 dashboard 小节）。
 
+> ⚠️ 这两个接口的净资产是**现金口径**（Σ `accounts.balance`，**不含持仓市值**），
+> 而 `GET /api/assets/portfolio` 是**总价值口径**。两者数值在有持仓时会不同，
+> 这是**当前有意保留**的差异（overview / dashboard 是已发布契约，未确认跨端消费前不改）。
+> 前端仪表读数一律以 `/api/assets/portfolio` 为准。
+
+### GET `/api/assets/portfolio` — 工作台读模型（净资产口径的**权威来源**）
+返回 `{ netWorth, netWorthComplete, unpricedAccounts, hasReadings, assetComposition,
+liability, investment, curve, accounts, empty, lastUpdated, change, previousNetWorth, ... }`（camelCase）。
+
+| 字段 | 含义 |
+|------|------|
+| `netWorth` | Σ(各账户总价值)，总价值 = 持仓市值 + 现金。行情缺失的账户只计现金 → 这是**下界** |
+| `netWorthComplete` / `unpricedAccounts` | false = 有 N 个账户算不出总额，UI 显示 `≥¥X` |
+| `hasReadings` | 有没有余额读数（017 判据）：任一活跃账户**有快照行**、**余额非 0**、**或持仓能估值**；三者都不满足才算「没有读数」 |
+| `empty` | 旧字段：有没有写过 `asset_snapshots` 行。**不等于**「没有余额读数」 |
+| `assetComposition` | `{ state, total, rows: [{ type, value, percent }] }`。按 `asset_type` 用账户总价值分组；`percent` 分母 = **正资产合计**（**负债账户不进构成条**，见 UI-DESIGN §6.8 规则 7，负债由 `liability` 单列）；`state ∈ ok \| no_readings \| no_positive_assets`，不变式 `rows.length > 0 ⟺ state === 'ok'` |
+| `liability` | `{ total, accountCount }`，负余额账户合计（**负数**） |
+
 ### GET `/api/assets/trend?months=6`
-净资产历史趋势（基于 `asset_snapshots`）。
+净资产历史趋势（基于 `asset_snapshots`，**现金口径**、且不排除已停用账户）。
+已标记 deprecated（两端无可达入口）。要曲线请用 `/api/assets/portfolio` 的 `curve`
+（含每日覆盖率与「持仓 / 现金」拆分，语义更完整）。
 
 ### POST `/api/assets/snapshot`
-手动触发月度快照。
+旧客户端保留的端点，**不删**。017 之后不再回算余额：把当前权威值 `accounts.balance`
+落一行 `asset_snapshots` 作为历史采样，**自己不写 `balance`**。
+
+- 返回 `{ date, created, skipped, total }`；`created + skipped = total`
+- 命中理财账户（`asset_type='investment'`）与停用账户都不会被计入 `total`
+- **同日重复调用整批跳过**（`ON CONFLICT(user_id, account_id, snapshot_date) DO NOTHING`，
+  只跳过这一条唯一键冲突），不覆盖已有采样行
+- **只有真的插进去一行才推进 `balance_as_of_txn_id`**。因此“今天第二次点快照”
+  不会把两次之间新建的账单烤进余额，改它们仍会正常加减
+
+写入实现在 `lib/account-balance.ts` 的 `recordBalanceSamples()`；
+语义与手填路径的差异见 `DATA.md` §10.6 与 §12。
+
+### PUT `/api/assets/snapshots`
+手填余额（覆盖 + 推进基线 + upsert 快照行），可带 `date` 补录。
+余额与快照凭证由同一个事务写入；整个请求也包在事务里，
+所以“改余额的同时改其它字段而后者失败”时不会留下半改的数据。
 
 ### PUT `/api/assets/accounts/:id`
 更新账户资产属性：`asset_type` / `currency` / `credit_limit` / `billing_day` / `due_day` / `note`。
+
+---
+
+## 8.1 投资持仓 `/api/investments/*`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/investments` | 持仓列表 + 逐条估值。含 `quote.status`（行情状态）与 `quote.schedule`（为什么没自动更新） |
+| POST | `/api/investments` | 新增/复活持仓 `{ account_id, code, name?, kind?, quantity, note? }`。**加完立刻取价** |
+| PATCH | `/api/investments/:id` | 改股数 / 名称 / 备注 |
+| DELETE | `/api/investments/:id` | 软删（可重新加回，唯一约束不看 `is_active`） |
+| POST | `/api/investments/quotes/refresh` | **手动刷新行情**（见下） |
+
+`code` 一律后端 normalize：`518880` / `sh518880` / `518880.SH` 都归一成 `sh518880`。
+行情缺失时 `marketValue = null`（**不是 0**），UI 显示 `—`。
+
+### POST `/api/investments/quotes/refresh`
+
+手动刷新的端点**绕过交易时段门禁**（用户明确要求就去取），并**逐个代码回报结果**，
+而不是像定时任务那样静默跳过。汇率顺带取（主源腾讯 → ECB 兜底）。
+
+```jsonc
+{ "code": 0, "data": {
+    "total": 2, "fetched": 1,
+    "schedule": { "fetch": true, "reason": "A股盘中" },   // 按该用户**实际持仓**的市场算
+    "at": "2026-10-11 10:00:00",
+    "network": true,                                        // false = 这一轮没拿到任何可解析行情
+    "results": [{ "code": "sh518880", "ok": true, "price": 8.617, "quoteDate": "2026-10-09" }],
+    "missing": [{ "code": "hk0100", "reason": "腾讯不认这个代码（hk0100），检查是不是多/少了字符" }],
+    "fx": { "HKD": 0.8525 }, "fxSource": "tencent"         // 来源可为 tencent | ecb | mixed | none
+  },
+  "message": "1 个已更新，1 个取不到价"
+}
+```
+
+- 没有持仓时：`total: 0` + `message: "没有活跃持仓，无需刷新行情"`
+- `network: false` 时：`results: []`、`fx: {}`、`fxSource: "none"`、`message: "行情接口连不上，稍后再试"`
+- `quoteDate` 是**行情自带**的日期，不是刷新时刻（非交易日不会伪装成“今天”）
+
+> **Deferred（已知，本轮不改）**：`network: false` 仍不区分「接口连不上」「限流」「一个代码都不认」，
+> 三者都回同一句 `行情接口连不上，稍后再试` —— 这是**既有 message**，按约束不动。
+> 服务端已经能分辨（`QuoteFetchError.kind` → `quote-acquisition` 的 `degraded.code`，
+> 并已写进 `app_logs`），把分类换算成用户可见的差异文案属于契约变更，另排。
 
 ---
 
@@ -437,7 +531,7 @@ If-None-Match: "15"
 | budgets | 4 | CRUD |
 | import | 1 | CSV 预览 |
 | export | 2 | JSON, CSV |
-| assets | 4 | overview, trend, snapshot, accounts |
+| assets | 6 | overview, **portfolio**, trend, snapshot, snapshots, accounts |
 | goals | 6 | CRUD + progress |
 | subscriptions | 6 | CRUD + cancel, renew |
 | notification-rules | 4 | config + admin |

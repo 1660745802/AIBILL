@@ -22,6 +22,33 @@
 - `routes/subscriptions.test.ts`
 - `routes/transactions.test.ts`
 
+资产 / 净资产读模型：
+- `lib/portfolio.test.ts`（纯函数口径：总价值、下界、构成占比与空态）
+- `lib/holdings.test.ts`、`lib/helpers.test.ts`（`summarizeNetWorth` 口径）
+- `routes/portfolio.test.ts`（读模型 + 手动快照写入的真实 seam）
+- `routes/networth.test.ts`（`overview` 与 `dashboard` 的口径一致性）
+
+余额写入路径（增量 / 覆盖 / 采样三条语义与请求级原子性）：
+- `db/migration017.test.ts`（017 回填 SQL 的分支判据）
+- `routes/account-balance-model.test.ts`（余额模型主测试面：增量加减、手填覆盖、
+  基准线挡掉旧账、legacy `POST /assets/snapshot` 的采样语义、归属隔离、
+  `PUT /accounts/:id` 的请求级原子性与错误码）
+
+行情 / 汇率采集（抓取 → 落库 → 降级事实）：
+- `lib/quote-acquisition.test.ts`（**module 的 test surface**：失败不写、降级分类、
+  腾讯/ECB 来源不硬编码、ECB 用自带日期、后台补汇率的 60s 冷却闸门（先同步盖戳、
+  窗口覆盖最坏超时，因此无需 single-flight））
+- `lib/quotes.test.ts`（解析器：GBK、三种响应格式、代码归一、三种时间戳）
+- `lib/fx.test.ts`（主源 → ECB 兜底与倒数换算；全局 stub fetch）
+- `lib/scheduler-quotes.test.ts`（**「定义 ≠ 会跑」的回归**：门禁/时段/休市推断、
+  汇率按来源落库、失败不写快照）
+- `routes/quotes-refresh.test.ts`（手动刷新逐码反馈、fx/fxSource、上游不可达）
+- `routes/investments.test.ts` / `routes/quote-status.test.ts`（自动取价、行情状态、
+  缺汇率不阻塞响应）
+
+> ⚠️ 这几份都**不联网**：上游 mock 在 `src/lib/quotes.js`（夹具见 `tests/offline-quotes.ts`），
+> 任何测试真外发都会被 `tests/setup.ts` 的守卫直接判红。
+
 ---
 
 ## 2. 单元测试用例

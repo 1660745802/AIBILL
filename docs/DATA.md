@@ -321,6 +321,32 @@ asset_snapshots (account_id, snapshot_date, balance, source)
 - 有总投入但没配持仓 → `holdingsPending=true`，浮盈 `null`（未配置 ≠ 亏损）
 - 净值曲线拆「持仓市值 / 现金」两条
 
+**「有没有余额读数」有两个判据，别混**：
+
+| 字段 | 回答的问题 | 017 后的注意 |
+|------|-----------|-------------|
+| `empty`（旧，保留） | 有没有写过 `asset_snapshots` 行 | 只回答「有没有历史采样」。余额真源已是 `accounts.balance`，新增账单实时改它、**不写快照行** |
+| `hasReadings` | 有没有余额读数 | 任一活跃账户**有快照行**、**余额非 0**、**或持仓能估值**（市值本身就是读数） |
+
+> 曾用 `empty` 当开关，于是**零快照但余额已记上**的用户回落到另一个口径
+> （Σ `accounts.balance`，不含持仓市值），净资产 ¥114,170 显示成 ¥28,000。判据已移进 module。
+
+**资产构成也由 module 给（`assetComposition`）**：按 `asset_type` 分组、用**账户总价值**
+（不是现金）、`percent` 的分母是**正资产合计**、三态空态互斥：
+
+| `state` | 含义 | UI |
+|---------|------|-----|
+| `ok` | 有读数且有正资产 | 画构成条 |
+| `no_readings` | **真的什么都没有**：无快照行、余额全 0、也没有可估值的持仓 | 「还没有记过余额」 |
+| `no_positive_assets` | 有读数但没有正资产（全 0 或全是负债） | **不得**说成「还没记过」 |
+
+不变式：`rows.length > 0 ⟺ state === 'ok'`（挂账已估值持仓时不得报 `no_readings`，
+否则「还没记过余额」与一条 ¥86,170 的构成条同时出现，自相矛盾）。
+
+> 前端曾经自己重算这三条，漏过 percent（组件 `toFixed` 抛错、构成整块不渲染）、
+> 漏过空态（纯负债用户被说成「还没有记过余额」）。构成与占比是口径，不再由客户端算。
+> 负债块也不能依附于资产行：纯负债用户没有任何正资产行，欠款金额恰恰最该显示。
+
 > **migration 013 加过 `quantity` / `total_invested`，016 又删了。**
 > 原因：份额按标的记在 `investments.quantity`；总投入是**账户属性**（只在存/取钱时变，
 > 不是每日读数），搬到 `accounts.invested_total`。留在快照里会导致
@@ -406,18 +432,43 @@ asset_snapshots.total_invested   总投入搬到 accounts
 
 | 数据 | 谁写 | 接口 |
 |---|---|---|
-| 现金 | `accounts.balance`（017 起唯一真源）：有归属账单实时加减 + 手填覆盖 | `PUT /api/assets/snapshots` |
+| 现金 | `accounts.balance`（017 起唯一真源）：有归属账单实时加减 + 手填覆盖 + 采样 | `PUT /api/assets/snapshots`、`PUT /api/accounts/:id`（`current_balance`）、`POST /api/assets/snapshot`（只采样，见下） |
 | 份额 | 用户手填（低频，加/减仓） | `POST/PATCH /api/investments` |
 | 总投入 | 用户手填（只在存/取钱时） | `PUT /api/assets/accounts/:id` |
-| 行情 | **定时任务**，每 15 分钟检查一次（`QUOTE_REFRESH_MINUTES` 可调），**按市场分别判断时段** | 无接口，`scheduler.ts` 写入 |
+| 行情 | **三个写者**，实现统一在 `lib/quote-acquisition.ts`：① 定时任务每 15 分钟检查一次（`QUOTE_REFRESH_MINUTES` 可调）、**按市场分别判断时段**；② 手动刷新（绕过门禁）；③ 新增持仓后自动取价（绕过门禁） | `scheduler.ts` + `POST /api/investments/quotes/refresh` |
+| 汇率 | 同一 module，**走主源腾讯 → ECB 兜底**，落库时带**真实来源**（`investment_quotes.source`）；另有一个后台自愈补齐（**先同步盖 60s cooldown 时间戳**，窗口覆盖最坏超时，因此无需 single-flight） | 同上 + `GET /api/investments` |
 
-> ⚠️ `POST /api/assets/snapshot`（旧口径：按「期初余额 + 流水」回算）**跳过理财账户**。
-> 它写的是同一个 `balance` 列，但对理财账户回算出来是「总价值」语义（含持仓），
-> 写进去就是「持仓 + 已含持仓的余额」双重计算。该端点为已发布的 Android 客户端保留，故不删，只排除理财账户。
+> ⚠️ 行情的**失败事实**只在 quote-acquisition 里判定（`reachable` / `unknown` / `degraded`），
+> **不要写进路由或调度器**：那里只决定「怎么处置」——手动刷新回逐码明细、
+> 定时任务记日志、自动取价吞掉不阻塞写入。三个入口必须共享同一套事实，
+> 否则同一种故障会得到四种解释（这正是以前的问题）。
 >
 > ⚠️ 行情抓取**必须挂在 `runScheduledTasks` 里**。曾经 `processQuoteFetch` 写好了却没有调用者，
 > 结果是 `investment_quotes` 永远 0 行、持仓永远「未取到价」、账户总价值永远算不出。
 > 回归测试见 `tests/lib/scheduler-quotes.test.ts`。
+>
+> ⚠️ `POST /api/assets/snapshot`（旧客户端保留，**不删**）**跳过理财账户与停用账户**。
+> 017 之后它**不再回算**：把当前权威值 `accounts.balance` 落一行 `asset_snapshots`（历史采样），
+> **自己不写 `balance`**。理财账户要排除是因为读模型把 `balance` 当现金读，
+> 拿「总价值」语义（含持仓）写进去就是「持仓 + 已含持仓的余额」双重计算。
+>
+> 它与手填（`PUT /api/accounts/:id` / `PUT /api/assets/snapshots`）是**两种语义，不要合并**：
+>
+> | | 手填 | 采样（legacy POST） |
+> |---|---|---|
+> | `accounts.balance` | 覆盖成用户填的数 | 不写 |
+> | 同一天重复 | upsert **覆盖** | 唯一键冲突则**跳过**（`ON CONFLICT(user_id, account_id, snapshot_date) DO NOTHING`） |
+> | 推进基线 | 无条件 | **只有真的插进去一行才推进** |
+>
+> 最后一行是全部要害：若采样也无条件推进，「今天第二次点快照」会把两次之间新建的账单
+> 烤进余额，此后 `applyTxn` 对它们的修正会被基线挡掉（`txnId <= balance_as_of_txn_id`）——
+> 改一笔旧账余额纹丝不动且无任何提示。
+>
+> 两个写入实现都在 `lib/account-balance.ts`（`setManualBalance` / `recordBalanceSamples`），
+> **路由里没有直接推进基线的 SQL**。该模块自己包事务：独立调用时自成事务，
+> 被路由的 `db.transaction` 包住时退化成 SAVEPOINT 随外层一起回滚
+> （better-sqlite3 的嵌套语义）。
+>
 
 ## 11. 行情抓取时段（按市场）
 
@@ -461,12 +512,17 @@ A股 / 港股 / 美股 的开市时间**完全不同**，所以门禁必须按�
 
 ## 12. 账户余额模型（migration 017）
 
-余额有且只有一个真源：**`accounts.balance`**。它由两条路径共同维护：
+余额有且只有一个真源：**`accounts.balance`**。它由三条路径共同维护，
+三条的实现**全部在 `lib/account-balance.ts` 内**，路由层不允许出现推进基线的 SQL：
 
 | 路径 | 行为 | 实现 |
 |---|---|---|
-| 有归属的账单增删改 | **增量加减** | `lib/account-balance.ts` 的 `applyTxn()` |
-| 手填修正 | **覆盖** | 同文件 `setManualBalance()` |
+| 有归属的账单增删改 | **增量加减** | `applyTxn()` |
+| 手填修正（账户 PUT / 资产快照 PUT） | **覆盖** | `setManualBalance()` |
+| 采样（旧客户端 `POST /assets/snapshot`） | **不写余额**，只落历史行；**仅首次**推进基线 | `recordBalanceSamples()` |
+
+> 第三条与第二条**不是一回事**（跳过 vs 覆盖、仅首次推进 vs 无条件推进），
+> 差异与理由见 §10.6。把它们合并成一个函数会引入静默余额漂移。
 
 **不变量**
 
