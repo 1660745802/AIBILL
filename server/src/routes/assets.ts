@@ -9,7 +9,7 @@ import { getDb } from '../db/index.js'
 import { summarizeNetWorth } from '../lib/assets.js'
 import { buildPortfolio, type AccountRow, type SnapshotPoint } from '../lib/portfolio.js'
 import { loadAccountHoldings } from '../lib/investments-repo.js'
-import { setManualBalance } from '../lib/account-balance.js'
+import { setManualBalance, recordBalanceSamples } from '../lib/account-balance.js'
 
 const updateAccountSchema = z.object({
   asset_type: z.enum(['liquid', 'savings', 'investment', 'credit', 'loan', 'property', 'other']).optional(),
@@ -131,7 +131,6 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/assets/snapshot', async (request: FastifyRequest) => {
     const db = getDb()
     const userId = request.user!.userId
-    const today = new Date().toISOString().split('T')[0]
 
     /**
      * **跳过理财账户。**
@@ -141,8 +140,13 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
      * 理财账户的现金由「各账户余额 / 投资页」手动记。
      * 这个端点为已发布的 Android 客户端保留，所以不删，只把理财账户排除掉。
      *
-     * 017 之后不再回算：直接把 `accounts.balance` 这个权威值落一行快照，
-     * 同时把基准线刷到今天（等于声明「此刻的余额就按这个算」）。
+     * 017 之后不再回算：直接把 `accounts.balance` 这个权威值落一行快照。
+     *
+     * 写入本身（插行 + 推进基线 + 计数 + 事务）全部在 account-balance module 里。
+     * 本路由只决定**记哪些账户**——筛选口径属于这个端点的策略。
+     * 别把这里换算成 `setManualBalance`：那会变成「覆盖 + 无条件推进基线」，
+     * 同一天第二次点就会把两次之间新建的账单烤进余额，之后改它们会被静默忽略。
+     * 两个函数看起来像，其实语义不同，理由见 recordBalanceSamples 的注释。
      */
     const accounts = db.prepare(
       `SELECT id FROM accounts
@@ -152,37 +156,16 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
     // 单条聚合 SQL 取所有账户余额（修复 N+1）
     const balances = calcAccountBalances(db, userId)
 
-    let created = 0
-    let skipped = 0
-
-    const insertStmt = db.prepare(
-      `INSERT OR IGNORE INTO asset_snapshots (user_id, account_id, balance, snapshot_date, source)
-       VALUES (?, ?, ?, ?, 'manual')`
+    // 只记活跃、非理财的账户；它们的余额就是当前的权威值。
+    const toSample = new Map<number, number>(
+      accounts.map((a) => [a.id, balances.get(a.id) ?? 0]),
     )
 
-    const runSnapshot = db.transaction(() => {
-      for (const acc of accounts) {
-        const balance = balances.get(acc.id) ?? 0
-        const result = insertStmt.run(userId, acc.id, balance, today)
-        if (result.changes > 0) {
-          created++
-          // 基准线 = **此刻**：这一行就是「此刻余额按这个数」的声明。
-          // 必须是 now 而不是 today——用日期会把今天剩余时间新建的账单
-          // （created_at 也是今天）判成「已烤进去」而永久跳过。
-          db.prepare(
-            `UPDATE accounts SET balance_as_of_txn_id = (SELECT COALESCE(MAX(id),0) FROM transactions WHERE user_id = ?) WHERE id = ?`
-          ).run(userId, acc.id)
-        } else {
-          skipped++
-        }
-      }
-    })
-
-    runSnapshot()
+    const { date, created, skipped, total } = recordBalanceSamples(db, userId, toSample)
 
     return {
       code: 0,
-      data: { date: today, created, skipped, total: accounts.length },
+      data: { date, created, skipped, total },
       message: created > 0 ? `已记录 ${created} 个账户快照` : '今日快照已存在',
     }
   })

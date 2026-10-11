@@ -14,6 +14,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApp, teardownApp, createUser, authHeaders } from '../helpers.js'
+import { getDb } from '../../src/db/index.js'
+import { recordBalanceSamples } from '../../src/lib/account-balance.js'
 
 describe('账户余额模型（增量 + 覆盖）', () => {
   let app: FastifyInstance
@@ -207,5 +209,311 @@ describe('review 复现的阻断缺陷', () => {
       payload: { items: [{ type: 'expense', amount: 300, date: new Date().toISOString().slice(0, 10), description: '当天', account_id: aAcc }] },
     })
     expect(await bal(aTok, aAcc)).toBe(55555 - 300)
+  })
+})
+
+/* ══════════════════════════════════════════════════════════════
+   legacy `POST /api/assets/snapshot` 的写入路径
+
+   它现在是 account-balance module 的第三个入口（recordBalanceSamples），
+   路由里不再有任何直接推进基线的 SQL。下面锁死它与手填路径的**语义差异**：
+   覆盖 vs 跳过、无条件推进 vs 仅首次推进。哪天有人图省事把它换成
+   setManualBalance(currentBalance)，下面第 2 条会立刻红。
+   ══════════════════════════════════════════════════════════════ */
+describe('legacy POST /api/assets/snapshot · 采样语义', () => {
+  let app: FastifyInstance
+
+  beforeAll(async () => { app = await buildApp() })
+  afterAll(async () => { await teardownApp(app) })
+
+  /**
+   * 每条用例**自己建一个用户**。
+   *
+   * 这个端点一次采样该用户**所有**活跃非理财账户，所以共用一个用户就必然有
+   * 跨用例状态：「今天已有采样行」会让 `ON CONFLICT DO NOTHING` 整批跳过，
+   * 于是后面的用例在前面的用例出错或被单独跑时测不出东西。
+   * 新用户 = 4 个默认账户、余额 0、基线 0、无任何快照行，是最干净的夹具。
+   */
+  async function freshUser(tag: string) {
+    const token = await createUser(app, tag)
+    const items = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/accounts', headers: authHeaders(token) })).payload,
+    ).data.items
+    return {
+      token,
+      hdr: () => authHeaders(token),
+      bankId: items.find((a: any) => a.name === '银行卡').id as number,
+      wechatId: items.find((a: any) => a.name === '微信').id as number,
+    }
+  }
+
+  const row = (id: number) =>
+    getDb().prepare('SELECT balance, balance_as_of_txn_id FROM accounts WHERE id = ?').get(id) as any
+  const snapsOf = (accountId: number) =>
+    getDb().prepare(
+      'SELECT balance, snapshot_date, source FROM asset_snapshots WHERE account_id = ? ORDER BY id',
+    ).all(accountId) as any[]
+  const maxTxnOf = (uid: number) =>
+    (getDb().prepare('SELECT COALESCE(MAX(id),0) m FROM transactions WHERE user_id = ?')
+      .get(uid) as any).m
+  const uidOf = (accountId: number) =>
+    (getDb().prepare('SELECT user_id FROM accounts WHERE id = ?').get(accountId) as any).user_id
+
+  it('1. 首次：写采样行、推进基线到 MAX(txn)，但不改 balance', async () => {
+    const u = await freshUser('snap_first')
+    const uid = uidOf(u.bankId)
+
+    await app.inject({
+      method: 'POST', url: '/api/transactions', headers: u.hdr(),
+      payload: { items: [{ type: 'expense', amount: 1000, date: '2099-03-01', description: '采样前', account_id: u.bankId }] },
+    })
+    expect(row(u.bankId).balance).toBe(-1000)
+    expect(row(u.bankId).balance_as_of_txn_id).toBe(0)
+
+    const res = JSON.parse((await app.inject({
+      method: 'POST', url: '/api/assets/snapshot', headers: u.hdr(),
+    })).payload)
+    expect(res.code).toBe(0)
+    // 响应契约：data 的键与文案一字不改（已发布端点）
+    expect(Object.keys(res.data).sort()).toEqual(['created', 'date', 'skipped', 'total'])
+    expect(res.data.created).toBe(4)     // 4 个默认账户，全部活跃且非理财
+    expect(res.data.skipped).toBe(0)
+    expect(res.data.total).toBe(4)
+    expect(res.message).toBe('已记录 4 个账户快照')
+
+    // 采样行 = 当时的权威余额，source=manual，日期与响应一致
+    const snaps = snapsOf(u.bankId)
+    expect(snaps).toHaveLength(1)
+    expect(snaps[0].balance).toBe(-1000)
+    expect(snaps[0].source).toBe('manual')
+    expect(snaps[0].snapshot_date).toBe(res.data.date)
+
+    // 基线推进到此刻的 MAX(txn)；balance 一个字节都没动
+    expect(row(u.bankId).balance_as_of_txn_id).toBe(maxTxnOf(uid))
+    expect(row(u.bankId).balance).toBe(-1000)
+  })
+
+  it('2. 同日重复：不覆盖、不推进基线，新建的账单之后仍可修正（最要害的一条）', async () => {
+    const u = await freshUser('snap_twice')
+    const post = () => app.inject({ method: 'POST', url: '/api/assets/snapshot', headers: u.hdr() })
+
+    await app.inject({
+      method: 'POST', url: '/api/transactions', headers: u.hdr(),
+      payload: { items: [{ type: 'expense', amount: 1000, date: '2099-03-01', description: '第一次采样前', account_id: u.bankId }] },
+    })
+    JSON.parse((await post()).payload)
+    const before = row(u.bankId)
+
+    // 在第一次采样**之后**新建一笔账：它的 id 已经高于基线
+    const t2 = JSON.parse((await app.inject({
+      method: 'POST', url: '/api/transactions', headers: u.hdr(),
+      payload: { items: [{ type: 'expense', amount: 2000, date: '2099-03-02', description: '采样后新建', account_id: u.bankId }] },
+    })).payload).data.created[0]
+    const afterAdd = before.balance - 2000
+    expect(row(u.bankId).balance).toBe(afterAdd)
+    expect(row(u.bankId).balance_as_of_txn_id).toBe(before.balance_as_of_txn_id)
+
+    // 今天第二次点快照：整批跳过
+    const res = JSON.parse((await post()).payload)
+    expect(res.data.created).toBe(0)
+    expect(res.data.skipped).toBe(res.data.total)
+    expect(res.message).toBe('今日快照已存在')
+
+    // 基线**没有**前进，已有采样行也没被覆盖
+    expect(row(u.bankId).balance_as_of_txn_id).toBe(before.balance_as_of_txn_id)
+    expect(snapsOf(u.bankId)).toHaveLength(1)
+    expect(snapsOf(u.bankId)[0].balance).toBe(before.balance)
+
+    // 因此这笔账没有被「烤进」余额：改它，余额必须跟着动。
+    // 若哪天把这里换成 setManualBalance（无条件推进基线），这一条会红。
+    await app.inject({
+      method: 'PUT', url: `/api/transactions/${t2.id}`, headers: u.hdr(), payload: { amount: 500 },
+    })
+    expect(row(u.bankId).balance).toBe(afterAdd + 1500)   // 支出 2000 → 500，少扣 1500
+  })
+
+  it('3. 理财账户被排除：不进 total、无采样行、基线不动', async () => {
+    const u = await freshUser('snap_inv')
+    getDb().prepare("UPDATE accounts SET asset_type='investment' WHERE id=?").run(u.wechatId)
+
+    const res = JSON.parse((await app.inject({
+      method: 'POST', url: '/api/assets/snapshot', headers: u.hdr(),
+    })).payload)
+
+    // 新用户本来就没有任何采样行，所以「仍无行」只能由「根本没采样它」解释
+    expect(snapsOf(u.wechatId)).toHaveLength(0)
+    expect(row(u.wechatId).balance_as_of_txn_id).toBe(0)
+    expect(res.data.total).toBe(3)          // 4 个默认账户减掉 1 个理财
+    expect(res.data.created).toBe(3)
+  })
+
+  it('4. 停用账户被排除：不进 total、无采样行', async () => {
+    const u = await freshUser('snap_inactive')
+    await app.inject({ method: 'DELETE', url: `/api/accounts/${u.wechatId}`, headers: u.hdr() })
+
+    const res = JSON.parse((await app.inject({
+      method: 'POST', url: '/api/assets/snapshot', headers: u.hdr(),
+    })).payload)
+
+    expect(snapsOf(u.wechatId)).toHaveLength(0)
+    expect(res.data.total).toBe(3)
+    expect(res.data.created).toBe(3)
+  })
+
+  it('5. 跨用户：A 采样碰不到 B 的账户与采样行', async () => {
+    const a = await freshUser('snap_cross_a')
+    const b = await freshUser('snap_cross_b')
+
+    JSON.parse((await app.inject({
+      method: 'POST', url: '/api/assets/snapshot', headers: a.hdr(),
+    })).payload)
+
+    // B 的账户一个字节都没动
+    expect(row(b.bankId).balance_as_of_txn_id).toBe(0)
+    expect(snapsOf(b.bankId)).toHaveLength(0)
+    // A 自己的采样行确实写进去了（否则上一条是空洞的）
+    expect(snapsOf(a.bankId)).toHaveLength(1)
+  })
+
+  it('6. 归属校验在 module 内：混入他人账户时整批拒绝，snapshot 与 baseline 都不写', async () => {
+    const a = await freshUser('snap_own_a')
+    const b = await freshUser('snap_own_b')
+    const uidA = uidOf(a.bankId)
+    // 让 A 名下确实有流水，基线推进才有可观测的余地
+    await app.inject({
+      method: 'POST', url: '/api/transactions', headers: a.hdr(),
+      payload: { items: [{ type: 'expense', amount: 700, date: '2099-05-01', description: 'x', account_id: a.bankId }] },
+    })
+    const maxA = maxTxnOf(uidA)
+    expect(maxA).toBeGreaterThan(0)
+
+    // 直接调 module：第一个是 A 的账户，第二个是 B 的账户
+    expect(() => recordBalanceSamples(
+      getDb(), uidA, new Map<number, number>([[a.bankId, 111], [b.bankId, 999]]),
+    )).toThrow(/不属于当前用户/)
+
+    // 整批拒绝 ⇒ 连 A 自己那个合法账户也不能被写过
+    expect(snapsOf(a.bankId)).toHaveLength(0)
+    expect(row(a.bankId).balance_as_of_txn_id).toBe(0)
+    expect(snapsOf(b.bankId)).toHaveLength(0)
+    expect(row(b.bankId).balance_as_of_txn_id).toBe(0)
+  })
+})
+
+/* ══════════════════════════════════════════════════════════════
+   请求级原子性
+
+   缺陷（实测）：PUT /api/accounts/:id 同时改余额 + 改成重名的账户名，
+   名字那步撞 UNIQUE(user_id,name) 抛错 → 余额已被覆盖、快照凭证行也已写入。
+   现在整单回滚，且错误统一成 400/3001（与 POST /api/accounts 一致），不漏 SQLite 原文。
+   ══════════════════════════════════════════════════════════════ */
+describe('PUT /api/accounts/:id · 请求级原子性', () => {
+  let app: FastifyInstance
+  let token: string
+  let bankId: number
+
+  beforeAll(async () => {
+    app = await buildApp()
+    token = await createUser(app, 'atomic_put')
+    const items = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/accounts', headers: authHeaders(token) })).payload,
+    ).data.items
+    bankId = items.find((a: any) => a.name === '银行卡').id
+  })
+
+  afterAll(async () => { await teardownApp(app) })
+
+  const hdr = () => authHeaders(token)
+  const row = (id: number) =>
+    getDb().prepare('SELECT name, balance, balance_as_of_txn_id FROM accounts WHERE id = ?').get(id) as any
+  const snapCount = (id: number) =>
+    getDb().prepare('SELECT count(*) c FROM asset_snapshots WHERE account_id = ?').get(id).c
+  /** 每个用例自己造一个账户，夹具自足、互不依赖 */
+  async function newAccount(name: string) {
+    const id = JSON.parse((await app.inject({
+      method: 'POST', url: '/api/accounts', headers: hdr(),
+      payload: { name, type: 'bank', initial_balance: 1000 },
+    })).payload).data.id as number
+    return id
+  }
+
+  it('同一次请求里改余额 + 改成重名的字段：整单回滚，且错误不漏 SQLite 原文', async () => {
+    const acc = await newAccount('待改名账户')
+    await app.inject({
+      method: 'POST', url: '/api/transactions', headers: hdr(),
+      payload: { items: [{ type: 'expense', amount: 500, date: '2099-04-01', description: '前置', account_id: acc }] },
+    })
+    const before = row(acc)
+    const snapsBefore = snapCount(acc)
+    expect(before.balance).toBe(500)          // initial_balance 1000 − 500
+
+    // 改成已存在的名字 → UNIQUE(user_id, name) 冲突
+    const res = await app.inject({
+      method: 'PUT', url: `/api/accounts/${acc}`, headers: hdr(),
+      payload: { name: '微信', current_balance: 88888 },
+    })
+    // 与 POST /api/accounts 同一套错误码；响应里不该出现 "UNIQUE constraint failed"
+    expect(res.statusCode).toBe(400)
+    const body = JSON.parse(res.payload)
+    expect(body.code).toBe(3001)
+    expect(body.message).toBe('账户名称已存在')
+    expect(res.payload).not.toContain('UNIQUE constraint failed')
+    expect(res.payload).not.toContain('SQLITE')
+
+    // 曾经：balance 变成 88888、快照多了一行，而客户端只看到 500
+    expect(row(acc).balance).toBe(before.balance)
+    expect(row(acc).name).toBe('待改名账户')
+    expect(snapCount(acc)).toBe(snapsBefore)
+    expect(row(acc).balance_as_of_txn_id).toBe(before.balance_as_of_txn_id)
+  })
+
+  it('正常路径：余额与其它字段一起改，两半都落库', async () => {
+    const acc = await newAccount('正常改名')
+    const res = await app.inject({
+      method: 'PUT', url: `/api/accounts/${acc}`, headers: hdr(),
+      // sort_order 是 updateAccountSchema 认的字段；不要塞 note（那是资产属性接口的字段，
+      // 这里会被 Zod 静默剥离，断言它等于断言了一个不存在的东西）
+      payload: { name: '工资卡', current_balance: 12345, sort_order: 7 },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.payload).code).toBe(0)
+    expect(row(acc).name).toBe('工资卡')
+    expect(row(acc).balance).toBe(12345)
+    expect(snapCount(acc)).toBeGreaterThan(0)
+    expect(
+      getDb().prepare('SELECT sort_order FROM accounts WHERE id = ?').get(acc).sort_order,
+    ).toBe(7)
+  })
+
+  it('校验失败（无字段）不产生任何写入', async () => {
+    const acc = await newAccount('空更新')
+    const before = row(acc)
+    const snapsBefore = snapCount(acc)
+    const res = await app.inject({
+      method: 'PUT', url: `/api/accounts/${acc}`, headers: hdr(), payload: {},
+    })
+    expect(res.statusCode).toBe(400)
+    expect(JSON.parse(res.payload).code).toBe(2000)
+    expect(row(acc).balance).toBe(before.balance)
+    expect(snapCount(acc)).toBe(snapsBefore)
+  })
+
+  it('别人的账户仍然 404，且一个字节都不写', async () => {
+    const acc = await newAccount('有主的账户')
+    const before = row(acc)
+    const snapsBefore = snapCount(acc)
+
+    const other = await createUser(app, 'atomic_other')
+    const res = await app.inject({
+      method: 'PUT', url: `/api/accounts/${acc}`, headers: authHeaders(other),
+      payload: { current_balance: 777 },
+    })
+    expect(res.statusCode).toBe(404)
+    expect(JSON.parse(res.payload).code).toBe(3002)
+    // 断言对象是**被请求的那个账户**（跨用户写入的直接受害面），
+    // 不是同用户下的另一个账户。
+    expect(row(acc).balance).toBe(before.balance)
+    expect(row(acc).name).toBe('有主的账户')
+    expect(snapCount(acc)).toBe(snapsBefore)
   })
 })

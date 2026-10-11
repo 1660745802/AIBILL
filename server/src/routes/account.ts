@@ -117,64 +117,90 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
       const db = getDb()
       const userId = request.user!.userId
 
-      const existing = db
-        .prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
-        .get(Number(id), userId)
-      if (!existing) {
-        reply.code(404)
-        return { code: 3002, data: null, message: '账户不存在' }
-      }
+      /**
+       * 整个请求包在一个事务里：**改余额（含快照凭证）与改其它字段同生共死。**
+       *
+       * 之前这里是三段独立的写，而手填余额排在最前面：
+       * 一次请求同时改余额 + 把名字改成已存在的名字 → 改名字撞
+       * UNIQUE(user_id, name) 抛错，客户端拿到 500，
+       * 但**余额已经被覆盖成新值、快照凭证行也已经写进去了**。
+       * 实测过：500 的同时 balance 从 0 变成 88888，快照表里也多了那一行。
+       *
+       * 现在 setManualBalance 自己带事务（被本层包住时自动退化成 SAVEPOINT，
+       * 随本事务一起回滚），而本层的 UPDATE 也在同一个事务里，两半都保住了。
+       *
+       * 因此「改名撞重名」不再是半改状态：异常先让整个事务回滚，再由下面的
+       * catch 统一转成 400/3001（与 POST /api/accounts 完全一致）。
+       */
+      const outcome = db.transaction(() => {
+        const existing = db
+          .prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
+          .get(Number(id), userId)
+        if (!existing) {
+          return { status: 404, body: { code: 3002, data: null, message: '账户不存在' } }
+        }
 
-      const updates: string[] = []
-      const params: unknown[] = []
+        const updates: string[] = []
+        const params: unknown[] = []
 
-      if (body.name !== undefined) { updates.push('name = ?'); params.push(body.name) }
-      if (body.type !== undefined) { updates.push('type = ?'); params.push(body.type) }
-      if (body.icon !== undefined) { updates.push('icon = ?'); params.push(body.icon) }
-      if (body.sort_order !== undefined) { updates.push('sort_order = ?'); params.push(body.sort_order) }
-      if (body.is_active !== undefined) { updates.push('is_active = ?'); params.push(body.is_active) }
-      if (body.asset_type !== undefined) { updates.push('asset_type = ?'); params.push(body.asset_type) }
+        if (body.name !== undefined) { updates.push('name = ?'); params.push(body.name) }
+        if (body.type !== undefined) { updates.push('type = ?'); params.push(body.type) }
+        if (body.icon !== undefined) { updates.push('icon = ?'); params.push(body.icon) }
+        if (body.sort_order !== undefined) { updates.push('sort_order = ?'); params.push(body.sort_order) }
+        if (body.is_active !== undefined) { updates.push('is_active = ?'); params.push(body.is_active) }
+        if (body.asset_type !== undefined) { updates.push('asset_type = ?'); params.push(body.asset_type) }
 
-      // 处理余额设置：旧客户端传 current_balance（它屏幕上显示的那个数）。
-      // 017 之后它就是 `accounts.balance`——用户改它 = 手填修正 = **覆盖**。
-      //
-      // 旧逻辑是「目标余额 − 流水净影响 = initial_balance」，那是反向推导，
-      // 会把 551 笔无归属流水的影响错算进来，而且和手填快照打架。
-      if (body.current_balance !== undefined) {
-        // 覆盖即刷新基准线到此刻。此刻之前就存在的账单已经烤进这个数里了。
-        // 走 setManualBalance（upsert 快照）：之前这里用裸 INSERT，
-        // 同一天改第二次余额会撞 UNIQUE(user_id, account_id, snapshot_date) → 500，
-        // 而且它在 UPDATE 之前执行，所以余额一点没改就失败了。
-        setManualBalance(db, userId, Number(id), body.current_balance)
-      } else if (body.initial_balance !== undefined) {
-        // 017 之后 balance 才是读取端唯一真源。**必须走 setManualBalance**：
-        // 直接覆盖 balance 而不推进基准线，会把「基准线之后已生效的账单」抹掉，
-        // 而那些账单之后被删除时又会被再减一次 → 永久差额。
-        setManualBalance(db, userId, Number(id), body.initial_balance)
-        updates.push('initial_balance = ?')
-        params.push(body.initial_balance)
-      }
+        // 处理余额设置：旧客户端传 current_balance（它屏幕上显示的那个数）。
+        // 017 之后它就是 `accounts.balance`——用户改它 = 手填修正 = **覆盖**。
+        //
+        // 旧逻辑是「目标余额 − 流水净影响 = initial_balance」，那是反向推导，
+        // 会把 551 笔无归属流水的影响错算进来，而且和手填快照打架。
+        if (body.current_balance !== undefined) {
+          // 覆盖即刷新基线到此刻。此刻之前就存在的账单已经烤进这个数里了。
+          // 走 setManualBalance（upsert 快照）：之前这里用裸 INSERT，
+          // 同一天改第二次余额会撞 UNIQUE(user_id, account_id, snapshot_date) → 500，
+          // 而且它在 UPDATE 之前执行，所以余额一点没改就失败了。
+          setManualBalance(db, userId, Number(id), body.current_balance)
+        } else if (body.initial_balance !== undefined) {
+          // 017 之后 balance 才是读取端唯一真源。**必须走 setManualBalance**：
+          // 直接覆盖 balance 而不推进基准线，会把「基准线之后已生效的账单」抹掉，
+          // 而那些账单之后被删除时又会被再减一次 → 永久差额。
+          setManualBalance(db, userId, Number(id), body.initial_balance)
+          updates.push('initial_balance = ?')
+          params.push(body.initial_balance)
+        }
 
-      if (updates.length === 0 && body.current_balance === undefined) {
-        reply.code(400)
-        return { code: 2000, data: null, message: '没有需要更新的字段' }
-      }
+        if (updates.length === 0 && body.current_balance === undefined) {
+          return { status: 400, body: { code: 2000, data: null, message: '没有需要更新的字段' } }
+        }
 
-      // 余额已由 setManualBalance 直接落库；其余字段（名字/图标/排序…）在这里更新。
-      // 两者必须能各走各的：只传 current_balance 时 updates 本来就是空的。
-      if (updates.length > 0) {
-        params.push(Number(id), userId)
-        db.prepare(`UPDATE accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`).run(
-          ...params,
-        )
-      }
+        // 余额已由 setManualBalance 直接落库；其余字段（名字/图标/排序…）在这里更新。
+        // 两者必须能各走各的：只传 current_balance 时 updates 本来就是空的。
+        if (updates.length > 0) {
+          params.push(Number(id), userId)
+          db.prepare(`UPDATE accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`).run(
+            ...params,
+          )
+        }
 
-      const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(Number(id))
-      return { code: 0, data: account, message: '' }
+        const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(Number(id))
+        return { status: 200, body: { code: 0, data: account, message: '' } }
+      })()
+
+      if (outcome.status !== 200) reply.code(outcome.status)
+      return outcome.body
     } catch (err) {
       if (err instanceof z.ZodError) {
         reply.code(400)
         return { code: 2000, data: null, message: err.errors[0].message }
+      }
+      // 改名撞 UNIQUE(user_id, name)：与 POST /api/accounts 用同一套错误，
+      // 不再把 SQLite 的 "UNIQUE constraint failed: …" 当 500 透给客户端。
+      // 走到这里时事务已经回滚（异常是从 db.transaction 里抛出来的），
+      // 所以余额、快照、名字都是改动前的状态。
+      if ((err as any)?.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+        reply.code(400)
+        return { code: 3001, data: null, message: '账户名称已存在' }
       }
       throw err
     }
