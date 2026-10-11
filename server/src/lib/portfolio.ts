@@ -131,6 +131,41 @@ export interface Liability {
   accountCount: number
 }
 
+/**
+ * 资产构成的**状态**。这三个互斥、且必须在 module 里判定——
+ * 让前端自己判空就会漏判（曾经：只要没有正余额账户，仪表就显示
+ * 「还没有记过余额」，而用户明明记着一张欠款 ¥3,200 的信用卡）。
+ *
+ * 三者与 `assetComposition.rows` 自洽：`rows.length > 0 ⟺ state === 'ok'`。
+ */
+export type AssetCompositionState =
+  /** 有读数，且至少有一个正资产账户 —— 可以画构成条 */
+  | 'ok'
+  /**
+   * 真的什么都没有：没写过任何快照行、余额全为 0、也没有任何可估值的持仓。
+   * 一旦某个账户有快照行、余额非 0 或持仓能估值，都不算这个状态。
+   */
+  | 'no_readings'
+  /** 有读数，但没有任何正资产（余额为 0 或全是负债）—— 不是「没记过」，别这么说 */
+  | 'no_positive_assets'
+
+export interface AssetCompositionRow {
+  /** `accounts.asset_type`；缺失时归 'other'（与 /stats/dashboard 的分组口径一致） */
+  type: string
+  /** 该类型的正资产合计（分）= Σ 账户总价值 */
+  value: number
+  /** 占 `total` 的百分比（0–100，浮点）。**分母是正资产合计，负债与 0 不参与** */
+  percent: number
+}
+
+export interface AssetComposition {
+  state: AssetCompositionState
+  /** 构成条的分母 = 所有正资产合计（分）。**负债账户不进构成条**（UI-DESIGN §6.8 规则 7），它们由 `liability` 单列 */
+  total: number
+  /** 按 value 降序。仪表只取前 4 段，顺序在这里定死，前端不再排序 */
+  rows: AssetCompositionRow[]
+}
+
 export interface Portfolio {
   /** 各账户最新快照的总价值求和（持仓市值 + 现金），行情缺失的账户不计入 */
   netWorth: number
@@ -162,8 +197,22 @@ export interface Portfolio {
   /**
    * 没有任何账户填过余额 —— 页面据此显示「去填」而不是一堆 0。
    * 注意：账户本身可能都在（行源是账户），所以不能用 rows.length 判断。
+   *
+   * ⚠️ 保留字段，但它**只回答「有没有历史采样」**，不是「有没有余额读数」。
+   * 017 之后余额是 `accounts.balance` 权威列：新增账单会实时改它却不写快照行，
+   * 所以「没记过快照」的用户完全可能有非零余额。要判断后者用 `hasReadings`。
    */
   empty: boolean
+  /**
+   * 有没有余额读数（017 之后的判据）：任一活跃账户**有快照行**或**余额非 0**。
+   *
+   * 这是前端唯一该用的判据。`empty` 是历史遗留的采样判据，
+   * 拿它当「有没有数据」会让「从没手填过快照、但余额已经记上」的用户
+   * 回落到另一个口径的数字上——实测漏掉整笔持仓市值。
+   */
+  hasReadings: boolean
+  /** 资产构成：分组 + 占比 + 空/全负状态。UI 只渲染，不自己算（见 AssetComposition） */
+  assetComposition: AssetComposition
   lastUpdated: string | null
 }
 
@@ -374,6 +423,54 @@ export function buildPortfolio(
     ? null
     : marketValue + cash - totalInvested
 
+  /**
+   * 有没有余额读数（017 之后的判据）：任一活跃账户
+   * **有快照行** **或** **余额非 0** **或** **持仓能估值**。
+   *
+   * 这是前端唯一该用的判据。`empty` 是历史遗留的采样判据，
+   * 拿它当「有没有数据」会让「从没手填过快照、但余额已经记上」的用户
+   * 回落到另一个口径的数字上——实测漏掉整笔持仓市值。
+   *
+   * 「持仓能估值」这条不能少：账户现金 0、从没填过快照，但挂着 ¥86,170 的持仓时，
+   * 它**确实有读数**（市值就是读数），此时若报 `false` 就会同时说错两件事：
+   * 仪表说「还没有记过余额」，而 `rows` 里却已经有一段 ¥86,170 的构成条。
+   */
+  const hasReadings = accounts.some((a) =>
+    a.lastUpdated != null || a.cash !== 0 || (a.hasHoldings && a.holdingsValue != null),
+  )
+
+  /**
+   * 资产构成：按 `asset_type` 分组、算占比、判定空/全负状态。
+   *
+   * 三个口径决策都在这里，前端只投影：
+   *  1. 用账户总价值（`value ?? cash`），不是现金——否则理财账户会被算少；
+   *  2. 只收正资产，负债不进构成、也不进分母（否则百分比会被负债扭曲，
+   *     而负债另有 `liability` 单列）。所以 `total` 是「正资产合计」，
+   *     它 != `netWorth`，这是有意的：构成条回答「钱放在哪」，不是「净值多少」；
+   *  3. `state` 三态互斥，且与 `rows` 自洽：`rows.length > 0 ⟺ state === 'ok'`。
+   *     `no_positive_assets` 必须和 `no_readings` 分开——全是负债的用户有读数，
+   *     说他「还没有记过余额」是错的（UI-DESIGN §6.8 规则 6）。
+   *     负债不进构成条也不进分母（§6.8 规则 7），否则百分比会被欠款扭曲。
+   *
+   * 行情缺失的账户仍然进构成（按它的现金），与 `netWorth` 的下界口径一致。
+   */
+  const byType = new Map<string, number>()
+  for (const a of accounts) {
+    const v = a.value ?? a.cash
+    if (v > 0) byType.set(a.assetType || 'other', (byType.get(a.assetType || 'other') ?? 0) + v)
+  }
+  const compositionTotal = [...byType.values()].reduce((s, v) => s + v, 0)
+  const compositionRows: AssetCompositionRow[] = [...byType.entries()]
+    .map(([type, value]) => ({ type, value, percent: value / compositionTotal * 100 }))
+    .sort((a, b) => b.value - a.value || a.type.localeCompare(b.type))
+  const assetComposition: AssetComposition = {
+    state: !hasReadings
+      ? 'no_readings'
+      : compositionRows.length > 0 ? 'ok' : 'no_positive_assets',
+    total: compositionTotal,
+    rows: compositionRows,
+  }
+
   return {
     netWorth,
     netWorthComplete,
@@ -393,6 +490,8 @@ export function buildPortfolio(
     liability,
     curve,
     empty: accounts.every((a) => a.lastUpdated == null),
+    hasReadings,
+    assetComposition,
     lastUpdated: accounts[0]?.lastUpdated ?? null,
   }
 }

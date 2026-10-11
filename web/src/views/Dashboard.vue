@@ -16,7 +16,6 @@ import { useChartColors, ink } from '@/utils/chart'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip)
 
-interface AssetBreakdownItem { type: string; total: number; count: number }
 interface TrendItem { date: string; total: number }
 interface AlertItem { type: string; message: string }
 
@@ -50,11 +49,12 @@ const assetMeta = (t: string) => ASSET_META[t] ?? OTHER_ASSET
  * 资产构成。
  *
  * 用 cluster store 的 `assetSplit`，而不是本页 `data.asset_breakdown`：
- * 后者是 `/stats/dashboard` 的**流水回算**口径（期初余额 + 交易），而这一页顶部的
- * 仪表已经改读快照口径（含持仓市值）。同屏两套口径会给出两个不同的构成 ——
- * 这个坑在仪表那边修过一次，这里是它的翻版。
+ * 后者是 `/stats/dashboard` 的**现金口径**（Σ `accounts.balance`，不含持仓市值），
+ * 而本页顶部的仪表读的是 portfolio 的总价值口径。同屏两套口径会给出两个不同的
+ * 构成——这个坑在仪表那边修过一次，这里是它的翻版。
  *
- * store 里已经处理了「有快照用快照、没有才回落流水」，所以这里只管映射。
+ * store 里已经是服务端口径的纯投影（分组、占比、空态都在
+ * `lib/portfolio.ts` 算好），这里只做展示：中文标签 + 颜色 + 按值降序。
  */
 const assetRows = computed(() =>
   cluster.assetSplit
@@ -68,16 +68,30 @@ const assetRows = computed(() =>
     .sort((a, b) => b.total - a.total),
 )
 
-/** 负债同样优先用快照口径 */
+/**
+ * 负债：只读 portfolio 的 `liability`（负余额账户合计 + 账户数）。
+ *
+ * 以前这里还有第二套定义（按 `asset_breakdown` 挑 total<0 或类型是 credit/loan），
+ * 会把一张**正余额**的信用卡当成负债行显示成正的「负债」数。
+ * portfolio 未加载时返回空 —— 不拿另一个口径的数字先顶上。
+ *
+ * `type: 'liability'` 是固定哨兵，**不走 `assetMeta`**（那里没有这一项，会退成
+ * 「其他」）；标签与颜色直接给：负债用支出色，与金额的 `tone="expense"` 一致。
+ */
 const liabilityRows = computed(() => {
-  const liab = cluster.portfolio?.liability
-  if (liab && liab.accountCount > 0) {
-    return [{ type: 'liability', total: liab.total, count: liab.accountCount }]
-  }
-  return (data.value?.asset_breakdown ?? []).filter(
-    (b: AssetBreakdownItem) => b.total < 0 || b.type === 'credit' || b.type === 'loan',
-  )
+  const liab = cluster.liability
+  if (!liab || liab.accountCount === 0) return []
+  return [{
+    type: 'liability' as const,
+    label: '负债',
+    color: 'var(--color-expense)',
+    total: liab.total,
+    count: liab.accountCount,
+  }]
 })
+
+/** 已经有账户了吗？决定「没记余额」该提示去记余额还是去添加账户 */
+const hasAccounts = computed(() => (cluster.portfolio?.accounts.length ?? 0) > 0)
 
 const { schemeTick } = useChartColors()
 
@@ -269,21 +283,46 @@ const monthProgress = computed(() => {
                 <span class="text-[0.625rem] amt w-8 text-right" style="color: var(--color-ink-4)">{{ a.percent }}%</span>
               </li>
             </ul>
-            <div v-if="liabilityRows.length" class="mt-3 pt-3 space-y-1.5"
-                 style="border-top: 1px dashed var(--color-rule)">
-              <div v-for="l in liabilityRows" :key="l.type" class="flex items-center justify-between gap-2">
-                <span class="text-[0.6875rem]" style="color: var(--color-ink-3)">{{ assetMeta(l.type).label }}</span>
-                <Money :value="l.total" size="sm" tone="expense" />
-              </div>
-            </div>
           </template>
 
-          <!-- 不要写「还没有账户」：账户可能都在，只是没记过余额，
-               那样写会让用户以为数据丢了（同一轮的同类文案问题） -->
-          <EmptyState v-else compact icon="wallet" title="还没有余额读数"
-                      description="添加账户后这里会显示资产分布">
-            <router-link to="/settings" class="btn btn-outline btn-sm">去添加</router-link>
+          <!-- 空态：按服务端判定的状态选，**不猜**。
+               不要写「还没有账户」：账户可能都在，只是没记过余额，那样写会让用户
+               以为数据丢了（同一轮的同类文案问题）。
+               也不能让「全是负债」落到「还没记余额」上——用户明明记着，只是没有正资产。
+               「没记余额」也要分两种：已有账户 → 去**记余额**；一个账户都没有 → 去**添加账户**。 -->
+          <EmptyState v-else-if="cluster.compositionState === 'no_readings'" compact
+                      icon="wallet" :title="hasAccounts ? '还没有记过余额' : '还没有余额读数'"
+                      :description="hasAccounts ? '记一次余额后这里会显示资产分布' : '添加账户后这里会显示资产分布'">
+            <router-link v-if="hasAccounts" to="/assets" class="btn btn-outline btn-sm">去记余额</router-link>
+            <router-link v-else to="/settings" class="btn btn-outline btn-sm">去添加</router-link>
           </EmptyState>
+          <EmptyState v-else-if="cluster.compositionState === 'no_positive_assets'" compact
+                      icon="wallet" title="没有可构成的资产"
+                      description="余额为 0 或全是负债，没有可显示的资产构成。">
+            <router-link to="/assets" class="btn btn-outline btn-sm">去记余额</router-link>
+          </EmptyState>
+          <!-- 读数还在路上：中性骨架，不说任何关于用户的事实 -->
+          <div v-else-if="cluster.compositionState === 'pending'" class="space-y-2" aria-busy="true">
+            <div class="skeleton h-3" style="width: 62%" />
+            <div class="skeleton h-3" style="width: 44%" />
+          </div>
+          <p v-else-if="cluster.compositionState === 'error'" class="text-xs" style="color: var(--color-ink-3)">
+            资产构成读不到，稍后重试。
+          </p>
+
+          <!-- 负债块**独立于**资产行：它不能被 `assetRows.length` 带着一起隐藏——
+               纯负债用户没有任何正资产行，欠款金额恰恰最该显示。 -->
+          <div v-if="liabilityRows.length" class="mt-3 pt-3 space-y-1.5"
+               :style="assetRows.length ? 'border-top: 1px dashed var(--color-rule)' : ''">
+            <div v-for="l in liabilityRows" :key="l.type" class="flex items-center justify-between gap-2">
+              <span class="flex items-center gap-2 min-w-0">
+                <span class="w-2 h-2 rounded-xs shrink-0" :style="{ background: l.color }" aria-hidden="true" />
+                <span class="text-xs truncate" style="color: var(--color-ink-2)">{{ l.label }}</span>
+                <span class="text-[0.625rem]" style="color: var(--color-ink-4)">{{ l.count }} 个账户</span>
+              </span>
+              <Money :value="l.total" size="sm" tone="expense" />
+            </div>
+          </div>
         </section>
 
         <!--

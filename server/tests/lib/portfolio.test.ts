@@ -189,3 +189,166 @@ describe('buildPortfolio', () => {
     expect(p.accounts.find((a) => a.accountId === 2)!.staleDays).toBeNull()
   })
 })
+
+/**
+ * `hasReadings` / `assetComposition`
+ *
+ * 这两个是 017 之后才必须存在的判据。历史事故：
+ * 前端拿 `empty`（“从没写过快照行”）当“有没有数据”，于是**零快照但余额已记上**
+ * 的用户被回落到另一个口径（Σ accounts.balance，不含持仓市值），
+ * 实测净资产 ¥114,170 显示成 ¥28,000。判据与构成都必须留在 module 里。
+ */
+describe('buildPortfolio · hasReadings 与资产构成', () => {
+  it('零快照但余额非 0（017 权威列）→ hasReadings=true，此时 empty 仍为 true', () => {
+    const p = buildPortfolio(
+      [acc(INV, { asset_type: 'investment', balance: 2800000 })],
+      [],                       // 从没写过 asset_snapshots 行
+      1, TODAY,
+      holdingsWith(8617000),
+    )
+    // 旧字段语义不变：empty 只回答“有没有历史采样”
+    expect(p.empty).toBe(true)
+    // 新判据回答“有没有余额读数” —— 余额已经记上了
+    expect(p.hasReadings).toBe(true)
+    // 净资产含持仓市值，不会因为没写快照就变回现金口径
+    expect(p.netWorth).toBe(11417000)
+    expect(p.assetComposition.state).toBe('ok')
+  })
+
+  it('无快照且余额全为 0 → hasReadings=false（“真没记过”）', () => {
+    const p = buildPortfolio([acc(1, { balance: 0 }), acc(2, { balance: 0 })], [], 2, TODAY)
+    expect(p.hasReadings).toBe(false)
+    expect(p.empty).toBe(true)
+    expect(p.assetComposition.state).toBe('no_readings')
+    expect(p.assetComposition.rows).toEqual([])
+  })
+
+  it('写过一次 0 快照也算有读数 → no_readings 不成立，但没正资产可构成', () => {
+    const p = buildPortfolio([acc(1, { balance: 0 })], [snap(1, TODAY, 0)], 1, TODAY)
+    expect(p.hasReadings).toBe(true)
+    expect(p.assetComposition.state).toBe('no_positive_assets')
+  })
+
+  it('全是负余额（信用卡欠款）→ no_positive_assets，不得说成 no_readings', () => {
+    const p = buildPortfolio(
+      [acc(1, { asset_type: 'credit', balance: -80000 }), acc(2, { balance: -240000 })],
+      [snap(1, TODAY, -80000), snap(2, TODAY, -240000)],
+      2, TODAY,
+    )
+    expect(p.hasReadings).toBe(true)
+    expect(p.netWorth).toBe(-320000)
+    expect(p.liability.total).toBe(-320000)
+    // 有读数，只是没有正资产 —— 说成“还没有记过余额”是错的
+    expect(p.assetComposition.state).toBe('no_positive_assets')
+    expect(p.assetComposition.rows).toEqual([])
+    expect(p.assetComposition.total).toBe(0)
+  })
+
+  it('构成按账户总价值分组（不是现金），percent 以正资产合计为分母', () => {
+    const p = buildPortfolio(
+      [
+        acc(1, { asset_type: 'liquid', balance: 130000 }),
+        acc(INV, { asset_type: 'investment', balance: 2800000 }),
+        acc(3, { asset_type: 'credit', balance: -49644 }),
+      ],
+      [], 3, TODAY, holdingsWith(8617000),
+    )
+    const c = p.assetComposition
+    expect(c.state).toBe('ok')
+    // 理财账户按 持仓+现金 = 114,170 计；负债不进构成也不进分母
+    expect(c.rows.map((r) => [r.type, r.value])).toEqual([
+      ['investment', 11417000],
+      ['liquid', 130000],
+    ])
+    expect(c.total).toBe(11547000)
+    expect(c.rows.reduce((s, r) => s + r.percent, 0)).toBeCloseTo(100, 6)
+    expect(c.rows[0]!.percent).toBeCloseTo((11417000 / 11547000) * 100, 6)
+    // total 是“正资产合计”，≠ netWorth（后者把负债也减进去了）
+    expect(c.total).not.toBe(p.netWorth)
+    expect(p.netWorth).toBe(11497356)   // 114,170 + 130 - 49.644
+  })
+
+  it('行情缺失的账户按现金进构成，与净资产的下界口径一致', () => {
+    const p = buildPortfolio(
+      [acc(INV, { asset_type: 'investment', balance: 2800000 }), acc(2, { balance: 500000 })],
+      [], 2, TODAY, holdingsWith(null, 1),   // 持仓没取到价
+    )
+    expect(p.netWorthComplete).toBe(false)
+    expect(p.netWorth).toBe(3300000)                       // 下界
+    expect(p.assetComposition.rows.map((r) => [r.type, r.value])).toEqual([
+      ['investment', 2800000], ['liquid', 500000],
+    ])
+    expect(p.assetComposition.state).toBe('ok')
+  })
+
+  it('0 余额账户不占构成段；asset_type 缺失归 other', () => {
+    const p = buildPortfolio(
+      [acc(1, { balance: 0 }), acc(2, { asset_type: '', balance: 1000 })],
+      [], 2, TODAY,
+    )
+    expect(p.assetComposition.rows).toEqual([{ type: 'other', value: 1000, percent: 100 }])
+  })
+
+  it('旧字段全部保留（本次只新增，响应形状向后兼容）', () => {
+    const p = buildPortfolio([acc(1, { balance: 100 })], [snap(1, TODAY, 100)], 1, TODAY)
+    for (const k of [
+      'netWorth', 'netWorthComplete', 'unpricedAccounts', 'previousNetWorth',
+      'change', 'changeRate', 'accounts', 'investment', 'liability', 'curve',
+      'empty', 'lastUpdated',
+    ]) {
+      expect(p).toHaveProperty(k)
+    }
+  })
+
+  // ── H1：无快照但有持仓市值 → 有读数，state 与 rows 自洽 ──
+  it('现金 0 + 无快照 + 持仓能估值 → hasReadings=true、state=ok、rows 有该持仓', () => {
+    const p = buildPortfolio(
+      [acc(INV, { asset_type: 'investment', balance: 0 })],
+      [],                        // 从没写过快照行
+      1, TODAY,
+      holdingsWith(8617000),     // 持仓能估值 = 它自己就是一个读数
+    )
+    expect(p.empty).toBe(true)   // 采样判据不变
+    expect(p.hasReadings).toBe(true)
+    expect(p.netWorth).toBe(8617000)
+    expect(p.assetComposition.state).toBe('ok')
+    expect(p.assetComposition.rows).toEqual([
+      { type: 'investment', value: 8617000, percent: 100 },
+    ])
+  })
+
+  it('现金 0 + 无快照 + 持仓取不到价 → 没读数，且 rows 为空（自洽）', () => {
+    const p = buildPortfolio(
+      [acc(INV, { asset_type: 'investment', balance: 0 })],
+      [], 1, TODAY, holdingsWith(null, 1),
+    )
+    expect(p.hasReadings).toBe(false)
+    expect(p.assetComposition.state).toBe('no_readings')
+    expect(p.assetComposition.rows).toEqual([])
+    // 取不到价但账上确实挂着持仓：净资产是 0 的**下界**（含未取价账户）
+    expect(p.netWorth).toBe(0)
+    expect(p.netWorthComplete).toBe(false)
+  })
+
+  it('不变式：rows 非空 ⟺ state===\'ok\'（多种组合都成立）', () => {
+    const cases: Array<[string, ReturnType<typeof buildPortfolio>]> = [
+      ['全 0 无快照', buildPortfolio([acc(1, { balance: 0 })], [], 1, TODAY)],
+      ['有快照全 0', buildPortfolio([acc(1, { balance: 0 })], [snap(1, TODAY, 0)], 1, TODAY)],
+      ['全负债', buildPortfolio([acc(1, { balance: -800 })], [snap(1, TODAY, -800)], 1, TODAY)],
+      ['正负混合', buildPortfolio(
+        [acc(1, { balance: 500 }), acc(2, { balance: -300 })], [snap(1, TODAY, 500)], 2, TODAY,
+      )],
+      ['无快照 + 持仓', buildPortfolio(
+        [acc(INV, { asset_type: 'investment', balance: 0 })], [], 1, TODAY, holdingsWith(8617),
+      )],
+      ['无快照 + 持仓未取价', buildPortfolio(
+        [acc(INV, { asset_type: 'investment', balance: 0 })], [], 1, TODAY, holdingsWith(null, 1),
+      )],
+    ]
+    for (const [name, p] of cases) {
+      expect(p.assetComposition.rows.length > 0, name).toBe(p.assetComposition.state === 'ok')
+      // 分母为 0 时不得出现 NaN/除零
+      if (p.assetComposition.rows.length === 0) expect(p.assetComposition.total, name).toBe(0)
+    }
+  })
+})

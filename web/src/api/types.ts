@@ -133,3 +133,76 @@ export interface PortfolioPosition {
   /** 浮动收益率，算不出时为 null */
   unrealizedRate: number | null
 }
+
+/**
+ * 资产构成（`GET /api/assets/portfolio` → `data.assetComposition`）。
+ *
+ * **服务端已经算好占比与空态**，前端只投影/渲染，不要在客户端重算：
+ * 分组口径（下界账户按现金计）、分母（只算正资产）、以及「没有读数」和
+ * 「有读数但全是负债」的区别，都是 `lib/portfolio.ts` 的决策。
+ *
+ * 曾经在前端 store 里重算，漏过 percent（组件 `r.percent.toFixed(0)` 直接抛错，
+ * 构成整块渲染失败），也漏过空态（纯负债用户被说成「还没有记过余额」）。
+ */
+export interface AssetCompositionRow {
+  /** `accounts.asset_type`，缺失时为 'other' */
+  type: string
+  /** 该类型的正资产合计，分 */
+  value: number
+  /** 占 `total` 的百分比（0–100 浮点）。分母是正资产合计，负债与 0 不参与 */
+  percent: number
+}
+
+/**
+ * - `ok`：有读数且有正资产 → 可以画构成条
+ * - `no_readings`：**真的什么都没有**——没写过任何快照行、余额全 0、也没有可估值的持仓。
+ *   账户挂着能估值的持仓时**不算**这个状态（它已经有读数了）。
+ * - `no_positive_assets`：有读数但没有正资产（全 0 或全是负债）→ **不要说成「没记过」**
+ *
+ * 不变式：`rows.length > 0 ⟺ state === 'ok'`。
+ */
+export type AssetCompositionState = 'ok' | 'no_readings' | 'no_positive_assets'
+
+/**
+ * 服务端 `AssetCompositionState` + 两个**传输层**状态（服务端不会返回）：
+ * - `pending`：portfolio 还在飞，不渲染任何空态（避免闪“还没记过”）
+ * - `error`：portfolio 加载失败且无缓存，读数不可知 → 显式展示未知，不能拿别的口径顶上
+ */
+export type CompositionState = AssetCompositionState | 'pending' | 'error'
+
+export interface AssetComposition {
+  state: AssetCompositionState
+  /** 构成条分母 = 正资产合计，分。注意它 != netWorth（负债不进构成） */
+  total: number
+  /** 按 value 降序；仪表取前 4 段 */
+  rows: AssetCompositionRow[]
+}
+
+/**
+ * `/api/assets/portfolio` 的响应（本项目实际使用的字段）。
+ *
+ * 服务端还返回 `investment` / `curve` / `change` / `previousNetWorth` / `changeRate`，
+ * 本仓库的 web 端没有消费者（留给其他端），故此处不重复声明。
+ * 旧字段一律保留（`empty` 也在），本次只做**新增**。
+ */
+export interface PortfolioResponse {
+  /** 净资产（分）。行情缺失的账户只计入现金 → 这是下界，配 `netWorthComplete` 读 */
+  netWorth: number
+  /** false = 有账户因行情缺失算不出总额，UI 要显示「≥¥X」 */
+  netWorthComplete: boolean
+  /** 因行情缺失算不出总额的账户数 */
+  unpricedAccounts: number
+  /**
+   * 有没有余额读数（017 判据）：任一活跃账户有快照行、余额非 0、或持仓能估值。
+   * **别用 `empty` 判断有没有数据**（它只回答“有没有写过快照行”）。
+   */
+  hasReadings: boolean
+  /** 历史遗留的「从没写过快照行」判据，保留兼容；它 != 没有余额读数 */
+  empty: boolean
+  /** 资产构成，含占比与空/全负状态 */
+  assetComposition: AssetComposition
+  /** 负余额账户合计（负数）与账户数 */
+  liability: { total: number; accountCount: number }
+  accounts: PortfolioPosition[]
+  lastUpdated: string | null
+}

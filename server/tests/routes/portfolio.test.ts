@@ -263,3 +263,132 @@ describe('资产工作台 · 持仓口径（市值 + 现金）', () => {
     ).run()
   })
 })
+
+/**
+ * 零快照 + 有持仓：**曾经在这里被前端漏算整笔持仓市值**。
+ *
+ * 017 之后余额真源是 `accounts.balance`，新增账单实时改它却不写快照行。
+ * 前端曾拿 `empty`（从没写过快照行）当“有没有数据”，于是这类用户回落到
+ * `/api/stats/dashboard` 的 Σbalance（现金口径），净资产 ¥114,170 显示成 ¥28,000。
+ *
+ * 现在判据与构成都在 portfolio 里，本测试锁住响应侧的事实。
+ */
+describe('资产工作台 · 零快照但余额已记上（017 判据）', () => {
+  let app: FastifyInstance
+  let token: string
+  let secAccId: number
+
+  beforeAll(async () => {
+    app = await buildApp()
+    token = await createUser(app, 'portfolio_nosnapshot')
+    const accounts = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/accounts', headers: authHeaders(token) })).payload,
+    ).data.items as Array<{ id: number; name: string }>
+    const db = getDb()
+    const sec = accounts.find((a) => a.name === '银行卡')!
+    secAccId = sec.id
+    db.prepare("UPDATE accounts SET asset_type='investment' WHERE id=?").run(secAccId)
+    const uid = (db.prepare('SELECT user_id FROM accounts WHERE id=?').get(secAccId) as { user_id: number }).user_id
+    db.prepare(
+      `INSERT INTO investments (user_id, account_id, code, name, market, kind, quantity)
+       VALUES (?, ?, 'sh518880', '黄金ETF', 'sh', 'etf', 10000)`,
+    ).run(uid, secAccId)
+    db.prepare(
+      `INSERT INTO investment_quotes (code, name, price, prev_close, change_rate, quote_date, quoted_at)
+       VALUES ('sh518880', '黄金ETF', 8.617, 8.60, 0.002, '2026-10-10', '2026-10-10 15:00:00')`,
+    ).run()
+    // 余额写在权威列上（模拟 017 回填 / 新建账户 / 账单增量），**一行快照都不写**
+    db.prepare('UPDATE accounts SET balance = 2800000, invested_total = 10000000 WHERE id=?').run(secAccId)
+  })
+
+  afterAll(async () => { await teardownApp(app) })
+
+  it('hasReadings=true、empty 仍为 true，且净资产含持仓市值', async () => {
+    const p = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/assets/portfolio', headers: authHeaders(token) })).payload,
+    ).data
+    expect(p.empty).toBe(true)                    // 旧字段语义不变：没写过快照行
+    expect(p.hasReadings).toBe(true)              // 但余额确实已经记上了
+    expect(p.netWorth).toBe(11417000)             // 现金 28,000 + 市值 86,170
+    expect(p.netWorthComplete).toBe(true)
+    expect(p.assetComposition.state).toBe('ok')
+  })
+
+  it('dashboard 仍是现金口径（本次不改 overview/dashboard）—— 差额恰为持仓市值', async () => {
+    const dash = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/stats/dashboard', headers: authHeaders(token) })).payload,
+    ).data
+    const ov = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/assets/overview', headers: authHeaders(token) })).payload,
+    ).data
+    // 两个 adapter 仍是 Σ accounts.balance（不含持仓市值）—— 已发布契约，本次不动
+    expect(dash.net_worth.total).toBe(2800000)
+    expect(ov.net_worth).toBe(2800000)
+    // 差额 = 持仓市值；前端必须以 portfolio 为准，否则就是漏算
+    expect(11417000 - dash.net_worth.total).toBe(8617000)
+  })
+
+  /**
+   * 把现金改成 0（仍不写任何快照行）：**依然有读数**。
+   *
+   * 只挂着一只持仓时，市值本身就是一个读数。若此时报 `no_readings`，
+   * 仪表会说「还没有记过余额」——而 rows 里同时有一段 ¥86,170 的构成条，
+   * state 与 rows 自相矛盾。
+   */
+  it('现金 0 + 零快照 + 持仓能估值 → hasReadings=true、state=ok、rows 含市值', async () => {
+    getDb().prepare('UPDATE accounts SET balance = 0 WHERE id=?').run(secAccId)
+    const p = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/assets/portfolio', headers: authHeaders(token) })).payload,
+    ).data
+    expect(p.empty).toBe(true)
+    expect(p.hasReadings).toBe(true)
+    expect(p.netWorth).toBe(8617000)
+    expect(p.assetComposition.state).toBe('ok')
+    expect(p.assetComposition.rows).toEqual([{ type: 'investment', value: 8617000, percent: 100 }])
+  })
+
+  it('行情消失（有持仓但算不出市值）→ 没读数，no_readings 且 rows 为空（自洽）', async () => {
+    getDb().prepare("DELETE FROM investment_quotes WHERE code='sh518880'").run()
+    const p = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/assets/portfolio', headers: authHeaders(token) })).payload,
+    ).data
+    expect(p.hasReadings).toBe(false)
+    expect(p.assetComposition.state).toBe('no_readings')
+    expect(p.assetComposition.rows).toEqual([])
+    expect(p.netWorthComplete).toBe(false)
+  })
+})
+
+/**
+ * 纯负债用户：仪表不得说“还没有记过余额”。
+ * 构成空态是 module 的判定（见 AssetCompositionState），这里从HTTP 侧锁住。
+ */
+describe('资产工作台 · 纯负债账户的空态', () => {
+  let app: FastifyInstance
+  let token: string
+
+  beforeAll(async () => {
+    app = await buildApp()
+    token = await createUser(app, 'portfolio_creditonly')
+    const accounts = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/accounts', headers: authHeaders(token) })).payload,
+    ).data.items as Array<{ id: number; name: string }>
+    const db = getDb()
+    const credit = accounts.find((a) => a.name === '微信')!
+    db.prepare("UPDATE accounts SET asset_type='credit', balance = -80000 WHERE id=?").run(credit.id)
+    db.prepare('UPDATE accounts SET balance = 0 WHERE id != ?').run(credit.id)
+  })
+
+  afterAll(async () => { await teardownApp(app) })
+
+  it('state=no_positive_assets（有读数、全是负债），rows 为空', async () => {
+    const p = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/assets/portfolio', headers: authHeaders(token) })).payload,
+    ).data
+    expect(p.netWorth).toBe(-80000)
+    expect(p.liability).toEqual({ total: -80000, accountCount: 1 })
+    expect(p.hasReadings).toBe(true)
+    expect(p.assetComposition.state).toBe('no_positive_assets')   // 不是 no_readings
+    expect(p.assetComposition.rows).toEqual([])
+  })
+})

@@ -14,6 +14,7 @@ import { onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useClusterStore } from '@/stores/cluster'
 import { usePeriodStore } from '@/stores/period'
+import type { CompositionState } from '@/api/types'
 import Gauge from './Gauge.vue'
 import AppIcon from './AppIcon.vue'
 
@@ -48,7 +49,7 @@ const ASSET_LABEL: Record<string, string> = {
   property: '不动产', credit: '信用卡', loan: '贷款', other: '其他',
 }
 
-/** 构成条：颜色按序取仪表语义色，不用彩虹色 */
+/** 构成条：颜色按序取仪表语义色，不用彩虹色。占比与顺序都由服务端给，这里只上色 */
 const SPLIT_COLORS = [
   'var(--color-readout)', 'var(--color-notch-on)',
   'var(--color-amber)', 'var(--color-ok)',
@@ -63,6 +64,19 @@ const splitSegments = computed(() =>
       color: SPLIT_COLORS[i % SPLIT_COLORS.length],
     })),
 )
+
+/**
+ * 构成下方的副标题：**穷举** `CompositionState`，少一个状态就编译不过。
+ * 状态含义是口径（服务端判定），这里只负责挑一句中性、不撒谎的话。
+ */
+const SUB_COPY: Record<CompositionState, { text: string; cls: string } | null> = {
+  ok: null,                                   // 有构成条可画，用图例不用文字
+  no_readings: { text: '还没有记过余额', cls: '' },
+  no_positive_assets: { text: '没有可构成的资产（余额为 0 或全是负债）', cls: '' },
+  pending: null,                              // 中性占位：不能说“还没记过”，数据马上就到
+  error: { text: '资产构成读不到，稍后重试', cls: 'cluster-sub-error' },
+}
+const subCopy = computed(() => SUB_COPY[cluster.compositionState])
 
 const savingsText = computed(() => {
   const r = cluster.savingsRate
@@ -98,9 +112,16 @@ const goExpense = () => router.push('/ledger?type=expense')
         </button>
       </p>
       <strong class="readout-value readout-lead" :class="{ 'readout-redline': cluster.netNegative }">
+        <!-- 读数不可知（portfolio 加载失败）→ 显示「—」。宁可空着也不显示
+             另一个口径的数字：那个数更小、且没有任何提示，等于说谎。 -->
+        <template v-if="cluster.netWorthUnknown">
+          <span class="val-full">—</span><span class="val-compact">—</span>
+        </template>
         <!-- 有持仓未取到价时这是个下界 → 前面加「≥」，不能把下界当精确值 -->
-        <span v-if="cluster.netWorthIncomplete" class="val-bound" aria-label="不小于">≥</span><span class="val-full">{{ reading(cluster.netWorth) }}</span>
-        <span class="val-compact">{{ readingCompact(cluster.netWorth) }}</span>
+        <template v-else>
+          <span v-if="cluster.netWorthIncomplete" class="val-bound" aria-label="不小于">≥</span><span class="val-full">{{ reading(cluster.netWorth!) }}</span>
+          <span class="val-compact">{{ readingCompact(cluster.netWorth!) }}</span>
+        </template>
       </strong>
       <!-- 构成条：这里放横条而不是刻度带——量程是「占比」，指针无意义 -->
       <div v-if="splitSegments.length" class="cluster-split" aria-hidden="true">
@@ -118,9 +139,11 @@ const goExpense = () => router.push('/ledger?type=expense')
       <p v-else-if="cluster.netWorthIncomplete" class="readout-sub readout-amber">
         {{ cluster.unpricedAccounts }} 个账户的持仓未取到价，实际可能更高
       </p>
-      <!-- 「有账户但没记过余额」的文案不能写成「还没有账户」——那会让用户以为数据丢了。
-           实际情况是：账户都在，只是没有余额读数，所以构成算不出来。 -->
-      <p v-else class="readout-sub">还没有记过余额</p>
+      <!-- 空态文案：由服务端判定的 `assetComposition.state` 决定。
+           「有读数但没有正资产」**不能**说成「还没有记过余额」——用户明明记着。
+           pending / error 是传输状态：给中性占位或故障说明，不说任何关于用户的事实。 -->
+      <p v-else-if="subCopy" class="readout-sub" :class="subCopy.cls">{{ subCopy.text }}</p>
+      <p v-else class="readout-sub cluster-sub-pending">读取中</p>
     </div>
 
     <!-- 读数 2 储蓄率：量程 0–100%，目标 30% 有参照物 -->
@@ -250,6 +273,10 @@ const goExpense = () => router.push('/ledger?type=expense')
 }
 .cluster-legend-item { display: inline-flex; align-items: center; gap: 0.25rem; }
 .cluster-legend-item i { width: 5px; height: 5px; border-radius: 1px; }
+/* pending：中性占位（骨架脉动），不抢读数的注意力，也不谎报“还没记过” */
+.cluster-sub-pending { color: var(--color-readout-3); animation: pulse 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+/* error：最弱一档中性色。不报警、不说谎，只说“读不到” */
+.cluster-sub-error { color: var(--color-readout-3); }
 
 /* 周期控件 */
 .cluster-c4 { min-width: 11.5rem; }
