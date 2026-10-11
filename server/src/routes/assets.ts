@@ -1,12 +1,19 @@
 /**
  * 资产管理路由 - /api/assets
- * 净资产概览、资产快照、趋势分析
+ *
+ * 提供两类东西：
+ *   - 账户元数据（`/overview`）与账户资产属性（`/assets/accounts/:id`）
+ *   - 净资产读模型（`/portfolio`）与手填快照（`/snapshots`）
+ *
+ * 净资产 / 负债 / 构成的**唯一**真源是 `/api/assets/portfolio`，计算在
+ * `lib/portfolio.ts`。趋势（`/assets/trend`）与旧采样端点（`POST /assets/snapshot`）
+ * 已于 2026-10 删除。
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
-import { buildPortfolio, readAccounts, readHistory, countAccounts, type AccountRow, type SnapshotPoint } from '../lib/portfolio.js'
+import { buildPortfolio, readAccounts, readHistory, countAccounts } from '../lib/portfolio.js'
 import { loadAccountHoldings } from '../lib/investments-repo.js'
 import { setManualBalance } from '../lib/account-balance.js'
 

@@ -103,10 +103,10 @@ bill/
 │   │   ├── ai/                # AI 模块（client / parser / prompts / matcher）
 │   │   ├── db/                # Schema + Migration（10 个版本）
 │   │   ├── middleware/        # JWT 鉴权（含 token_version 校验）
-│   │   ├── routes/            # 16 个路由模块（80 端点）
+│   │   ├── routes/            # 17 个路由模块（88 端点）
 │   │   ├── services/          # auth / logger / scheduler
 │   │   └── lib/               # response / error-codes（统一响应包装）
-│   └── tests/                 # 30 个测试文件（407 用例）
+│   └── tests/                 # 30 个测试文件（408 用例）
 ├── web/                       # 前端（Vue 3 + TailwindCSS）
 │   ├── src/
 │   │   ├── App.vue            # PC 侧边栏 + 移动端 Tab + Toast
@@ -120,7 +120,7 @@ bill/
 ├── docs/                      # 设计文档（5 份）
 │   ├── ARCHITECTURE.md        # 架构 / 技术栈 / 功能清单 / 部署
 │   ├── DATA.md                # 数据模型 / 表结构 / 索引 / 迁移
-│   ├── API.md                 # 全部 85 个端点契约
+│   ├── API.md                 # 全部 88 个端点契约
 │   ├── CONTRIBUTING.md        # 开发规范 / Git / 安全底线
 │   └── TESTING.md             # 测试用例清单
 ├── scripts/
@@ -147,17 +147,27 @@ bill/
 
 ## 🔌 API 概览
 
-完整接口列表见 [docs/API.md](docs/API.md)（共 85 个端点）。
+完整接口列表见 [docs/API.md](docs/API.md)（共 88 个端点 / 17 个路由模块，由 `scripts/gen-api-docs.ts` 生成）。
 
 | 模块 | 端点数 | 关键端点 |
 |------|--------|---------|
-| 认证 | 4 | register / login / me / password |
-| 交易 | 9 | CRUD + trash + tags + 永久删除 |
-| AI | 9 | parse / chat / sessions / memories |
-| 资产 | 4 | overview / trend / snapshot |
-| 目标 | 6 | CRUD + progress |
-| 订阅 | 6 | CRUD + cancel / renew |
-| 管理员 | 15 | invites / users / settings / ai-stats |
+| 认证 `auth.ts` | 4 | register / login / me / password |
+| 交易 `transaction.ts` | 9 | CRUD + trash + tags + 永久删除 / 恢复 |
+| 账户 `account.ts` | 5 | CRUD + restore |
+| 分类 `category.ts` | 4 | CRUD |
+| 资产 `assets.ts` | 4 | overview / portfolio / snapshots / accounts |
+| 投资 `investments.ts` | 5 | 持仓 CRUD + quotes/refresh |
+| 统计 `stats.ts` | 5 | summary / by-category / trend / dashboard / analysis |
+| AI `ai.ts` | 5 | parse / chat / sessions / parse-feedback |
+| AI 记忆 `memory.ts` | 4 | CRUD |
+| 预算 `budget.ts` | 4 | CRUD |
+| 目标 `goals.ts` | 6 | CRUD + progress |
+| 订阅 `subscription.ts` | 6 | CRUD + cancel / renew |
+| 导入 `import.ts` | 1 | csv |
+| 导出 `export.ts` | 2 | csv / json |
+| 管理员 `admin.ts` | 17 | invites / users / settings / ai-stats / logs |
+| 应用更新 `app-update.ts` | 3 | update / updates |
+| 通知规则 `notification-rules.ts` | 4 | config + admin |
 
 ## ⚙️ 环境变量
 

@@ -12,12 +12,19 @@
  * 本文件因此从「两套口径对不齐」的回归，升级成「两个接口必须给出同一个数」的护栏——
  * 哪天有人在 dashboard 里再手写一遍 `SUM(balance)`，下面第一条立刻红。
  *
+ * ⚠️ **这条护栏能不能红，取决于夹具里有没有持仓。**
+ * 审查（F1）指出：若夹具只有现金账户，每个账户 `value === cash`，
+ * 于是 `Σcash ≡ SUM(accounts.balance)`，断言两边恒等、改回现金口径也不红。
+ * 所以下面的 beforeAll 特意带了一个**市值 ≠ 现金**的持仓账户
+ * （现金 0 / 市值 86,170），这是鉴别力的来源，别把它当成冗余夹具删掉。
+ *
  * `overview` 的净资产字段（`total_assets` / `total_liabilities` / `net_worth` / `by_type`）
  * 已删除（零消费者）。最后一条用例把**删除本身**也锁住，防止第二套算法复活。
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApp, teardownApp, createUser, authHeaders } from '../helpers.js'
+import { getDb } from '../../src/db/index.js'
 
 describe('净资产口径一致性', () => {
   let app: FastifyInstance
@@ -78,6 +85,34 @@ describe('净资产口径一致性', () => {
       headers: authHeaders(token),
       payload: { items: [{ type: 'expense', amount: 12000, date: '2026-10-01', description: '测试', account_id: bank.id }] },
     })
+
+    /**
+     * **必留**：市值 ≠ 现金的持仓账户，是本文件断言的鉴别力来源。
+     * 现金 0 分，持仓市值 8,617,000 分（10000 份 × 8.617 元 = 86,170 元）。
+     * 少了它，`net_worth.total` 与 `Σbalance` 恒等，护栏就退化成恒真断言。
+     */
+    const db = getDb()
+    const invAcc = JSON.parse(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/accounts',
+          headers: authHeaders(token),
+          payload: { name: '证券账户', type: 'other', initial_balance: 0 },
+        })
+      ).payload,
+    ).data as { id: number }
+    const uid = (db.prepare('SELECT user_id FROM accounts WHERE id=?').get(invAcc.id) as { user_id: number }).user_id
+    db.prepare("UPDATE accounts SET asset_type='investment' WHERE id=?").run(invAcc.id)
+    db.prepare(
+      `INSERT INTO investments (user_id, account_id, code, name, market, kind, quantity)
+       VALUES (?, ?, 'sh518880', '黄金ETF', 'sh', 'etf', 10000)`,
+    ).run(uid, invAcc.id)
+    db.prepare(
+      `INSERT INTO investment_quotes (code, name, price, prev_close, change_rate, quote_date, quoted_at)
+       VALUES ('sh518880', '黄金ETF', 8.617, 8.60, 0.002, '2026-10-10', '2026-10-10 15:00:00')`,
+    ).run()
+
     expect(created.id).toBeGreaterThan(0)
   })
 
@@ -95,6 +130,21 @@ describe('净资产口径一致性', () => {
     const portfolio = await get('/api/assets/portfolio')
 
     expect(dash.net_worth.total).toBe(portfolio.netWorth)
+  })
+
+  it('（鉴别力自检）净资产 ≠ Σ现金，否则上面那条是恒真断言', async () => {
+    /**
+     * 审查 F1：若夹具只有现金账户，`value === cash`，于是
+     * `net_worth.total ≡ SUM(accounts.balance)` —— 改回现金口径也不会红。
+     * 所以这里**显式断言**两者确实不同，一旦有人把持仓夹具删了，本条先红。
+     */
+    const dash = await get('/api/stats/dashboard')
+    const cashSum = dash.net_worth.accounts.reduce((s: number, a: any) => s + a.cash, 0)
+
+    // 现金合计 -112,000 分；持仓市值 8,617,000 分 → 净资产 8,505,000 分
+    expect(cashSum).toBe(-112000)
+    expect(dash.net_worth.total).toBe(8505000)
+    expect(dash.net_worth.total).not.toBe(cashSum)
   })
 
   it('下界标记（netWorthComplete / unpricedAccounts）两处也必须一致', async () => {
@@ -122,26 +172,28 @@ describe('净资产口径一致性', () => {
     // 早期 dashboard 按 asset_type 分组后取绝对值，会让 10000 溢缴款抵消部分欠款
     // → 显示欠 112000 而不是 122000
     expect(portfolio.liability.total).toBe(-122000)
-    // 唯一的正资产就是那笔溢缴款
-    expect(portfolio.assetComposition.total).toBe(10000)
-    // 净资产 = 正资产 − 负债
-    expect(portfolio.netWorth).toBe(-112000)
+    // 正资产 = 溢缴款 10,000 + 证券账户持仓市值 8,617,000
+    expect(portfolio.assetComposition.total).toBe(8627000)
+    // 净资产 = 正资产 − 负债 = 8,627,000 − 122,000
+    expect(portfolio.netWorth).toBe(8505000)
   })
 
-  it('overview 不再提供任何净资产口径的字段（第二套算法不许复活）', async () => {
+  it('overview / dashboard 都不再提供净资产口径的字段（第二套算法不许复活）', async () => {
     const overview = await get('/api/assets/overview')
+    const dash = await get('/api/stats/dashboard')
 
-    for (const gone of ['total_assets', 'total_liabilities', 'net_worth', 'by_type', 'asset_breakdown']) {
-      expect(gone in overview, `${gone} 不该再出现`).toBe(false)
+    // 审查 F10：以前只对 overview 断言，dashboard 重新长出 total_assets/
+    // total_liabilities 不会有任何用例变红。两边一起锁。
+    for (const gone of ['total_assets', 'total_liabilities', 'net_worth', 'by_type']) {
+      expect(gone in overview, `overview.${gone} 不该再出现`).toBe(false)
     }
-    // 它仍然提供账户元数据 + 每账户现金余额（Assets 页在用）
+    for (const gone of ['total_assets', 'total_liabilities', 'asset_breakdown']) {
+      expect(gone in dash, `dashboard.${gone} 不该再出现`).toBe(false)
+    }
+
+    // overview 仍提供账户元数据 + 每账户现金余额（Assets 页在用）
     expect(Array.isArray(overview.accounts)).toBe(true)
     expect(overview.accounts.length).toBeGreaterThan(0)
     expect(overview.accounts[0]).toHaveProperty('balance')
-  })
-
-  it('dashboard 不再提供 asset_breakdown（构成请读 portfolio.assetComposition）', async () => {
-    const dash = await get('/api/stats/dashboard')
-    expect('asset_breakdown' in dash).toBe(false)
   })
 })

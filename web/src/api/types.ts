@@ -109,6 +109,8 @@ export interface PortfolioPosition {
   accountId: number
   name: string
   assetType: string
+  /** 图标，只用于展示，不参与任何计算 */
+  icon: string | null
   isInvestment: boolean
   /** 负余额 = 负债（信用卡欠款） */
   isDebt: boolean

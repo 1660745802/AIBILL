@@ -488,7 +488,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_parse_filters_created ON ai_parse_filters(crea
  * Migration 013: 资产快照支持份额与净投入
  *
  * 背景：`asset_snapshots` 表一直在，但只有 `balance` 一列，且写入路径
- * （POST /api/assets/snapshot）是从流水回算余额——而 551/553 笔交易
+ * （`POST /api/assets/snapshot`，**已于 2026-10 删除**）是从流水回算余额——而 551/553 笔交易
  * 没有 account_id，回算结果全错。所以这张表至今 0 行。
  *
  * 改成手动填写快照：既然回算不可靠，就直接记「某天这个账户值多少」。

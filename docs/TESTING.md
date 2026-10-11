@@ -19,7 +19,7 @@
 - `routes/budgets.test.ts`
 - `routes/memories.test.ts`
 - `routes/stats-dashboard.test.ts`
-- `routes/stats-analysis.test.ts`（**AI 提示词里的净资产口径**：变金测试验证过鉴别力，
+- `routes/stats-analysis.test.ts`（**AI 提示词里的净资产口径**：变异测试验证过鉴别力，
   夹具必须带持仓否则回归测不出）
 - `routes/subscriptions.test.ts`
 - `routes/transactions.test.ts`
@@ -28,14 +28,16 @@
 - `lib/portfolio.test.ts`（纯函数口径：总价值、下界、构成占比与空态，**含资产/负债的划分**）
 - `lib/holdings.test.ts`、`lib/helpers.test.ts`（日期区间 + 预算进度）
 - `routes/portfolio.test.ts`（读模型 + 手动快照写入的真实 seam）
-- `routes/networth.test.ts`（**dashboard 与 portfolio 必须逐分相同**，含下界标记
-  与「overview 不得再长出第二套算法」的守卫）
+- `routes/networth.test.ts`（**dashboard 与 portfolio 必须逐分相同**，含下界标记、
+  「overview / dashboard 不得再长出第二套算法」的守卫，以及一条**鉴别力自检**——
+  夹具必须带市值 ≠ 现金的持仓，否则护栏是恒真的）
 
 余额写入路径（增量 / 覆盖两种语义与请求级原子性）：
 - `db/migration017.test.ts`（017 回填 SQL 的分支判据）
 - `routes/account-balance-model.test.ts`（余额模型主测试面：增量加减、手填覆盖、
   基准线挡掉旧账、归属隔离、`PUT /accounts/:id` 的请求级原子性与错误码）
-- `routes/asset-snapshots-guard.test.ts`（`asset_snapshots` 表的读写护栏：删表会**静默**坏掉）
+- `routes/asset-snapshots-guard.test.ts`（`asset_snapshots` 表的读写护栏。**删表是故障**：
+  portfolio / dashboard / analysis / 快照写入会集体 500，不是「曲线变空」那种慢问题）
 
 行情 / 汇率采集（抓取 → 落库 → 降级事实）：
 - `lib/quote-acquisition.test.ts`（**module 的 test surface**：失败不写、降级分类、

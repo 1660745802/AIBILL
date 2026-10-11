@@ -284,6 +284,6 @@ cd web && npm install && npm run dev
 | [README.md](../README.md) | 项目简介、快速启动 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 架构、技术栈、功能清单、部署（本文） |
 | [DATA.md](DATA.md) | 数据模型、表结构、查询模式 |
-| [API.md](API.md) | 全部 85 个端点契约 |
+| [API.md](API.md) | 全部 88 个端点契约 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发规范、Git 流程、安全规范 |
 | [TESTING.md](TESTING.md) | 测试策略与用例清单 |

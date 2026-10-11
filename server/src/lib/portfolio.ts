@@ -513,6 +513,12 @@ export function buildPortfolio(
    同一份数据算净资产。曾经 dashboard 自己写了一遍 `SUM(a.balance)`，
    于是同一个数字有两套算法（一个是现金口径、一个是总价值口径）。
    把读取源集中到这里，让「两个接口口径不一致」这种事在结构上就不可能。
+
+   ⚠️ 这四个读（含 `loadAccountHoldings`）是**独立语句、不在同一事务里**。
+   并发插入账户时 `countAccounts` 可能大于 `readAccounts.length`，于是
+   `buildPortfolio` 的 `expectedAccounts` 失配、`change` 当次返回 null，
+   下一次请求自愈。后果良性，但如果哪天要加「必须在同一快照上算」的保证，
+   得把这四个读包进一个 `db.transaction`。
    ────────────────────────────────────────────────────────────── */
 
 /**

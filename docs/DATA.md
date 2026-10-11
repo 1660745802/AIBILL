@@ -108,7 +108,12 @@ source:   manual（用户添加） | ai_suggested（AI 自动）
 
 ### 3.4 asset_snapshots
 - 月度账户余额快照（`UNIQUE(user_id, account_id, snapshot_date)`）
-- 用于生成净资产趋势（无需回溯扫描全量 transactions）
+- **谁在读**（四方，删表会全部 500）：
+  - `GET /api/assets/portfolio` —— 曲线、每日覆盖率、上一次完整读数
+  - `GET /api/stats/dashboard` 与 `POST /api/stats/analysis` —— 净资产（经同一个读模型）
+  - `PUT /api/assets/snapshots` / `setManualBalance()` —— 手填时落的凭证行（写）
+- 说明：曾经的「净资产趋势」端点（`GET /api/assets/trend`）已删，
+  现在曲线由 `lib/portfolio.ts` 的 `curve` 提供（含覆盖率与持仓/现金拆分）
 
 ### 3.5 recurring_patterns
 - AI 检测或手动标记的固定收支

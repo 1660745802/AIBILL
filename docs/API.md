@@ -30,8 +30,10 @@
 > 连带删除 `lib/account-balance.ts` 的 `recordBalanceSamples()`：它唯一的调用点就是这个
 > deprecated 端点，端点没了它就是死代码。
 >
-> ⚠️ **`asset_snapshots` 表必须保留**：它被 `GET /api/assets/portfolio` 读模型、
-> `PUT /api/assets/snapshots`、`setManualBalance()` 三方活跃读写。删表会直接打断 C1/C2。
+> ⚠️ **`asset_snapshots` 表必须保留**：它被 `GET /api/assets/portfolio`（曲线 / 覆盖率 / 构成）、
+> `GET /api/stats/dashboard` 与 `POST /api/stats/analysis`（净资产）、
+> `PUT /api/assets/snapshots` 与 `setManualBalance()`（手填凭证）**四方活跃读写**。
+> 删表不是「显示不对」而是**故障**：上述端点会集体 500（`no such table` 直接冒泡）。
 > （这与 `ai_memories` 恰好相反——那张表能删是因为无人读，这张不能删。）
 >
 > 同理，`GET /api/stats/dashboard` 的响应仍包含 `budget_progress` / `goals_top` /
@@ -541,25 +543,30 @@ If-None-Match: "15"
 
 ## 附录 A：模块-端点索引
 
+与 `scripts/gen-api-docs.ts` 的输出**逐条对齐**（17 个模块 / 88 个端点）。
+
 | 模块 | 端点数 | 关键端点 |
 |------|--------|---------|
 | auth | 4 | register, login, me, password |
-| settings | 2 | GET, PUT（用户级） |
-| transactions | 9 | CRUD + trash + tags |
-| ai | 5 | parse, chat, sessions, feedback |
-| memories | 4 | CRUD |
-| categories | 4 | CRUD |
-| accounts | 4 | CRUD |
+| transaction | 9 | CRUD + trash + tags + permanent |
+| account | 5 | CRUD + restore |
+| category | 4 | CRUD |
+| assets | 4 | overview, **portfolio**, snapshots, accounts（trend / snapshot 已删） |
+| investments | 5 | 持仓 CRUD + quotes/refresh |
 | stats | 5 | summary, by-category, trend, dashboard, analysis |
-| budgets | 4 | CRUD |
+| ai | 5 | parse, chat, sessions, parse-feedback |
+| memory | 4 | CRUD |
+| budget | 4 | CRUD |
+| goals | 6 | CRUD + progress |
+| subscription | 6 | CRUD + cancel, renew |
 | import | 1 | CSV 预览 |
 | export | 2 | JSON, CSV |
-| assets | 6 | overview, **portfolio**, trend, snapshot, snapshots, accounts |
-| goals | 6 | CRUD + progress |
-| subscriptions | 6 | CRUD + cancel, renew |
+| admin | 17 | invites / users / settings / ai-stats / logs |
+| app-update | 3 | update, updates |
 | notification-rules | 4 | config + admin |
-| admin | 15 | invites/users/settings/ai/stats/logs |
-| health | 1 | /health |
+
+> `/health` 不在 `routes/` 里注册，故不计入上表的 88 个端点。
+> 上表若与 `gen-api-docs.ts` 输出不一致，**以脚本为准**（它直接读 `routes/*.ts`）。
 
 ## 附录 B：自动生成脚本
 

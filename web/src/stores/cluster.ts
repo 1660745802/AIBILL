@@ -64,9 +64,10 @@ export const useClusterStore = defineStore('cluster', () => {
       portfolio.value = res.data.data
       portfolioState.value = 'ready'
     } catch {
-      // 失败时**不能**静默地长期拿 dashboard 的现金口径顶上：那是另一个口径，
-      // 用户会看到一个更小的“净资产”却没有任何提示。有旧值就继续用旧值（同口径），
+      // 失败时**不能**静默地长期拿兑底值顶上：有旧值就继续用旧值（同口径），
       // 一次都没成功过就标 error，让 UI 显示「—」。
+      // D1 之后 portfolio 与 dashboard 是同一口径，兑底不再是“另一个数”；
+      // 这里防的是**故障被伪装成正常**。
       unavailable()
     }
   }

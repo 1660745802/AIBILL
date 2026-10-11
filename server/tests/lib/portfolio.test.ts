@@ -407,7 +407,7 @@ describe('资产 / 负债的划分', () => {
     expect(p.assetComposition.state).toBe('no_positive_assets')
   })
 
-  it('净资产 = 各账户价值之和（会计恒等式）', () => {
+  it('净资产 = 各账户价值之和', () => {
     const rows = [
       acc(1, { balance: 12345 }),
       acc(2, { balance: -6789 }),
@@ -416,9 +416,29 @@ describe('资产 / 负债的划分', () => {
       acc(5, { balance: -1 }),
     ]
     const p = buildPortfolio(rows, [], 5, TODAY)
+    // 真正的不变量是这个：netWorth === Σ(value ?? cash)
     expect(p.netWorth).toBe(rows.reduce((s, r) => s + (r.balance ?? 0), 0))
-    // 正资产 − 负债 = 净资产
-    expect(p.assetComposition.total + p.liability.total).toBe(p.netWorth)
+  })
+
+  it('（审查 F4）「正资产 − 负债 = 净资产」不是恒等式，别当它成立', () => {
+    /**
+     * 曾把 `assetComposition.total + liability.total === netWorth` 写成断言。
+     * **它是假的**：`liability` 按 `cash < 0` 判，`assetComposition` 按
+     * `value > 0` 判（见 `lib/portfolio.ts`），于是一个「现金 −1,000 但
+     * 持仓市值 60,000」的账户会被**两边都算进去**。
+     *
+     * 夹具没持仓时它恒绿，所以原断言写错了也发现不了。
+     * 本条把反例钉住，防止下一个人又把它当恒等式写回去。
+     */
+    const p = buildPortfolio(
+      [acc(INV, { asset_type: 'investment', balance: -1000 })],
+      [], 1, TODAY, holdingsWith(60000),
+    )
+    expect(p.netWorth).toBe(59000)             // −1,000 + 60,000
+    expect(p.liability.total).toBe(-1000)      // 按 cash 判
+    expect(p.assetComposition.total).toBe(59000) // 按 value 判
+    // 相加是 58,000 ≠ 净资产 59,000
+    expect(p.assetComposition.total + p.liability.total).not.toBe(p.netWorth)
   })
 
   it('空账户列表应返回 0 而不是 NaN', () => {

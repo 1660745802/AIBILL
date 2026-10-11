@@ -48,10 +48,12 @@ const assetMeta = (t: string) => ASSET_META[t] ?? OTHER_ASSET
 /**
  * 资产构成。
  *
- * 用 cluster store 的 `assetSplit`，而不是本页 `data.asset_breakdown`：
- * 后者是 `/stats/dashboard` 的**现金口径**（Σ `accounts.balance`，不含持仓市值），
- * 而本页顶部的仪表读的是 portfolio 的总价值口径。同屏两套口径会给出两个不同的
- * 构成——这个坑在仪表那边修过一次，这里是它的翻版。
+ * 用 cluster store 的 `assetSplit`，而不是在这页自己重算：
+ * 分组、占比、空态都由 `lib/portfolio.ts` 算好（**总价值口径**，与顶部仪表同源），
+ * 这里只做展示：中文标签 + 颜色 + 按值降序。
+ *
+ * （`data.asset_breakdown` 这个字段已经删了——它是 `Σ accounts.balance` 的
+ * **现金口径**第二套算法。以前这页正是“同屏两套口径给出两个不同构成”的翻版。）
  *
  * store 里已经是服务端口径的纯投影（分组、占比、空态都在
  * `lib/portfolio.ts` 算好），这里只做展示：中文标签 + 颜色 + 按值降序。
