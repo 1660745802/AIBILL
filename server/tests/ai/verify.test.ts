@@ -58,6 +58,31 @@ const NOISE = [
   '您有闪购外卖红包未查收',
   '您有一个红包未领取 速来淘宝闪购！',
   '本次行程已结束 下车检查带好随身物品，点击确认您的账单。',
+  // 以下四条是「券面额被当成到账金额」的一组线上真实事故。
+  // 1444 条生产日志里有 30 条含「红包」，其中 18 条被编成 income（60%），
+  // 根因：老 social_redpacket 只认 `[QQ红包]` / `红包：` 这两种带括号或冒号的写法，
+  // 而真实通知绝大多数是「10元红包」这种平铺写法，一个都拦不住。
+  '支付宝卡包 你有淘宝闪购10元红包今晚失效',
+  '支付宝卡包 你有天天秒杀15.00元红包今晚失效',
+  '支付宝卡包 你有淘宝闪购无门槛5元红包今晚失效',
+  '你的现金红包即将过期 你在奶兔星球有6元现金红包再不用就来不及了',
+  '【缴费有惊喜】 受邀用户领5元话费红包，名额有限，点击参与>>',
+  '缴费小美好 缴费达标领至高5元微信立减金。',
+  '滴滴酒店：专属优惠到账 恭喜获得酒店最高减200元券',
+  // 招募/活动广告承诺的奖励不是到账金额（真事故：记入 ¥200 虚增收入）
+  '在线寻找手游玩家 参加访谈任务，获得 200 元京东卡！',
+] as const
+
+/**
+ * 「出现红包/券」不等于噪声——真实收红包必须放行。
+ * 这条比「拦住多少」更重要：拦错一条就是丢收入。
+ * coupon_facevalue 的判据刻意是**券的状态动词**（失效/过期/待领取/去领），
+ * 「到账」「已收到」不在词表里，就是为了放行真收入。
+ */
+const REAL_INCOME = [
+  '你收到一个5.00元红包',
+  '微信红包 收款5.00元',
+  '好友给你发了一个10元红包，已存入零钱',
 ] as const
 
 describe('extractMoneyAmounts', () => {
@@ -154,6 +179,42 @@ describe('classifyNotification · 噪声应被拦下', () => {
 
   it('营销文案即使带金额也判丢弃（0元诱导）', () => {
     expect(classifyNotification('😍1号会员日来啦 🛒12包抽纸0元领千份放量！ 🔥实付159元').tier).toBe(0)
+  })
+
+  it('券面额不是到账金额：平铺写法的「10元红包」也要拦（老规则只认 [QQ红包]/红包：）', () => {
+    const c = classifyNotification('支付宝卡包 你有淘宝闪购10元红包今晚失效')
+    expect(shouldCallAi(c), `reasons=${c.reasons}`).toBe(false)
+    expect(c.reasons).toContain('coupon_facevalue')
+  })
+
+  it('招募广告承诺的奖励不入账（真事故：¥200 虚增收入）', () => {
+    const c = classifyNotification('在线寻找手游玩家 参加访谈任务，获得 200 元京东卡！')
+    expect(shouldCallAi(c), `reasons=${c.reasons}`).toBe(false)
+  })
+})
+
+describe('classifyNotification · 真实收入不得被新规则误杀', () => {
+  it.each(REAL_INCOME)('「%s」应继续调 AI', (text) => {
+    const c = classifyNotification(text)
+    expect(shouldCallAi(c), `tier=${c.tier} reasons=${c.reasons}`).toBe(true)
+  })
+
+  it('银行卡入账类通知不受影响（1444 条里占大头）', () => {
+    for (const t of [
+      '招商银行 信用卡通知：您尾号1678的招行信用卡消费11.74人民币。',
+      '招商银行 招商银行支付鼓励金已于08月08日17:25成功入账至您的招商银行储蓄卡2415，人民币0.80元。',
+      '微信支付 退款到账通知',
+    ]) {
+      expect(shouldCallAi(classifyNotification(t)), t).toBe(true)
+    }
+  })
+
+  it('金额佐证层对 tier1 已饱和：不开启也能保证 0 条编造（734 条生产样本）', () => {
+    // 这条测的是「不要为了防御而加新规则」：tier1 的金额 100% 能在原文里找到，
+    // 佐证加在那里不产生任何收益，只是白跑一次。
+    const text = '支付成功 12元 最近消息 1条新消息 支付宝卡包 你有淘宝闪购满28减12元红包今晚失效 5分钟前 淘宝闪购 付款成功￥0.90'
+    expect(hasCorroboration(text, 1200)).toBe(true)
+    expect(hasCorroboration(text, 90)).toBe(true)
   })
 })
 
