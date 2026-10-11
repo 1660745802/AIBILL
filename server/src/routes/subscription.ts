@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
+import { today, toDateStr } from '../lib/date.js'
 
 const createSubscriptionSchema = z.object({
   name: z.string().min(1).max(100),
@@ -38,7 +39,7 @@ function calcNextPayment(startDate: string, cycle: 'monthly' | 'quarterly' | 'ye
   const start = new Date(startDate)
   if (isNaN(start.getTime())) {
     // Fallback: use today as start if date is invalid
-    return new Date().toISOString().slice(0, 10)
+    return today()
   }
   const now = new Date()
   const months = cycle === 'monthly' ? 1 : cycle === 'quarterly' ? 3 : 12
@@ -49,7 +50,7 @@ function calcNextPayment(startDate: string, cycle: 'monthly' | 'quarterly' | 'ye
     next.setMonth(next.getMonth() + months)
     iterations++
   }
-  return next.toISOString().slice(0, 10)
+  return toDateStr(next)
 }
 
 export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
@@ -109,8 +110,8 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
     const now = new Date()
     const sevenDaysLater = new Date(now)
     sevenDaysLater.setDate(sevenDaysLater.getDate() + 7)
-    const todayStr = now.toISOString().slice(0, 10)
-    const sevenDaysStr = sevenDaysLater.toISOString().slice(0, 10)
+    const todayStr = today()
+    const sevenDaysStr = toDateStr(sevenDaysLater)
 
     const upcoming = db
       .prepare(
@@ -358,8 +359,7 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // 从今天开始重新计算 next_payment_date
-    const today = new Date().toISOString().slice(0, 10)
-    const nextPaymentDate = calcNextPayment(today, existing.cycle)
+    const nextPaymentDate = calcNextPayment(today(), existing.cycle)
 
     db.prepare(
       `UPDATE subscriptions SET status = 'active', next_payment_date = ?, updated_at = datetime('now')

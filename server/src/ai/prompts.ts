@@ -120,7 +120,8 @@ function buildFullPrompt(ctx: PromptContext): string {
 }
 
 function getYesterday(today: string): string {
-  const d = new Date(today)
-  d.setDate(d.getDate() - 1)
+  // 纯日期字符串运算：按 UTC 午夜往返，与服务器本地时区无关
+  const d = new Date(`${today}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() - 1)
   return d.toISOString().slice(0, 10)
 }

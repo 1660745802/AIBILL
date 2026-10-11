@@ -72,6 +72,9 @@ export function deltasFor(tx: any): Array<[accountId: number, delta: number]> {
   return out
 }
 
+// 「今天」的唯一口径：北京时间（见 lib/date.ts）。全仓不再散写 toISOString()。
+import { today } from './date.js'
+
 function toId(v: unknown): number | null {
   if (v == null) return null
   const n = Number(v)
@@ -116,21 +119,18 @@ export function applyTxn(
 }
 
 /**
- * 「今天」。口径与改动前逐字相同（SQLite 的 `date('now')`，即 UTC）——
- * 本文件只做 seam 收口，不动时区语义。
+ * 「今天」= **北京时间**（`lib/date.ts` 的 `today()`，见文件头 import），全仓唯一口径。
  *
  * 抽出来是因为两个写入函数都要用它，且**调用方必须拿到同一个值**：
  * 响应里的 `date` 和写进快照行的 `snapshot_date` 一旦分叉，
  * 「今日快照已存在」这句话就会对不上用户看到的日期。
  *
- * > **deferred**：全仓另有 `lib/date.ts`（本地时区）与 `scheduler.beijingDate()`
- * > （北京时间），本函数用的是第三种（UTC）。北京 00:00–08:00 之间三者会差一天，
- * > 而窗口每天有 8 小时。收口「今天」的定义会同时改写读模型曲线的翻页时刻，
- * > 与净资产读模型的改动必须同批做，故**本次明确推迟**，不在 seam 收口里夹带。
+ * > **D2 已决**：原先用 SQLite 的 `date('now')`（UTC），与 `lib/date.ts`、
+ * > `scheduler.beijingDate()` 三套并存。北京 00:00–08:00 指向不同日期，
+ * > 深夜记账会把快照记到前一天。现已统一为北京时间。
+ * > 快照日期语义**确实变了**：历史 `snapshot_date` 不动，新数据在北京时间
+ * > 00:00–08:00 之间落在「当天」而不是「昨天」。曲线翻页时刻随之对齐。
  */
-function todayStr(db: any): string {
-  return (db.prepare(`SELECT date('now') d`).get() as { d: string }).d
-}
 
 /**
  * 手填余额 = **覆盖**，并把基准线刷到此刻。
@@ -175,7 +175,7 @@ export function setManualBalance(
   value: number,
   opts?: { date?: string },
 ): void {
-  const date = opts?.date ?? todayStr(db)
+  const date = opts?.date ?? today()
 
   const run = db.transaction(() => {
     const owned = db

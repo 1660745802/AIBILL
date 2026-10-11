@@ -12,6 +12,7 @@ import crypto from 'node:crypto'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { chatCompletion, AiError } from '../ai/client.js'
+import { today, beijingYearMonth } from '../lib/date.js'
 import { buildParsePrompt } from '../ai/prompts.js'
 import { extractJsonArray, validateParsedItems, ParseError } from '../ai/parser.js'
 import { matchCategory } from '../ai/category-matcher.js'
@@ -74,15 +75,14 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       const expenseCategories = categories.filter((c) => c.type === 'expense')
       const incomeCategories = categories.filter((c) => c.type === 'income')
 
-      // 构建 prompt
-      const today = new Date().toISOString().slice(0, 10)
+      // 构建 prompt（「今天」= 北京时间，见 lib/date.ts）
 
       // 预清理输入文本（去除通知标题噪音）
       const cleanedInput = cleanInput(body.input)
 
       // === 快捷解析：简单输入直接正则匹配，毫秒级响应 ===
       const quickResult = quickParse(cleanedInput, {
-        today,
+        today: today(),
         expenseCategories: expenseCategories.map((c) => c.name),
         incomeCategories: incomeCategories.map((c) => c.name),
         accounts: accounts.map((a) => a.name),
@@ -176,7 +176,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       // 根据输入长度选择快速/完整 prompt
       const systemPrompt = buildParsePrompt({
-        today,
+        today: today(),
         expenseCategories: expenseCategories.map((c) => c.name),
         incomeCategories: incomeCategories.map((c) => c.name),
         accounts: accounts.map((a) => a.name),
@@ -209,7 +209,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       // 解析响应
       const rawItems = extractJsonArray(aiResponse)
-      const validItems = validateParsedItems(rawItems, today)
+      const validItems = validateParsedItems(rawItems, today())
 
       if (validItems.length === 0) {
         // Log empty result
@@ -524,9 +524,9 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       const sessionId = body.session_id || crypto.randomUUID()
 
       // 获取用户财务数据摘要（当月+上月）
-      const now = new Date()
-      const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-      const prevDate = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+      const bjm = beijingYearMonth()
+      const thisMonth = `${bjm.year}-${String(bjm.month).padStart(2, '0')}`
+      const prevDate = new Date(bjm.year, bjm.month - 2, 1)
       const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`
 
       const summaryData = db

@@ -2,6 +2,7 @@
 /** 手动记账表单：AI 的 fallback，也是精确记账时的首选。 */
 import { ref, onMounted, computed, watch } from 'vue'
 import api from '@/api/index'
+import { today } from '@/utils/date'
 import TagInput from '@/components/TagInput.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import Money from '@/components/ui/Money.vue'
@@ -12,7 +13,7 @@ const emit = defineEmits<{ submit: [item: any]; cancel: [] }>()
 const type = ref<'expense' | 'income' | 'transfer'>('expense')
 const amount = ref('')
 const description = ref(props.initialDescription || '')
-const date = ref(new Date().toISOString().slice(0, 10))
+const date = ref(today())
 const categoryId = ref<number | null>(null)
 const accountId = ref<number | null>(null)
 const targetAccountId = ref<number | null>(null)

@@ -276,8 +276,32 @@ NIT 12（既有 bug，非本轮引入）。F9 与新发现的口径 bug 在下�
 - **NIT-14** 把 `previousNetWorth` / `change` / `changeRate` 的口径写进 `API.md`
   （正是本次改的那个口径，此前只有代码注释 + CHANGELOG 记录）
 
-未修（评审认可理由）：NIT-15（非热点路径重复求和）、NIT-16（性质测试生成器
+未修（评审认可理由）：NIT-15（非热点路径重复求算）、NIT-16（性质测试生成器
 不产生生产不可达的输入）、上一轮的 NIT 6/8/12（风格无消费者 / 既有 bug）。
+
+### 「今天」统一为北京时间（D2）
+
+以前服务端有**三套**「今天」并存：`lib/date.ts`（服务器本地时区）、
+`account-balance.ts` 的 SQLite `date('now')`（UTC）、散落 15+ 处的
+`toISOString().slice(0,10)`（UTC）。北京每天 00:00–08:00 这 8 小时里三者指向
+不同的日期：深夜记账把 `asset_snapshots.snapshot_date` 记到**前一天**，
+月度统计算的是「今天」，曲线翻页时刻跟着漂 8 小时。
+
+统一为**北京时间**（用户决策），唯一定义在 `lib/date.ts`：
+- 新增 `beijingWallClock()` / `beijingNow()` / `beijingYearMonth()`；
+  `toDateStr()` / `today()` / `dateOffset()` 改为读**北京墙上时间**（+8h 后读 UTC 字段，
+  不看 `getTimezoneOffset()`，部署机时区不影响结果）
+- `scheduler.ts` 的行情门禁改为复用同一份 `beijingNow()`（原先自己算了一遍）；
+  `beijingDate` 现在就是 `toDateStr`
+- 15+ 处散写的 UTC 日期串、`getFullYear()/getMonth()`（月度统计默认值）全部收口
+- 前端新增 `web/src/utils/date.ts`，`Home.vue`（今日账单）、`ManualForm.vue`
+  （记一笔的默认日期）、`Settings.vue`（导出文件名）不再用 UTC —— 北京凌晨查成昨天
+
+**快照日期语义确实变了**：历史 `snapshot_date` 不动，新写入的快照在北京时间
+00:00–08:00 之间落在「当天」而非「昨天」。这是口径纠正，不是 bug。
+
+新增 3 条日期单测（含「北京 00:00 前 UTC 是昨天而 toDateStr 给今天」的边界断言）。
+测试 410 → 412。
 
 ### 界面重做：仪表读数（Instrument）—— 替换上一版的「账本纸」
 

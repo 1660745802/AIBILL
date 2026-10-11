@@ -21,6 +21,7 @@
  */
 
 import { fetchQuotes, fxCodesFor, type Quote } from './quotes.js'
+import { today } from './date.js'
 
 /** 我们关心的币种（对人民币） */
 const SUPPORTED = ['HKD', 'USD', 'EUR', 'GBP', 'JPY']
@@ -63,10 +64,6 @@ export interface FxResult {
    * 上游改格式/限流时，日志里那一行是唯一能查的东西。
    */
   errors: string[]
-}
-
-function today(): string {
-  return new Date().toISOString().slice(0, 10)
 }
 
 /** 主源：腾讯。返回能解析出来的部分（可能为空） */

@@ -2,7 +2,7 @@
  * 公共 lib 单元测试：日期区间 + 预算进度
  */
 import { describe, it, expect } from 'vitest'
-import { monthRange, prevMonthRange, toDateStr, dateOffset, today } from '../../src/lib/date.js'
+import { monthRange, prevMonthRange, toDateStr, dateOffset, today, beijingNow } from '../../src/lib/date.js'
 import { budgetProgress, budgetStatus, spentPercent, WARN_PERCENT, OVER_PERCENT } from '../../src/lib/budget.js'
 
 describe('lib/date', () => {
@@ -20,15 +20,35 @@ describe('lib/date', () => {
     expect(prevMonthRange(2024, 3)).toEqual({ start: '2024-02-01', end: '2024-02-29' })
   })
 
-  it('toDateStr / today / dateOffset 应输出合法 YYYY-MM-DD', () => {
-    expect(toDateStr(new Date(2026, 0, 5))).toBe('2026-01-05')
-    expect(toDateStr(new Date(2026, 11, 31))).toBe('2026-12-31')
+  it('toDateStr / today / dateOffset 应输出合法 YYYY-MM-DD（北京时间）', () => {
+    // 用显式 UTC 瞬时而不是 `new Date(y, m, d)`（后者按本地时区解析，
+    // 会让断言变成「取决于部署机时区」）
+    expect(toDateStr(new Date(Date.UTC(2026, 0, 4, 16, 0)))).toBe('2026-01-05') // 北京 2026-01-05 00:00
+    expect(toDateStr(new Date(Date.UTC(2026, 0, 4, 15, 59)))).toBe('2026-01-04') // 北京 2026-01-04 23:59
+    expect(toDateStr(new Date(Date.UTC(2025, 11, 31, 16, 0)))).toBe('2026-01-01') // 北京元旦
     expect(today()).toMatch(/^\d{4}-\d{2}-\d{2}$/)
     expect(dateOffset(0)).toBe(today())
     expect(dateOffset(-6) <= today()).toBe(true)
     // 连续 7 天
     const week = Array.from({ length: 7 }, (_, i) => dateOffset(-6 + i))
     expect(new Set(week).size).toBe(7)
+  })
+
+  it('D2：北京 00:00–08:00 之前，UTC 日期是「昨天」而 toDateStr 给「今天」', () => {
+    // 2026-01-04 17:30 UTC = 北京 2026-01-05 01:30
+    const beijingEarlyMorning = new Date(Date.UTC(2026, 0, 4, 17, 30))
+    // 同一瞬时的 UTC 日期串
+    expect(beijingEarlyMorning.toISOString().slice(0, 10)).toBe('2026-01-04')
+    // 但北京时间是 1月5日 —— 这就是 D2 要消灭的「差一天」
+    expect(toDateStr(beijingEarlyMorning)).toBe('2026-01-05')
+  })
+
+  it('beijingNow 的星期与分钟按北京时间', () => {
+    // 2026-01-04 17:30 UTC = 北京 2026-01-05 01:30（周一 01:30）
+    const n = beijingNow(new Date(Date.UTC(2026, 0, 4, 17, 30)))
+    expect(n.mins).toBe(90)
+    // 2026-01-04 是周日，UTC；北京已是周一
+    expect(n.day).toBe(1)
   })
 })
 

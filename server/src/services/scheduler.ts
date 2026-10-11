@@ -9,6 +9,8 @@
 import { getDb } from '../db/index.js'
 import { appLog as log } from './logger.js'
 import crypto from 'node:crypto'
+import { beijingNow, beijingDate } from '../lib/date.js'
+import { today as todayStr, toDateStr } from '../lib/date.js'
 import { currencyOf, marketOfCode, type Market } from '../lib/quotes.js'
 import { acquireAndStorePrices, acquireAndStoreFxRates } from '../lib/quote-acquisition.js'
 
@@ -21,7 +23,7 @@ import { applyTxn } from '../lib/account-balance.js'
  */
 function processSubscriptionAutoRecord(): void {
   const db = getDb()
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayStr()
 
   const dueSubscriptions = db
     .prepare(
@@ -104,7 +106,7 @@ function processSubscriptionAutoRecord(): void {
       const months = sub.cycle === 'monthly' ? 1 : sub.cycle === 'quarterly' ? 3 : 12
       const nextDate = new Date(sub.next_payment_date)
       nextDate.setMonth(nextDate.getMonth() + months)
-      const nextPaymentStr = nextDate.toISOString().slice(0, 10)
+      const nextPaymentStr = toDateStr(nextDate)
 
       updateNextDate.run(nextPaymentStr, sub.id)
 
@@ -222,21 +224,13 @@ export async function runScheduledTasks(): Promise<void> {
  * 结果是**盘中一次都不抓、收盘后反而在抓**，而且完全静默。
  *
  * A 股只有北京时间一个时区，所以写死 UTC+8 是正确的（中国不实行夏令时）。
+ *
+ * 实现在 `lib/date.ts`（`beijingNow` / `beijingDate`）——全仓「今天」只有
+ * 那一处定义，这里不再自己算一遍时区。
  */
-function beijingNow(now: Date): { day: number; mins: number } {
-  const utcMins = now.getUTCHours() * 60 + now.getUTCMinutes()
-  const mins = (utcMins + 8 * 60) % 1440
-  // 加 8 小时若跨过 UTC 午夜，北京日期要 +1 天
-  const day = mins < utcMins ? (now.getUTCDay() + 1) % 7 : now.getUTCDay()
-  return { day, mins }
-}
 
 /** 北京日期 YYYY-MM-DD（用于和行情自带日期比对，判断今天是不是交易日） */
-export function beijingDate(now = new Date()): string {
-  const utc = now.getTime() + now.getTimezoneOffset() * 60_000
-  const bj = new Date(utc + 8 * 60 * 60_000)
-  return `${bj.getFullYear()}-${String(bj.getMonth() + 1).padStart(2, '0')}-${String(bj.getDate()).padStart(2, '0')}`
-}
+export { beijingDate }
 
 const MARKET_LABEL: Record<Market, string> = { cn: 'A股', hk: '港股', us: '美股' }
 

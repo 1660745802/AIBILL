@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import api from '@/api/index'
+import { today } from '@/utils/date'
 import CategoryManager from '@/components/CategoryManager.vue'
 import AccountManager from '@/components/AccountManager.vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
@@ -83,7 +84,7 @@ function exportJson() {
     const url = URL.createObjectURL(new Blob([res.data]))
     const a = document.createElement('a')
     a.href = url
-    a.download = `export_${new Date().toISOString().slice(0, 10)}.json`
+    a.download = `export_${today()}.json`
     a.click()
     URL.revokeObjectURL(url)
   }).catch(() => toast.error('导出失败'))
@@ -94,7 +95,7 @@ function exportCsv() {
     const url = URL.createObjectURL(new Blob([res.data]))
     const a = document.createElement('a')
     a.href = url
-    a.download = `transactions_${new Date().toISOString().slice(0, 10)}.csv`
+    a.download = `transactions_${today()}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }).catch(() => toast.error('导出失败'))

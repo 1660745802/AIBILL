@@ -29,6 +29,7 @@
  */
 
 import type { getDb } from '../db/index.js'
+import { toDateStr } from './date.js'
 
 type Db = ReturnType<typeof getDb>
 
@@ -594,8 +595,7 @@ export function readAccounts(db: Db, userId: number): AccountRow[] {
 
 /** 曲线源：快照历史（每账户每天一条）。和行源是两个问题，分开读 */
 export function readHistory(db: Db, userId: number, sinceDays = 3650): SnapshotPoint[] {
-  const since = new Date(Date.now() - sinceDays * 86400000)
-    .toISOString().slice(0, 10)
+  const since = toDateStr(new Date(Date.now() - sinceDays * 86_400_000))
   return db.prepare(
     `SELECT s.account_id, s.snapshot_date, s.balance
        FROM asset_snapshots s

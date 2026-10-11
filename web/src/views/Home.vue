@@ -5,6 +5,7 @@
  */
 import { ref, onMounted, computed, nextTick, watch } from 'vue'
 import api from '@/api/index'
+import { today } from '@/utils/date'
 import { useToast } from '@/composables/useToast'
 import { useClusterStore } from '@/stores/cluster'
 import { useQuickEntry } from '@/composables/useQuickEntry'
@@ -56,9 +57,9 @@ watch(() => quick.state.open, (v: boolean) => {
 
 async function fetchToday() {
   try {
-    const today = new Date().toISOString().slice(0, 10)
+    const t = today()
     const { data } = await api.get('/transactions', {
-      params: { start_date: today, end_date: today, page_size: 50 },
+      params: { start_date: t, end_date: t, page_size: 50 },
     })
     if (data.code === 0) todayTransactions.value = data.data.items
   } catch { /* ignore */ }

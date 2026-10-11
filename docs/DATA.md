@@ -15,8 +15,27 @@
 | 查询规范 | 业务查询必须带 `user_id` + `status='confirmed'` + `deleted_at IS NULL`（除回收站/管理员） |
 | WAL 模式 | 开启，提升并发读 |
 | 外键约束 | `PRAGMA foreign_keys = ON` |
+| **「今天」的口径** | **北京时间（UTC+8）**，全仓唯一定义，见 §1.2 |
 
 **P0 阶段补强（migration 010）**：所有外键添加 `ON DELETE` 策略（CASCADE / SET NULL）。
+
+### 1.2 「今天」= 北京时间（D2 决策）
+
+「今天」以前在服务端有**三套**定义并存：`lib/date.ts`（服务器本地时区）、
+`account-balance.ts` 的 SQLite `date('now')`（UTC）、以及散落 15+ 处的
+`toISOString().slice(0,10)`（UTC）。北京每天 **00:00–08:00** 这 8 小时里三者指向
+不同的日期：深夜记账会把 `asset_snapshots.snapshot_date` 记到**前一天**，
+而月度统计算的是「今天」，曲线翻页时刻也跟着漂 8 小时。
+
+现统一为北京时间（用户决策），**唯一定义在 `server/src/lib/date.ts`**：
+`today()` / `toDateStr()` / `beijingYearMonth()`。行情门禁（§11）也改用同一份
+`beijingNow()`，不再自己算一遍时区。
+
+**快照日期语义确实变了**：历史 `snapshot_date` 不动，但新写入的快照在北京时间
+00:00–08:00 之间落在「当天」而不是「昨天」。这是有意的口径纠正，不是 bug。
+
+前端同理：`web/src/utils/date.ts` 的 `today()` 取**浏览器本地时区**，
+对国内用户即北京时间；不用 `toISOString()`（那是 UTC）。
 
 ### 1.1 数据隔离原则
 - 所有业务表带 `user_id`

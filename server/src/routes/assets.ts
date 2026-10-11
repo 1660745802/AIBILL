@@ -14,6 +14,7 @@ import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { buildPortfolio, readAccounts, readHistory, countAccounts } from '../lib/portfolio.js'
+import { today as todayStr } from '../lib/date.js'
 import { loadAccountHoldings } from '../lib/investments-repo.js'
 import { setManualBalance } from '../lib/account-balance.js'
 
@@ -182,7 +183,7 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/assets/portfolio', async (request: FastifyRequest) => {
     const db = getDb()
     const userId = request.user!.userId
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayStr()
     const portfolio = buildPortfolio(
       readAccounts(db, userId),
       readHistory(db, userId),
@@ -205,7 +206,7 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
     }
     const db = getDb()
     const userId = request.user!.userId
-    const date = body.data.date ?? new Date().toISOString().slice(0, 10)
+    const date = body.data.date ?? todayStr()
 
     // 账户归属校验：不能给别人的账户写快照
     const owned = new Set(
@@ -235,7 +236,7 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
       readAccounts(db, userId),
       readHistory(db, userId),
       countAccounts(db, userId),
-      new Date().toISOString().slice(0, 10),
+      todayStr(),
       loadAccountHoldings(db, userId),
     )
     return {

@@ -5,7 +5,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
-import { monthRange } from '../lib/date.js'
+import { monthRange, beijingYearMonth } from '../lib/date.js'
 import { budgetProgress } from '../lib/budget.js'
 
 const createBudgetSchema = z.object({
@@ -29,9 +29,9 @@ export async function budgetRoutes(app: FastifyInstance): Promise<void> {
     const userId = request.user!.userId
     const query = request.query as { year?: string; month?: string }
 
-    const now = new Date()
-    const year = parseInt(query.year || String(now.getFullYear()), 10)
-    const month = parseInt(query.month || String(now.getMonth() + 1), 10)
+    const bj = beijingYearMonth()
+    const year = parseInt(query.year || String(bj.year), 10)
+    const month = parseInt(query.month || String(bj.month), 10)
 
     const { start: startDate, end: endDate } = monthRange(year, month)
 

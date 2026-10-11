@@ -10,7 +10,7 @@ import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { chatCompletion, AiError } from '../ai/client.js'
-import { monthRange, prevMonthRange, today as todayStr, dateOffset } from '../lib/date.js'
+import { monthRange, prevMonthRange, today as todayStr, dateOffset, beijingYearMonth } from '../lib/date.js'
 import { budgetProgress, WARN_PERCENT } from '../lib/budget.js'
 import { buildPortfolio, readAccounts, readHistory, countAccounts } from '../lib/portfolio.js'
 import { loadAccountHoldings } from '../lib/investments-repo.js'
@@ -24,9 +24,9 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     const userId = request.user!.userId
     const query = request.query as { year?: string; month?: string }
 
-    const now = new Date()
-    const year = parseInt(query.year || String(now.getFullYear()), 10)
-    const month = parseInt(query.month || String(now.getMonth() + 1), 10)
+    const bj = beijingYearMonth()
+    const year = parseInt(query.year || String(bj.year), 10)
+    const month = parseInt(query.month || String(bj.month), 10)
 
     const { start: startDate, end: endDate } = monthRange(year, month)
 
@@ -93,9 +93,9 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     const userId = request.user!.userId
     const query = request.query as { year?: string; month?: string; type?: string }
 
-    const now = new Date()
-    const year = parseInt(query.year || String(now.getFullYear()), 10)
-    const month = parseInt(query.month || String(now.getMonth() + 1), 10)
+    const bj = beijingYearMonth()
+    const year = parseInt(query.year || String(bj.year), 10)
+    const month = parseInt(query.month || String(bj.month), 10)
     const type = query.type || 'expense'
 
     const { start: startDate, end: endDate } = monthRange(year, month)
@@ -144,13 +144,13 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       type?: string
     }
 
-    const now = new Date()
     const type = query.type || 'expense'
     const period = query.period || 'daily'
 
     if (period === 'monthly') {
       // 月度趋势：最近12个月
-      const year = parseInt(query.year || String(now.getFullYear()), 10)
+      const bjm = beijingYearMonth()
+      const year = parseInt(query.year || String(bjm.year), 10)
 
       const rows = db
         .prepare(
@@ -168,15 +168,16 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
         .all(
           userId,
           type,
-          `${year - 1}-${String(now.getMonth() + 1).padStart(2, '0')}-01`,
+          `${year - 1}-${String(bjm.month).padStart(2, '0')}-01`,
         ) as Array<{ month: string; total: number; count: number }>
 
       return { code: 0, data: { items: rows, period, type }, message: '' }
     }
 
     // 日趋势：指定月份每日数据
-    const year = parseInt(query.year || String(now.getFullYear()), 10)
-    const month = parseInt(query.month || String(now.getMonth() + 1), 10)
+    const bj = beijingYearMonth()
+    const year = parseInt(query.year || String(bj.year), 10)
+    const month = parseInt(query.month || String(bj.month), 10)
     const { start: startDate, end: endDate } = monthRange(year, month)
     const lastDay = Number(endDate.slice(8))
 
@@ -208,9 +209,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     const db = getDb()
     const userId = request.user!.userId
 
-    const now = new Date()
-    const year = now.getFullYear()
-    const month = now.getMonth() + 1
+    const { year, month } = beijingYearMonth()
 
     const { start: startDate, end: endDate } = monthRange(year, month)
     const today = todayStr()
@@ -273,10 +272,10 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     // 正是本项目大半历史 bug 的来源。现在直接复用 buildPortfolio，
     // 读取源在 `lib/portfolio.ts`，两个接口结构上不可能再漂移。
     //
-    // 「今天」用与 portfolio 路由**完全相同**的取值（UTC 日期），否则 `staleDays` 会
-    // 在两个接口之间差一天。注意它与本 handler 里的 `today`（本地时区，见
-    // `lib/date.ts`）**不是一回事**：两者的统一是 deferred 决策 D2，不在这里夹带。
-    const portfolioToday = new Date().toISOString().slice(0, 10)
+    // 「今天」用 `lib/date.ts` 的 `today()`（北京时间，全仓唯一口径），与
+    // portfolio 路由取同一个值，否则 `staleDays` 会在两个接口之间差一天。
+    // 本 handler 上方已有 `const today = todayStr()`，同值，直接复用。
+    const portfolioToday = today
     const portfolio = buildPortfolio(
       readAccounts(db, userId),
       readHistory(db, userId),
@@ -592,9 +591,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       const db = getDb()
       const userId = request.user!.userId
 
-      const now = new Date()
-      const year = now.getFullYear()
-      const month = now.getMonth() + 1
+      const { year, month } = beijingYearMonth()
 
       // 收集近 4 个月数据（单条 GROUP BY 查询，原 4 次循环已合并）
       const monthsData = new Map<string, { expense: number; income: number }>()
@@ -647,10 +644,10 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
        * 有**第三套**算法。喂给 AI 的数比仪表少一整块持仓市值时，AI 会把
        * 「漏算持仓的净资产」当成事实写进分析报告——那是比显示错数更糟的错误。
        *
-       * 「今天」取值与另外两个接口一致（UTC 日期），否则同一份数据在
-       * `staleDays` 上会差一天。（本地时区的统一是 deferred 决策 D2。）
+       * 「今天」取值与另外两个接口一致（`lib/date.ts` 的 `today()`，北京时间），
+       * 否则同一份数据在 `staleDays` 上会差一天。
        */
-      const portfolioToday = new Date().toISOString().slice(0, 10)
+      const portfolioToday = todayStr()
       const portfolio = buildPortfolio(
         readAccounts(db, userId),
         readHistory(db, userId),
