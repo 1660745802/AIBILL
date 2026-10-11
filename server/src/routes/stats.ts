@@ -10,7 +10,7 @@ import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { chatCompletion, AiError } from '../ai/client.js'
-import { monthRange, prevMonthRange, today as todayStr, dateOffset, beijingYearMonth, monthOffset } from '../lib/date.js'
+import { monthRange, prevMonthRange, today as todayStr, dateOffset, beijingYearMonth, monthOffset, daysUntil } from '../lib/date.js'
 import { budgetProgress, WARN_PERCENT } from '../lib/budget.js'
 import { buildPortfolio, readAccounts, readHistory, countAccounts } from '../lib/portfolio.js'
 import { loadAccountHoldings } from '../lib/investments-repo.js'
@@ -481,7 +481,9 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       .all(userId, todayStrLocal, in7days) as Array<{ name: string; amount: number; next_payment_date: string }>
 
     for (const sub of upcomingSubs) {
-      const daysLeft = Math.ceil((new Date(sub.next_payment_date).getTime() - Date.now()) / 86400000)
+      // 按北京时间的「整数天」算，不是 UTC 午夜 vs 当前瞬时——后者在北京
+      // 00:00–08:00 会把「今天扣费」算成「明天」（审查 MINOR-1）
+      const daysLeft = daysUntil(sub.next_payment_date)
       const dayText = daysLeft <= 0 ? '今天' : daysLeft === 1 ? '明天' : `${daysLeft}天后`
       alerts.push({
         type: 'subscription_due',

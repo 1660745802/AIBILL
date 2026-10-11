@@ -116,19 +116,51 @@ export function monthOffset(months: number): string {
 }
 
 /**
- * 从**任意 Beijing 日期串**（YYYY-MM-DD）偏移 n 个月，同样钳位到月末。
+ * 从**任意日期串**（YYYY-MM-DD）偏移 n 个月，同样钳位到月末。
  *
  * 订阅的 `next_payment_date` 推进用它（`subscription.ts` 的 calcNextPayment 与
  * `scheduler.ts` 的到期推进）——那两处原先用 `setMonth` 会溢出且漂移
  * （2026-01-31 +1 月会变成 3-03，再逐月累加，永不收敛，审查 MAJOR-C）。
+ *
+ * 只接受**真实存在的日期**：格式对但取值非法（如 `2026-13-01`、`2026-02-30`）
+ * 不会原样传播，而是退回 `monthOffset(months)`（合法值）。
+ * 不退的话非法串会被写进 `next_payment_date`，该订阅因字典序比较永远不被
+ * scheduler 选中，变成一条永久失效 + 数据脏的记录（审查 MINOR-2）。
  */
 export function monthOffsetFrom(dateStr: string, months: number): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr)
   if (!m) return monthOffset(months)
-  return addMonths(Number(m[1]), Number(m[2]) - 1, Number(m[3]), months)
+  const y = Number(m[1])
+  const mo0 = Number(m[2]) - 1
+  const day = Number(m[3])
+  if (mo0 < 0 || mo0 > 11) return monthOffset(months)
+  const lastDay = new Date(Date.UTC(y, mo0 + 1, 0)).getUTCDate()
+  if (day < 1 || day > lastDay) return monthOffset(months)
+  return addMonths(y, mo0, day, months)
 }
 
-/** 年月日 + n 个月，日钳位到目标月最后一天（内部） */
+/**
+ * 距离某个日期还有几天（**北京时间**口径）：`0` = 今天，`1` = 明天，负数 = 已过。
+ *
+ * 两个都是 YYYY-MM-DD，两边都按 UTC 午夜解析 ⇒ 差值恒为整数天，
+ * **不存在 8 小时错位**。不要写成
+ * `Math.ceil((new Date(due).getTime() - Date.now()) / 86400000)` ——
+ * 那是「UTC 午夜 vs 当前瞬时」，北京 00:00–08:00 会把「今天扣费」算成「明天」
+ * （审查 MINOR-1）。
+ */
+export function daysUntil(dateStr: string): number {
+  const due = Date.parse(`${dateStr}T00:00:00Z`)
+  const base = Date.parse(`${today()}T00:00:00Z`)
+  return Math.round((due - base) / 86_400_000)
+}
+
+/**
+ * 年月日 + n 个月，日**钳位到目标月最后一天**（内部）。
+ *
+ * ⚠️ 钳位是 clamp-and-keep：`2026-01-31` +1 月 → `2026-02-28`，再 +1 月
+ * → `2026-03-28`（**不回弹到 31 号**）。这是主流计费系统的标准做法，
+ * 也远好于旧 `setMonth` 的持续漂移；只是原始的「31 号」意图不再保留。
+ */
 function addMonths(year: number, month0: number, day: number, months: number): string {
   const target = month0 + months
   const y = year + Math.floor(target / 12)

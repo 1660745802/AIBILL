@@ -107,7 +107,7 @@ bill/
 │   │   ├── services/          # auth / logger / scheduler
 │   │   └── lib/               # 纯领域逻辑：读模型（portfolio）/ 余额 seam（account-balance）/
 │   │                          # 行情（quotes / fx / holdings / quote-acquisition）/ 日期（date）
-│   └── tests/                 # 30 个测试文件（423 用例）
+│   └── tests/                 # 30 个测试文件（425 用例）
 ├── web/                       # 前端（Vue 3 + TailwindCSS）
 │   ├── src/
 │   │   ├── App.vue            # PC 侧边栏 + 移动端 Tab + Toast

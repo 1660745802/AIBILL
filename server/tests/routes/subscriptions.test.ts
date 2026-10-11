@@ -5,6 +5,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApp, teardownApp, createUser, authHeaders } from '../helpers.js'
+import { getDb } from '../../src/db/index.js'
+import { runScheduledTasks } from '../../src/services/scheduler.js'
 
 describe('Subscription Routes', () => {
   let app: FastifyInstance
@@ -507,5 +509,101 @@ describe('Subscription Routes', () => {
       // so next_payment_date should be the start_date itself
       expect(body.data.next_payment_date).toBe(futureDateStr)
     })
+  })
+})
+
+/* ══════════════════════════════════════════════════════════════
+   订阅自动记账对停用账户的处理（D3）
+
+   这是**第三条**写余额的路径：scheduler 用裸 SQL 建账单、只经 applyTxn
+   改余额，而 POST/PUT /transactions 在路由层查了 is_active=1、它没有。
+   所以指向停用账户的订阅到期时，会改一个「任何读模型都看不到」的账户余额
+   并推进基线——与 D3 要消灭的理由逐字相同。
+
+   ⚠️ 守卫必须放在**挑订阅**这一步（正向），不能放进 applyTxn：
+   applyTxn 正负两向都走，而撤销（删账单/还原）必须对停用账户生效，
+   否则会造成永久错账（见 account-balance-model.test.ts 的 MAJOR-A 回归）。
+
+   本文件守两条：跳过时**不产生任何账单/余额变化**，且 `next_payment_date`
+   **不推进**（还原账户后下个周期会补上，不会漏记）。
+   ══════════════════════════════════════════════════════════════ */
+describe('订阅自动记账跳过停用账户（D3）', () => {
+  let app: FastifyInstance
+  let token: string
+  let accId: number
+  let catId: number
+
+  const balanceOf = async (id: number): Promise<number> => {
+    const res = await app.inject({ method: 'GET', url: '/api/accounts', headers: authHeaders(token) })
+    return JSON.parse(res.payload).data.items.find((a: any) => a.id === id).current_balance
+  }
+  const txCount = async (): Promise<number> => {
+    const res = await app.inject({ method: 'GET', url: '/api/transactions', headers: authHeaders(token) })
+    return JSON.parse(res.payload).data.items.length
+  }
+
+  async function makeSub(name: string): Promise<number> {
+    const res = await app.inject({
+      method: 'POST', url: '/api/subscriptions', headers: authHeaders(token),
+      payload: {
+        name, amount: 999, cycle: 'monthly',
+        category_id: catId, account_id: accId,
+        start_date: '2026-01-01', reminder_days: 3, auto_record: true,
+      },
+    })
+    return JSON.parse(res.payload).data.id
+  }
+
+  beforeAll(async () => {
+    app = await buildApp()
+    token = await createUser(app, 'sub_inactive')
+    const accs = JSON.parse((await app.inject({ method: 'GET', url: '/api/accounts', headers: authHeaders(token) })).payload).data.items
+    accId = accs[0].id
+    const cats = JSON.parse((await app.inject({ method: 'GET', url: '/api/categories', headers: authHeaders(token) })).payload).data.items
+    catId = cats.find((c: any) => c.type === 'expense').id
+  })
+  afterAll(async () => { await teardownApp(app) })
+
+  const setDue = (id: number, date: string) =>
+    getDb().prepare('UPDATE subscriptions SET next_payment_date = ? WHERE id = ?').run(date, id)
+
+  it('指向停用账户的到期订阅：不记账、不改余额、next_payment_date 不推进', async () => {
+    const subId = await makeSub('停用账户订阅')
+    setDue(subId, '2020-01-01') // 确保到期
+
+    // 停用账户（软删）
+    await app.inject({ method: 'DELETE', url: `/api/accounts/${accId}`, headers: authHeaders(token) })
+
+    const beforeBalance = getDb().prepare('SELECT balance FROM accounts WHERE id = ?').get(accId) as { balance: number }
+    const beforeTx = getDb().prepare('SELECT count(*) c FROM transactions WHERE user_id = (SELECT user_id FROM accounts WHERE id = ?)').get(accId) as { c: number }
+
+    await runScheduledTasks()
+
+    const afterBalance = getDb().prepare('SELECT balance FROM accounts WHERE id = ?').get(accId) as { balance: number }
+    const afterTx = getDb().prepare('SELECT count(*) c FROM transactions WHERE user_id = (SELECT user_id FROM accounts WHERE id = ?)').get(accId) as { c: number }
+    const sub = getDb().prepare('SELECT next_payment_date FROM subscriptions WHERE id = ?').get(subId) as { next_payment_date: string }
+
+    expect(afterBalance.balance).toBe(beforeBalance.balance)   // 余额没动
+    expect(afterTx.c).toBe(beforeTx.c)                          // 没产生账单
+    expect(sub.next_payment_date).toBe('2020-01-01')            // 不推进 ⇒ 还原后不会漏记
+  })
+
+  it('还原账户后，被跳过的订阅会**补记**（不漏记），已到期的都一次性补上', async () => {
+    // 还原账户
+    await app.inject({ method: 'POST', url: `/api/accounts/${accId}/restore`, headers: authHeaders(token), payload: {} })
+    const subId = await makeSub('正常订阅')
+    setDue(subId, '2020-01-01')
+
+    const beforeBalance = await balanceOf(accId)
+    await runScheduledTasks()
+    const afterBalance = await balanceOf(accId)
+
+    // 上一条被跳过的订阅（999）+ 本条新到期的（999）都补记了，
+    // 因为它的 next_payment_date 没被推进 ⇒ 不会漏记。
+    expect(afterBalance).toBe(beforeBalance - 999 * 2)
+
+    // 两条都已推进 next_payment_date
+    const sub = getDb().prepare('SELECT next_payment_date FROM subscriptions WHERE id = ?').get(subId) as { next_payment_date: string }
+    expect(sub.next_payment_date).not.toBe('2020-01-01')
   })
 })

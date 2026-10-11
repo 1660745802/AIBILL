@@ -104,7 +104,9 @@ async function confirmStep3() {
       // 之前这里写的是 `balance`——zod 把未知键 strip 掉 → 空更新 → 400，
       // 而下面 `catch { ignore }` 又把 400 咽了，于是「余额设置」这一步
       // **从来没生效过**，用户却以为存上了（审查 M-9）。
-      updates.push(api.put(`/accounts/${id}`, { current_balance: cents }))
+      // `skipErrorToast: true`：axios 拦截器已弹过一次全局错误，这里再弹就是两个 toast
+      // （审查 N-4）。本地文案更具体，所以自己覆盖。
+      updates.push(api.put(`/accounts/${id}`, { current_balance: cents }, { skipErrorToast: true }))
     }
   }
   if (updates.length > 0) {

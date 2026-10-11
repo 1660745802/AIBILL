@@ -12,7 +12,7 @@
 | 集成测试 | API 路由 + DB（内存 SQLite） | Vitest + Fastify `app.inject` |
 | E2E | 核心用户流程 | 手动验证 / 后续 Playwright |
 
-当前测试文件位于 `server/tests/`（30 个文件 / 423 用例），按关注点分组：
+当前测试文件位于 `server/tests/`（30 个文件 / 425 用例），按关注点分组：
 
 **AI 解析**
 - `ai/category-matcher.test.ts`、`ai/parser.test.ts`、`ai/verify.test.ts`
@@ -28,7 +28,7 @@
 
 资产 / 净资产读模型：
 - `lib/portfolio.test.ts`（纯函数口径：总价值、下界、构成占比与空态，**含资产/负债的划分**）
-- `lib/holdings.test.ts`、`lib/helpers.test.ts`（日期区间 + 预算进度）
+- `lib/holdings.test.ts`、`lib/parse-filter.test.ts`、`lib/helpers.test.ts`（日期区间 + 预算进度）
 - `routes/portfolio.test.ts`（读模型 + 手动快照写入的真实 seam）
 - `routes/networth.test.ts`（**dashboard 与 portfolio 必须逐分相同**，含下界标记、
   「overview / dashboard 不得再长出第二套算法」的守卫，以及一条**鉴别力自检**——
@@ -41,12 +41,14 @@
   **撤销对停用账户仍然生效**（审查 MAJOR-A 回归），
   **停用账户不可写 D3**：400/2001、零写入、两入口文案一致、
   组合请求「停用+写余额」整单拒绝、「恢复+写余额」一次完成）
+- `routes/subscriptions.test.ts`（**订阅自动记账跳过停用账户**：不记账/不改余额/
+  `next_payment_date` 不推进，还原后会补记恰好一期）
 - `routes/asset-snapshots-guard.test.ts`（`asset_snapshots` 表的读写护栏。**删表是故障**：
   portfolio / dashboard / analysis / 快照写入会集体 500，不是「曲线变空」那种慢问题）
 
 日期与时区（D2）：
 - `lib/helpers.test.ts`（北京时间口径：跨日边界、`beijingNow` 的星期/分钟、
-  `dateOffset`、**`monthOffsetFrom` 月末钳位与迭代不漂移**）
+  `dateOffset`、`daysUntil`、**`monthOffsetFrom` 月末钳位与迭代不漂移**）
 
 行情 / 汇率采集（抓取 → 落库 → 降级事实）：
 - `lib/quote-acquisition.test.ts`（**module 的 test surface**：失败不写、降级分类、
