@@ -28,11 +28,10 @@
 - `routes/portfolio.test.ts`（读模型 + 手动快照写入的真实 seam）
 - `routes/networth.test.ts`（`overview` 与 `dashboard` 的口径一致性）
 
-余额写入路径（增量 / 覆盖 / 采样三条语义与请求级原子性）：
+余额写入路径（增量 / 覆盖两种语义与请求级原子性）：
 - `db/migration017.test.ts`（017 回填 SQL 的分支判据）
 - `routes/account-balance-model.test.ts`（余额模型主测试面：增量加减、手填覆盖、
-  基准线挡掉旧账、legacy `POST /assets/snapshot` 的采样语义、归属隔离、
-  `PUT /accounts/:id` 的请求级原子性与错误码）
+  基准线挡掉旧账、归属隔离、`PUT /accounts/:id` 的请求级原子性与错误码）
 
 行情 / 汇率采集（抓取 → 落库 → 降级事实）：
 - `lib/quote-acquisition.test.ts`（**module 的 test surface**：失败不写、降级分类、

@@ -70,8 +70,7 @@
   三态）与 `hasReadings`，前端 `cluster` store 只投影不再做口径仲裁；修复零快照但
   有持仓时漏算市值、纯负债用户被误报「还没记过余额」、portfolio 请求失败静默回退到
   现金口径等问题。旧字段与路径全部保留
-- **账户余额写入 seam 封装**：新增 `recordBalanceSamples`，legacy `POST /assets/snapshot`
-  不再有推进基线的裸 SQL；严格保持 skip / 理财停用过滤 / 响应契约；module 内加归属校验；
+- **账户余额写入 seam 封装**：封住 legacy 快照路径里推进基线的裸 SQL；module 内加归属校验；
   `PUT /accounts/:id` 请求级原子化（重名统一 `400 / 3001`，不再透出 SQLite 原文）；
   `applyTxn` 的 `userId` 收紧为必填；`INSERT OR IGNORE` → `ON CONFLICT(...) DO NOTHING`
 - **行情采集编排收拢**：新增 `lib/quote-acquisition.ts`，五个取价 / 落库调用点收敛，
@@ -80,7 +79,34 @@
   60s 冷却闸门防请求放大；`QuoteFetchError` 携带 kind，分类不再匹配错误文案
 - **测试离线化**：行情 / 汇率相关测试改用离线 provider 夹具，`tests/setup.ts` 加
   「禁止真实外发」守卫（吞错的外发也会判红），`vitest` 开 `unstubGlobals`；
-  测试计数 348 → 406（28 个文件）
+  测试计数 348 → 403（29 个文件）
+
+### 删除已下线的资产快照 legacy 接口
+
+删除 `GET /api/assets/trend` 与 `POST /api/assets/snapshot` 两个路由，
+以及 `lib/account-balance.ts` 的 `recordBalanceSamples()`（其唯一调用点就是这个路由）。
+
+**删除依据是核查过的，不是推测**：Web 前端零引用；Android `billapp` 侧
+**全 git history 从未出现过这两个路径**。源码里那句「这个端点为已发布的
+Android 客户端保留」的注释是**错的**，已一并移除——正因为这句话没人去核实，
+一个无人调用的端点才被当作「有客户端依赖」留了这么久。
+
+连函数一起删的理由：它与手填路径写同一张表、却用**相反**的冲突策略与基线策略
+（覆盖 + 无条件推进 vs 跳过 + 仅首次推进）。两条语义要靠长注释才区分得开，
+这本身就是余额口径会漂移的信号。删后余额的写入语义收敛为两条：增量 / 覆盖。
+
+**⚠️ `asset_snapshots` 表保留不动**——它被 `GET /api/assets/portfolio` 读模型、
+`PUT /api/assets/snapshots` 与 `setManualBalance()` 三方活跃读写，删表会直接打断
+读模型与余额 seam。（与 `ai_memories` 恰好相反：那张表能删是因为无人读。）
+
+响应契约无变更：`PUT /api/assets/accounts/:id`、`GET /api/assets/overview`、
+`GET /api/assets/portfolio`、`PUT /api/assets/snapshots` 全部保持原样。
+测试计数 406 → 403（移除 6 个 legacy 采样语义用例，新增 3 个 `asset_snapshots` 表守卫用例）。
+`admin.test.ts` 原用 `POST /assets/snapshot` 造夹具，改走现役的 `PUT /assets/snapshots`。
+
+新增的 `asset-snapshots-guard.test.ts` 是一道「删表会静默坏掉」的护栏：
+`asset_snapshots` 长得像「跟已删端点同名的表」，下一个人清理时很容易顺手删掉，
+而删表**不会报错**，只会让 portfolio 曲线变空、手填余额不再留痕。
 
 ### 界面重做：仪表读数（Instrument）—— 替换上一版的「账本纸」
 

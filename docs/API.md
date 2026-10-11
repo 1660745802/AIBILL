@@ -18,11 +18,21 @@
 > | `/api/goals/*` | 已下线 | 无引用 |
 > | `/api/subscriptions/*` | 已下线 | 无引用 |
 > | `/api/memories/*` | 已下线 | 无引用 |
+> | `/api/assets/snapshot`、`/api/assets/trend` | 已删除 | 无引用 |
 >
 > ⚠️ **`/api/memories/*` 废弃 ≠ `ai_memories` 表可删**：该表被 AI 解析主流程活跃读写
 > （`ai.ts:150` 读记忆注入 prompt、`ai.ts:380-397` 解析修正后自动学习写入、`ai.ts:530` AI 问答读取）。
 > **只下线路由，表必须保留**，否则 AI 记账解析会报错。
-> | `/api/assets/snapshot`、`/api/assets/trend` | 已下线 | 无引用 |
+>
+> ✅ **`/api/assets/snapshot`、`/api/assets/trend` 已于 2026-10 删除路由**（本次）。
+> 删除依据（实测，非推测）：`web/src` 零引用；Android `billapp` **全 git history 从未出现过**
+> 这两个路径——源码里那句「为已发布的 Android 客户端保留」的注释是**错的**，已一并移除。
+> 连带删除 `lib/account-balance.ts` 的 `recordBalanceSamples()`：它唯一的调用点就是这个
+> deprecated 端点，端点没了它就是死代码。
+>
+> ⚠️ **`asset_snapshots` 表必须保留**：它被 `GET /api/assets/portfolio` 读模型、
+> `PUT /api/assets/snapshots`、`setManualBalance()` 三方活跃读写。删表会直接打断 C1/C2。
+> （这与 `ai_memories` 恰好相反——那张表能删是因为无人读，这张不能删。）
 >
 > 同理，`GET /api/stats/dashboard` 的响应仍包含 `budget_progress` / `goals_top` /
 > `subscriptions_overview` 字段（值恒为空数组），**响应结构刻意保持不变**，
@@ -358,25 +368,6 @@ liability, investment, curve, accounts, empty, lastUpdated, change, previousNetW
 | `empty` | 旧字段：有没有写过 `asset_snapshots` 行。**不等于**「没有余额读数」 |
 | `assetComposition` | `{ state, total, rows: [{ type, value, percent }] }`。按 `asset_type` 用账户总价值分组；`percent` 分母 = **正资产合计**（**负债账户不进构成条**，见 UI-DESIGN §6.8 规则 7，负债由 `liability` 单列）；`state ∈ ok \| no_readings \| no_positive_assets`，不变式 `rows.length > 0 ⟺ state === 'ok'` |
 | `liability` | `{ total, accountCount }`，负余额账户合计（**负数**） |
-
-### GET `/api/assets/trend?months=6`
-净资产历史趋势（基于 `asset_snapshots`，**现金口径**、且不排除已停用账户）。
-已标记 deprecated（两端无可达入口）。要曲线请用 `/api/assets/portfolio` 的 `curve`
-（含每日覆盖率与「持仓 / 现金」拆分，语义更完整）。
-
-### POST `/api/assets/snapshot`
-旧客户端保留的端点，**不删**。017 之后不再回算余额：把当前权威值 `accounts.balance`
-落一行 `asset_snapshots` 作为历史采样，**自己不写 `balance`**。
-
-- 返回 `{ date, created, skipped, total }`；`created + skipped = total`
-- 命中理财账户（`asset_type='investment'`）与停用账户都不会被计入 `total`
-- **同日重复调用整批跳过**（`ON CONFLICT(user_id, account_id, snapshot_date) DO NOTHING`，
-  只跳过这一条唯一键冲突），不覆盖已有采样行
-- **只有真的插进去一行才推进 `balance_as_of_txn_id`**。因此“今天第二次点快照”
-  不会把两次之间新建的账单烤进余额，改它们仍会正常加减
-
-写入实现在 `lib/account-balance.ts` 的 `recordBalanceSamples()`；
-语义与手填路径的差异见 `DATA.md` §10.6 与 §12。
 
 ### PUT `/api/assets/snapshots`
 手填余额（覆盖 + 推进基线 + upsert 快照行），可带 `date` 补录。

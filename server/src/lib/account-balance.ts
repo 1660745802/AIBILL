@@ -6,14 +6,18 @@
  *   - 有归属的账单增删改 → 增量加减这个数
  *   - 手填 → 覆盖这个数，并刷新基准线 `accounts.balance_as_of_txn_id`
  *
- * 三个入口，两条**语义**，都在本文件内（不再有路由自己写 SQL 的旁路）：
+ * 两个入口，两种**语义**，都在本文件内（不再有路由自己写 SQL 的旁路）：
  *   | 入口 | 函数 | 语义 |
  *   |---|---|---|
  *   | 账单增删改 | `applyTxn` | 增量 |
  *   | 用户手填（账户 PUT / 资产快照 PUT） | `setManualBalance` | 覆盖 + 推进基线 |
- *   | 旧客户端 `POST /assets/snapshot` | `recordBalanceSamples` | 采样 + **仅首次**推进基线 |
  *
- * 后两者都写快照凭证行，区别在**冲突策略**与**基线是否前进**——见各自的注释。
+ * 手填同时写快照凭证行（`asset_snapshots`），upsert 覆盖。
+ *
+ * 曾存在的第三条——旧客户端 `POST /assets/snapshot` 的「采样 + **仅首次**推进基线」
+ * （`recordBalanceSamples`）——已随那个 deprecated 端点一起删除：
+ * 核查确认它从未被任何客户端调用过（web 不用，Android 全history 无引用）。
+ * 保留它只会留下一条无人可达的分支，而它的存在正是「余额口径有三条路」的根源。
  *
  * 不变量：
  *   balance == 上次手填的值 + **基准线之后新建**的有归属流水的增减
@@ -131,9 +135,7 @@ function todayStr(db: any): string {
 /**
  * 手填余额 = **覆盖**，并把基准线刷到此刻。
  *
- * 两条路径（账户 PUT / 资产快照 PUT）走这里。旧客户端的 `POST /assets/snapshot`
- * **不走这里**——它的语义不同，见 `recordBalanceSamples`。之前这个文件写着
- * 「三条路径全部走这里」，而第三条实际是在路由里直接写 SQL 推进基线的。
+ * 两条路径（账户 PUT / 资产快照 PUT）走这里。
  *
  * 同时写一行 `asset_snapshots` 作为历史/回滚凭证：用 upsert，
  * 同一天反复填不会撞 UNIQUE(user_id, account_id, snapshot_date)。
@@ -197,107 +199,4 @@ export function setManualBalance(
     ).run(userId, accountId, value, date)
   })
   run()
-}
-
-export interface BalanceSampleResult {
-  /** 本次采样记在哪一天（响应与快照行共用同一个值） */
-  date: string
-  /** 真的插进去一行 = 今天第一次记这个账户 */
-  created: number
-  /** 今天已经有行了，什么都没做 */
-  skipped: number
-  /** 本次考虑了几个账户 */
-  total: number
-}
-
-/**
- * 旧客户端 `POST /api/assets/snapshot` 的写入实现。
- *
- * ## 它和 `setManualBalance` 不是一回事（不要合并）
- *
- * 两者写的表一样、推的基线一样，但**用户意图不同**，合并会改变行为：
- *
- * | | `setManualBalance`（手填） | 本函数（采样） |
- * |---|---|---|
- * | `accounts.balance` | **覆盖**成用户填的数 | **不写**，只把当前权威值记进快照行 |
- * | 同一天重复 | upsert **覆盖** | `ON CONFLICT(user_id, account_id, snapshot_date) DO NOTHING` **跳过** |
- * | 推进基线 | 无条件 | **只有真插进去才推进** |
- *
- * 最后一行是全部要害：若这里也无条件推进，那么「今天第二次点快照」会把
- * 两次之间新建的账单烤进余额，此后 `applyTxn` 对它们的修正会被基准线挡掉
- * （`txnId <= balance_as_of_txn_id`）——用户改一笔旧账，余额纹丝不动，
- * 且没有任何提示。所以那个「唯一键冲突就跳过」不是偷懒，是语义。
- *
- * 用的是点名冲突目标的 `ON CONFLICT(user_id, account_id, snapshot_date) DO NOTHING`，
- * 而不是 `INSERT OR IGNORE`：后者会把 CHECK / FK / NOT NULL 一并忽略掉，
- * 那些是 bug，不该伪装成「今天已经有了」。
- *
- * ## 谁决定「哪些账户」
- *
- * 调用方先按自己的口径筛好（legacy 端点排除理财账户与停用账户），
- * 把「账户 → 要记的余额」整包交进来：写入、推进、计数、事务全在本函数内，
- * 调用方不可能只做一半。计数也从这里出，调用方不再自己数 `changes`。
- *
- * ## 归属校验在这里，不只在调用方
- *
- * 调用方已经按 `user_id` 筛过一遍，但本函数是 deep module，不能假设调用方
- * 永远记得筛：写入前先把所有 accountId 过一遍归属，**有一个不是本人的就整批拒绝**。
- * 拒绝发生在任何写入之前，且包在事务里 ⇒ snapshot 与 baseline 一个字节都不动。
- *
- * ## 事务边界
- *
- * 自己包事务，因此**独立调用也保证原子性**（整批采样要么全成、要么全不成）。
- *
- * 当前唯一的调用点（`POST /api/assets/snapshot`）已经把整批循环包在
- * `db.transaction` 里，所以此刻这个内部事务并不比之前多保什么；它的价值是
- * **独立调用与未来调用点**：下一个调用点即便忘了包事务也不会半途而废，
- * 被外层包住时则退化成 SAVEPOINT 随外层一起提交/回滚（better-sqlite3 的嵌套语义）。
- */
-export function recordBalanceSamples(
-  db: any,
-  userId: number,
-  balances: ReadonlyMap<number, number>,
-  opts?: { date?: string },
-): BalanceSampleResult {
-  const date = opts?.date ?? todayStr(db)
-
-  // 只对「唯一键冲突」跳过，不吞掉其余完整性错误。
-  // `INSERT OR IGNORE` 会把 CHECK / FK / NOT NULL 一并忽略掉——那些是 bug，
-  // 不该伪装成「今天已经有了」。这里点名那一条 UNIQUE(user_id, account_id, snapshot_date)。
-  const insertSample = db.prepare(
-    `INSERT INTO asset_snapshots (user_id, account_id, balance, snapshot_date, source)
-     VALUES (?, ?, ?, ?, 'manual')
-     ON CONFLICT(user_id, account_id, snapshot_date) DO NOTHING`
-  )
-  // 归属校验用的预编译语句：先做完校验再开始写。
-  const ownedAccount = db.prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
-  // 基准线只前进、不倒退，且永远只动**自己**的账户。
-  const advanceBaseline = db.prepare(
-    `UPDATE accounts SET balance_as_of_txn_id =
-       (SELECT COALESCE(MAX(id), 0) FROM transactions WHERE user_id = ?)
-     WHERE id = ? AND user_id = ?`
-  )
-
-  const run = db.transaction(() => {
-    // 先校验、后写入：任何一个 accountId 不属于本用户就抛，整批不落任何东西。
-    for (const accountId of balances.keys()) {
-      if (!ownedAccount.get(accountId, userId)) {
-        throw new Error(`账户 ${accountId} 不存在或不属于当前用户`)
-      }
-    }
-
-    let created = 0
-    let skipped = 0
-    for (const [accountId, balance] of balances) {
-      const result = insertSample.run(userId, accountId, balance, date)
-      if (result.changes > 0) {
-        created++
-        advanceBaseline.run(userId, accountId, userId)
-      } else {
-        skipped++
-      }
-    }
-    return { date, created, skipped, total: balances.size }
-  })
-  return run()
 }

@@ -9,7 +9,7 @@ import { getDb } from '../db/index.js'
 import { summarizeNetWorth } from '../lib/assets.js'
 import { buildPortfolio, type AccountRow, type SnapshotPoint } from '../lib/portfolio.js'
 import { loadAccountHoldings } from '../lib/investments-repo.js'
-import { setManualBalance, recordBalanceSamples } from '../lib/account-balance.js'
+import { setManualBalance } from '../lib/account-balance.js'
 
 const updateAccountSchema = z.object({
   asset_type: z.enum(['liquid', 'savings', 'investment', 'credit', 'loan', 'property', 'other']).optional(),
@@ -101,72 +101,6 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
         accounts: accountsWithBalance,
       },
       message: '',
-    }
-  })
-
-  // GET /api/assets/trend?months=6 - 净资产趋势
-  app.get('/api/assets/trend', async (request: FastifyRequest) => {
-    const db = getDb()
-    const userId = request.user!.userId
-    const query = request.query as { months?: string }
-    const months = Math.min(24, Math.max(1, parseInt(query.months || '6', 10)))
-
-    // 获取最近 N 个月的快照数据
-    const startDate = new Date()
-    startDate.setMonth(startDate.getMonth() - months)
-    const startStr = startDate.toISOString().split('T')[0]
-
-    const snapshots = db.prepare(
-      `SELECT snapshot_date, SUM(balance) as net_worth
-       FROM asset_snapshots
-       WHERE user_id = ? AND snapshot_date >= ?
-       GROUP BY snapshot_date
-       ORDER BY snapshot_date`
-    ).all(userId, startStr) as Array<{ snapshot_date: string; net_worth: number }>
-
-    return { code: 0, data: { trend: snapshots, months }, message: '' }
-  })
-
-  // POST /api/assets/snapshot - 手动触发资产快照
-  app.post('/api/assets/snapshot', async (request: FastifyRequest) => {
-    const db = getDb()
-    const userId = request.user!.userId
-
-    /**
-     * **跳过理财账户。**
-     *
-     * 新读模型把 `balance` 当**现金**读（持仓市值另外算），对理财账户写入
-     * 「总价值」语义会造成双重计算——踩中 UI-DESIGN §6.6 硬规则 1。
-     * 理财账户的现金由「各账户余额 / 投资页」手动记。
-     * 这个端点为已发布的 Android 客户端保留，所以不删，只把理财账户排除掉。
-     *
-     * 017 之后不再回算：直接把 `accounts.balance` 这个权威值落一行快照。
-     *
-     * 写入本身（插行 + 推进基线 + 计数 + 事务）全部在 account-balance module 里。
-     * 本路由只决定**记哪些账户**——筛选口径属于这个端点的策略。
-     * 别把这里换算成 `setManualBalance`：那会变成「覆盖 + 无条件推进基线」，
-     * 同一天第二次点就会把两次之间新建的账单烤进余额，之后改它们会被静默忽略。
-     * 两个函数看起来像，其实语义不同，理由见 recordBalanceSamples 的注释。
-     */
-    const accounts = db.prepare(
-      `SELECT id FROM accounts
-        WHERE user_id = ? AND is_active = 1 AND COALESCE(asset_type, 'liquid') <> 'investment'`
-    ).all(userId) as Array<{ id: number }>
-
-    // 单条聚合 SQL 取所有账户余额（修复 N+1）
-    const balances = calcAccountBalances(db, userId)
-
-    // 只记活跃、非理财的账户；它们的余额就是当前的权威值。
-    const toSample = new Map<number, number>(
-      accounts.map((a) => [a.id, balances.get(a.id) ?? 0]),
-    )
-
-    const { date, created, skipped, total } = recordBalanceSamples(db, userId, toSample)
-
-    return {
-      code: 0,
-      data: { date, created, skipped, total },
-      message: created > 0 ? `已记录 ${created} 个账户快照` : '今日快照已存在',
     }
   })
 

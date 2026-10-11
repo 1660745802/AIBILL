@@ -36,7 +36,7 @@ Web 前端已移除页面与导航入口；**接口与数据表暂时保留，�
 | 财务目标 | `/api/goals/*` | 两端均无引用 |
 | 订阅管理 | `/api/subscriptions/*` | 两端均无引用 |
 | AI 记忆 | `/api/memories/*` | 两端均无引用；**但 `ai_memories` 表被 AI 解析主流程使用，不可删表** |
-| 资产快照 | `/api/assets/snapshot`、`/api/assets/trend` | 两端均无引用 |
+| 资产快照 | ~~`/api/assets/snapshot`、`/api/assets/trend`~~ | **2026-10 已删除路由**（web 零引用；Android `billapp` 全 history 零引用）。`asset_snapshots` **表保留**：被 portfolio 读模型与 `PUT /assets/snapshots` 读写 |
 
 > 为什么不直接删：一个客户端里「数据层写全了但 UI 没入口」很容易被误读成「功能存在只是没人用」。
 > 标 deprecated 能让下一个读到代码的人知道真实状态，而不是花时间重新调研一遍。
@@ -106,7 +106,7 @@ bill/
 │   │   ├── routes/            # 16 个路由模块（80 端点）
 │   │   ├── services/          # auth / logger / scheduler
 │   │   └── lib/               # response / error-codes（统一响应包装）
-│   └── tests/                 # 28 个测试文件（406 用例）
+│   └── tests/                 # 29 个测试文件（403 用例）
 ├── web/                       # 前端（Vue 3 + TailwindCSS）
 │   ├── src/
 │   │   ├── App.vue            # PC 侧边栏 + 移动端 Tab + Toast

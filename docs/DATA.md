@@ -432,7 +432,7 @@ asset_snapshots.total_invested   总投入搬到 accounts
 
 | 数据 | 谁写 | 接口 |
 |---|---|---|
-| 现金 | `accounts.balance`（017 起唯一真源）：有归属账单实时加减 + 手填覆盖 + 采样 | `PUT /api/assets/snapshots`、`PUT /api/accounts/:id`（`current_balance`）、`POST /api/assets/snapshot`（只采样，见下） |
+| 现金 | `accounts.balance`（017 起唯一真源）：有归属账单实时加减 + 手填覆盖 | `PUT /api/assets/snapshots`、`PUT /api/accounts/:id`（`current_balance`） |
 | 份额 | 用户手填（低频，加/减仓） | `POST/PATCH /api/investments` |
 | 总投入 | 用户手填（只在存/取钱时） | `PUT /api/assets/accounts/:id` |
 | 行情 | **三个写者**，实现统一在 `lib/quote-acquisition.ts`：① 定时任务每 15 分钟检查一次（`QUOTE_REFRESH_MINUTES` 可调）、**按市场分别判断时段**；② 手动刷新（绕过门禁）；③ 新增持仓后自动取价（绕过门禁） | `scheduler.ts` + `POST /api/investments/quotes/refresh` |
@@ -447,27 +447,28 @@ asset_snapshots.total_invested   总投入搬到 accounts
 > 结果是 `investment_quotes` 永远 0 行、持仓永远「未取到价」、账户总价值永远算不出。
 > 回归测试见 `tests/lib/scheduler-quotes.test.ts`。
 >
-> ⚠️ `POST /api/assets/snapshot`（旧客户端保留，**不删**）**跳过理财账户与停用账户**。
-> 017 之后它**不再回算**：把当前权威值 `accounts.balance` 落一行 `asset_snapshots`（历史采样），
-> **自己不写 `balance`**。理财账户要排除是因为读模型把 `balance` 当现金读，
-> 拿「总价值」语义（含持仓）写进去就是「持仓 + 已含持仓的余额」双重计算。
+> ✅ 余额的写入语义已经从三条收敛为**两条**（增量 / 覆盖）。
+> 第三条「采样」（legacy `POST /api/assets/snapshot`：不写 `balance`、只落历史行、
+> 仅首次推进基线）已随该 deprecated 路由于 2026-10 一并删除。
 >
-> 它与手填（`PUT /api/accounts/:id` / `PUT /api/assets/snapshots`）是**两种语义，不要合并**：
+> 删它的理由不是「接口废弃」而是**它已经是第三条歧路**：它与手填写同一张表、
+> 却用相反的冲突策略和基线策略（覆盖+无条件推进 vs 跳过+仅首次推进）。
+> 两条语义要靠长注释才区分得开，本身就是余额口径会漂移的信号。
+> 核查确认无消费者：web 零引用，Android `billapp` 全 git history 零引用。
 >
-> | | 手填 | 采样（legacy POST） |
-> |---|---|---|
-> | `accounts.balance` | 覆盖成用户填的数 | 不写 |
-> | 同一天重复 | upsert **覆盖** | 唯一键冲突则**跳过**（`ON CONFLICT(user_id, account_id, snapshot_date) DO NOTHING`） |
-> | 推进基线 | 无条件 | **只有真的插进去一行才推进** |
->
-> 最后一行是全部要害：若采样也无条件推进，「今天第二次点快照」会把两次之间新建的账单
-> 烤进余额，此后 `applyTxn` 对它们的修正会被基线挡掉（`txnId <= balance_as_of_txn_id`）——
+> 采样路径留下的那条要害教训写在这里存档（它不适用于手填，但删掉了就更难找回）：
+> 若采样也无条件推进基线，「今天第二次点快照」会把两次之间新建的账单烤进余额，
+> 此后 `applyTxn` 对它们的修正会被基线挡掉（`txnId <= balance_as_of_txn_id`）——
 > 改一笔旧账余额纹丝不动且无任何提示。
 >
-> 两个写入实现都在 `lib/account-balance.ts`（`setManualBalance` / `recordBalanceSamples`），
+> 现在余额的两个写入实现都在 `lib/account-balance.ts`（`applyTxn` / `setManualBalance`），
 > **路由里没有直接推进基线的 SQL**。该模块自己包事务：独立调用时自成事务，
 > 被路由的 `db.transaction` 包住时退化成 SAVEPOINT 随外层一起回滚
 > （better-sqlite3 的嵌套语义）。
+>
+> ⚠️ `asset_snapshots` 表**保留不动**：它是历史曲线的唯一数据源，
+> 被 `GET /api/assets/portfolio` 与 `PUT /api/assets/snapshots` 活跃读写。
+> 删掉的只是「写快照行」的那条旧路，不是快照这个事实。
 >
 
 ## 11. 行情抓取时段（按市场）
@@ -512,17 +513,17 @@ A股 / 港股 / 美股 的开市时间**完全不同**，所以门禁必须按�
 
 ## 12. 账户余额模型（migration 017）
 
-余额有且只有一个真源：**`accounts.balance`**。它由三条路径共同维护，
-三条的实现**全部在 `lib/account-balance.ts` 内**，路由层不允许出现推进基线的 SQL：
+余额有且只有一个真源：**`accounts.balance`**。它由两条路径共同维护，
+两条的实现**全部在 `lib/account-balance.ts` 内**，路由层不允许出现推进基线的 SQL：
 
 | 路径 | 行为 | 实现 |
 |---|---|---|
 | 有归属的账单增删改 | **增量加减** | `applyTxn()` |
-| 手填修正（账户 PUT / 资产快照 PUT） | **覆盖** | `setManualBalance()` |
-| 采样（旧客户端 `POST /assets/snapshot`） | **不写余额**，只落历史行；**仅首次**推进基线 | `recordBalanceSamples()` |
+| 手填修正（账户 PUT / 资产快照 PUT） | **覆盖** + 无条件推进基线 | `setManualBalance()` |
 
-> 第三条与第二条**不是一回事**（跳过 vs 覆盖、仅首次推进 vs 无条件推进），
-> 差异与理由见 §10.6。把它们合并成一个函数会引入静默余额漂移。
+> 这两条**不是一回事**（增量 vs 覆盖），也**不要合并**成一个函数。
+> 曾存在的第三条（采样，旧客户端 `POST /assets/snapshot`）已于 2026-10 删除，
+> 理由与它留下的教训见 §10.6。删除后本表就是全部。
 
 **不变量**
 

@@ -102,7 +102,15 @@ describe('Admin Routes - 删除用户', () => {
       headers: authHeaders(u.token),
       payload: { amount: 10000 },
     })
-    await app.inject({ method: 'POST', url: '/api/assets/snapshot', headers: authHeaders(u.token) })
+    // 造一条快照行，用来验证删用户时 asset_snapshots 也跟着清掉。
+    // 走现役的 `PUT /api/assets/snapshots`——旧的 `POST /api/assets/snapshot`
+    // 已随 deprecated 端点删除（无任何客户端调用过）。
+    await app.inject({
+      method: 'PUT',
+      url: '/api/assets/snapshots',
+      headers: authHeaders(u.token),
+      payload: { items: [{ account_id: u.accountId, balance: 1000 }] },
+    })
 
     const db = getDb()
     expect(db.prepare('SELECT COUNT(*) c FROM goal_progress WHERE goal_id = ?').get(goalId).c).toBe(1)
