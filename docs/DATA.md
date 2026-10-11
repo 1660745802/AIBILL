@@ -33,7 +33,8 @@
 而月度统计算的是「今天」，曲线翻页时刻也跟着漂 8 小时。
 
 现统一为北京时间（用户决策），**唯一定义在 `server/src/lib/date.ts`**：
-`today()` / `toDateStr()` / `dateOffset()` / `monthOffset()` / `beijingYearMonth()`。
+`today()` / `toDateStr()` / `dateOffset()` / `monthOffset()` / `monthOffsetFrom()` /
+`daysUntil()` / `beijingYearMonth()`。
 行情门禁（§11）也改用同一份 `beijingNow()`，不再自己算一遍时区。
 
 **快照日期语义确实变了**：历史 `snapshot_date` 不动，但新写入的快照在北京时间
@@ -556,6 +557,19 @@ A股 / 港股 / 美股 的开市时间**完全不同**，所以门禁必须按�
 理由：停用账户不在任何读模型（`is_active=1` 才进），写余额 = 写进一个不被读的地方，
 且基准线被推进后，将来恢复账户时那之间的账单加减会被静默跳过。
 改余额失败时一个字节都不写（余额、基线、快照凭证同生共死）。
+
+判据是「**本次请求结束后**账户是否活跃」，不是库里旧值（`setManualBalance` 的
+`requireActive`）：因此 `{ current_balance, is_active: 0 }` 会被整单拒绝，而
+`{ current_balance, is_active: 1 }` 允许恢复+填余额一次完成。
+
+> ⚠️ **`applyTxn` 不加 `is_active` 守卫**（审查 MAJOR-A）。它正负两向都走：
+> 正向记账在路由层已查 `is_active=1`；而**撤销**（删账单 / 还原 / 改金额）
+> 必须对停用账户生效——否则「建账单时账户活跃 → 删账户 → 删账单 → 还原账户」
+> 会永久少一笔（`applied` 返回值全仓无人消费 ⇒ 完全静默）。
+>
+> `applyTxn` 只按归属（`user_id`）过滤。跳过停用账户的守卫在
+> `scheduler.ts` 挑到期订阅那一步（正向），且跳过时打 `warn` 并**不推进**
+> `next_payment_date`，还原账户后下个周期会补记恰好一期。
 
 **日期口径（D2）**：余额快照的 `snapshot_date` 与上面两条路径的「今天」都用
 **北京时间**（`lib/date.ts` 的 `today()`），不是 UTC。见 §1.2。

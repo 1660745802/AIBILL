@@ -58,7 +58,8 @@ chore/docker-config
 - Bug 修复 → PATCH
 
 ### 1.5 禁止操作
-- ❌ 直接 push 到 main
+- ❌ 直接 push 到 main（**例外**：用户在会话里明确说「push」时可直推——本项目
+  的架构深化轮就是这么推的。除此之外走分支 + PR）
 - ❌ force push 到 main / dev
 - ❌ commit 包含 `.env`、API Key、密码
 - ❌ 单 commit 超过 500 行变更
@@ -90,12 +91,17 @@ chore/docker-config
 
 ### 2.3 后端（Fastify）
 ```
-routes/      → 路由定义 + 参数校验
-services/    → 业务逻辑（无 HTTP 概念）
-db/          → 数据访问（SQL 查询）
+routes/      → 路由定义 + 参数校验 + 把异常翻成 HTTP 响应
+lib/         → **纯领域逻辑**（读模型 portfolio / 余额 seam account-balance /
+              日期口径 date / 行情 quotes·fx·holdings·quote-acquisition）
+services/    → 后台任务与横切（scheduler / logger / auth.service）
+db/          → 数据访问（schema + migration）
 middleware/  → 中间件（auth/error handler）
 ```
-- 路由层只做：参数校验 → 调 service → 返回响应
+- 路由层只做：参数校验 → 调 lib/service → 返回响应
+- **`lib/` 不碰 HTTP 概念**（不 import fastify / request / reply），只吃数据、吐数据。
+  净资产口径、余额写入语义、日期口径这些「同一数字只有一个算法」的约束
+  **全部落在 `lib/`**，路由层只负责翻译 HTTP。
 - Service 层不依赖 request/reply
 - **所有 SQL 参数化**，禁止字符串拼接
 - 业务查询默认带 `user_id + status='confirmed' + deleted_at IS NULL`

@@ -497,6 +497,18 @@ liability, investment, curve, accounts, empty, lastUpdated, change, previousNetW
 
 `cycle`: `monthly | quarterly | yearly`
 
+`next_payment_date` 从 `start_date` 起按 `cycle` 推进，取**第一个晚于今天的**日期。
+日号**钳位到目标月最后一天**（`monthOffsetFrom`）：`2026-01-31` +1 月 → `2026-02-28`
+（闰年 `2024-01-31` → `2024-02-29`），**不会**溢出成 3 月初，也不会逐月漂移。
+钳位是 clamp-and-keep（月末不回弹到原始日）——与主流计费系统一致。
+
+`start_date` 的格式对但取值非法（如 `2026-13-01`、`2026-02-30`）会被拒在格式校验之外，
+不进入 `next_payment_date`。
+
+> `auto_record: true` 且 `account_id` 指向**停用账户**的订阅到期时会被跳过
+> （不记账、不改余额、**不推进** `next_payment_date`，并打 warn 日志）；
+> 还原账户后下个周期补记恰好一期。见 `DATA.md` §12。
+
 ---
 
 ## 11. 通知规则 `/api/config/notification-rules` `/api/admin/notification-rules/*`
