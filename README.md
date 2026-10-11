@@ -101,11 +101,12 @@ bill/
 │   │   ├── app.ts             # 入口（CORS / JWT / rate-limit / onSend）
 │   │   ├── config.ts          # 环境变量
 │   │   ├── ai/                # AI 模块（client / parser / prompts / matcher）
-│   │   ├── db/                # Schema + Migration（10 个版本）
+│   │   ├── db/                # Schema + Migration（17 个版本）
 │   │   ├── middleware/        # JWT 鉴权（含 token_version 校验）
 │   │   ├── routes/            # 17 个路由模块（88 端点）
 │   │   ├── services/          # auth / logger / scheduler
-│   │   └── lib/               # response / error-codes（统一响应包装）
+│   │   └── lib/               # 纯领域逻辑：读模型（portfolio）/ 余额 seam（account-balance）/
+│   │                          # 行情（quotes / fx / holdings / quote-acquisition）/ 日期（date）
 │   └── tests/                 # 30 个测试文件（417 用例）
 ├── web/                       # 前端（Vue 3 + TailwindCSS）
 │   ├── src/
