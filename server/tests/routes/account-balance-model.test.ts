@@ -402,15 +402,65 @@ describe('停用账户不可写余额（D3）', () => {
     expect(row().balance).toBe(before.balance)
   })
 
-  it('两条入口口径一致：/assets/snapshots 也拒，且用的是同一个 2001', async () => {
+  /**
+   * 这条针对的是「路由前置守卫被删掉后，module 仍然独立拦得住」——
+   * 之前它零鉴别力（前置守卫独立兜住了，删掉 module 的守卫它照样绿，审查 N-1）。
+   * 现在前置守卫已删，它才真正测的是 module。
+   */
+  it('两条入口口径一致：/assets/snapshots 也拒，且与 accounts 同一文案', async () => {
     const r = await app.inject({
       method: 'PUT', url: '/api/assets/snapshots',
       headers: authHeaders(token),
       payload: { items: [{ account_id: accId, balance: 12345 }] },
     })
     expect(r.statusCode).toBe(400)
-    expect(JSON.parse(r.payload).code).toBe(2001)
+    const body = JSON.parse(r.payload)
+    expect(body.code).toBe(2001)
+    // 文案也要一致：先前这里说「不存在或不属于当前用户」，对停用账户是撒谎
+    expect(body.message).toMatch(/停用/)
     expect(row().balance).not.toBe(12345)
+  })
+
+  it('组合请求「停用 + 写余额」必须整单拒绝（MAJOR-1）', async () => {
+    // 恢复账户先，然后用同一个请求既写余额又把自己停用。
+    // 旧实现里 is_active 的 UPDATE 在 setManualBalance 之后才落库，
+    // 于是 module 读到的是变更前的活跃态 ⇒ HTTP 200 + 余额写进了一个将停用的账户，
+    // 正是 D3 要消灭的场景（基线被推进，恢复后那之间的账单加减静默跳过）。
+    await app.inject({
+      method: 'POST', url: `/api/accounts/${accId}/restore`, headers: authHeaders(token), payload: {},
+    })
+    await app.inject({
+      method: 'PUT', url: `/api/accounts/${accId}`, headers: authHeaders(token),
+      payload: { current_balance: 1000 },
+    })
+    const before = row()
+
+    const r = await app.inject({
+      method: 'PUT', url: `/api/accounts/${accId}`, headers: authHeaders(token),
+      payload: { current_balance: 88888, is_active: 0 },
+    })
+    expect(r.statusCode).toBe(400)
+    expect(JSON.parse(r.payload).code).toBe(2001)
+    // 余额没变，且账户**没有**被停用（整单回滚）
+    expect(row().balance).toBe(before.balance)
+    const active = getDb().prepare('SELECT is_active FROM accounts WHERE id = ?').get(accId) as { is_active: number }
+    expect(active.is_active).toBe(1)
+  })
+
+  it('组合请求「恢复 + 写余额」应一次完成（MAJOR-1 的反向）', async () => {
+    // 旧实现按库里的旧值（停用）判 ⇒ 会拒，导致恢复与填余额必须拆成两次请求，
+    // 那是 D3 引入的行为回退。
+    await app.inject({
+      method: 'DELETE', url: `/api/accounts/${accId}`, headers: authHeaders(token),
+    })
+    const r = await app.inject({
+      method: 'PUT', url: `/api/accounts/${accId}`, headers: authHeaders(token),
+      payload: { current_balance: 77777, is_active: 1 },
+    })
+    expect(r.statusCode).toBe(200)
+    expect(row().balance).toBe(77777)
+    const active = getDb().prepare('SELECT is_active FROM accounts WHERE id = ?').get(accId) as { is_active: number }
+    expect(active.is_active).toBe(1)
   })
 
   it('仍然可以改停用账户的其它字段（改名等）——只拦余额写入', async () => {
@@ -424,6 +474,10 @@ describe('停用账户不可写余额（D3）', () => {
   })
 
   it('恢复账户后可以正常写余额（拦截只针对停用态）', async () => {
+    // 自己先停用，不依赖前一条的结束状态（否则用例顺序耦合，单跑会红）
+    await app.inject({
+      method: 'DELETE', url: `/api/accounts/${accId}`, headers: authHeaders(token),
+    })
     const r = await app.inject({
       method: 'POST', url: `/api/accounts/${accId}/restore`,
       headers: authHeaders(token),

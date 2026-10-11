@@ -9,20 +9,22 @@
 | 类型 | 范围 | 工具 |
 |------|------|------|
 | 单元测试 | AI 解析器、分类匹配、金额转换、幂等逻辑 | Vitest |
-| 集成测试 | API 路由 + DB（内存 SQLite） | Vitest + supertest |
+| 集成测试 | API 路由 + DB（内存 SQLite） | Vitest + Fastify `app.inject` |
 | E2E | 核心用户流程 | 手动验证 / 后续 Playwright |
 
-当前测试文件位于 `server/tests/`：
-- `ai/category-matcher.test.ts`
-- `ai/parser.test.ts`
-- `routes/auth.test.ts`
-- `routes/budgets.test.ts`
-- `routes/memories.test.ts`
+当前测试文件位于 `server/tests/`（30 个文件 / 419 用例），按关注点分组：
+
+**AI 解析**
+- `ai/category-matcher.test.ts`、`ai/parser.test.ts`、`ai/verify.test.ts`
+- `routes/ai-chat.test.ts`（上下文取最近 N 条）
+
+**路由**
+- `routes/auth.test.ts`、`routes/budgets.test.ts`、`routes/subscriptions.test.ts`
+- `routes/transactions.test.ts`、`routes/memories.test.ts`、`routes/import.test.ts`
+- `routes/account-crud.test.ts`、`routes/admin.test.ts`
 - `routes/stats-dashboard.test.ts`
 - `routes/stats-analysis.test.ts`（**AI 提示词里的净资产口径**：变异测试验证过鉴别力，
   夹具必须带持仓否则回归测不出）
-- `routes/subscriptions.test.ts`
-- `routes/transactions.test.ts`
 
 资产 / 净资产读模型：
 - `lib/portfolio.test.ts`（纯函数口径：总价值、下界、构成占比与空态，**含资产/负债的划分**）
@@ -32,12 +34,18 @@
   「overview / dashboard 不得再长出第二套算法」的守卫，以及一条**鉴别力自检**——
   夹具必须带市值 ≠ 现金的持仓，否则护栏是恒真的）
 
-余额写入路径（增量 / 覆盖两种语义与请求级原子性）：
+余额写入路径（增量 / 覆盖两种语义、请求级原子性、停用账户不可写）：
 - `db/migration017.test.ts`（017 回填 SQL 的分支判据）
 - `routes/account-balance-model.test.ts`（余额模型主测试面：增量加减、手填覆盖、
-  基准线挡掉旧账、归属隔离、`PUT /accounts/:id` 的请求级原子性与错误码）
+  基准线挡掉旧账、归属隔离、`PUT /accounts/:id` 的请求级原子性与错误码，
+  **以及停用账户不可写 D3**：400/2001、零写入、两入口文案一致、
+  组合请求「停用+写余额」整单拒绝、「恢复+写余额」一次完成）
 - `routes/asset-snapshots-guard.test.ts`（`asset_snapshots` 表的读写护栏。**删表是故障**：
   portfolio / dashboard / analysis / 快照写入会集体 500，不是「曲线变空」那种慢问题）
+
+日期与时区（D2）：
+- `lib/helpers.test.ts`（北京时间口径：跨日边界、`beijingNow` 的星期/分钟、
+  `dateOffset`）
 
 行情 / 汇率采集（抓取 → 落库 → 降级事实）：
 - `lib/quote-acquisition.test.ts`（**module 的 test surface**：失败不写、降级分类、

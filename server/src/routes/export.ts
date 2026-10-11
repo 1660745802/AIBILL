@@ -5,6 +5,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
+import { toDateStr } from '../lib/date.js'
 
 export async function exportRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware)
@@ -117,13 +118,14 @@ export async function exportRoutes(app: FastifyInstance): Promise<void> {
 }
 
 /**
- * 格式化日期为 YYYYMMDD
+ * 导出文件名里的日期 → YYYYMMDD。
+ *
+ * 用 `lib/date.ts` 的北京时间口径（与前端 `today()` 同源），不要用服务器本地时区
+ * 的 `getFullYear/getMonth/getDate` —— 服务器 TZ 非 UTC 时会与前端差一天
+ * （审查 MAJOR-2 / D2）。文件名是展示，但既然是「今天」就不该有两个答案。
  */
-function formatDate(date: Date): string {
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, '0')
-  const d = String(date.getDate()).padStart(2, '0')
-  return `${y}${m}${d}`
+function formatDate(d: Date = new Date()): string {
+  return toDateStr(d).replace(/-/g, '')
 }
 
 /**

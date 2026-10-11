@@ -333,6 +333,49 @@ NIT 12（既有 bug，非本轮引入）。F9 与新发现的口径 bug 在下�
 
 测试 412 → 417（新增 5 条停用账户用例）。
 
+### 独立审查（第 3 轮）后的修正：4 MAJOR + 7 MINOR
+
+审查 D2/D3/NIT-12 三个提交的结论是 **NOT APPROVED**，抓到 4 个 MAJOR。
+其中 MAJOR-1/2/4 是**我自己引入的**，MAJOR-3 是我留下的脆弱点。逐条：
+
+**MAJOR-1 · D3 不变量在单次请求内可被绕过**
+`PUT {current_balance: X, is_active: 0}` —— `is_active` 进了 `updates` 但在
+`setManualBalance` **之后**才落库，module 读到的是变更前的活跃态，于是
+HTTP 200 + 余额写进了一个将停用的账户 + 基线被推进（正是 D3 要消灭的场景）。
+反向也坏了：停用账户 `{current_balance, is_active: 1}` 被拒，恢复+填余额必须拆两次请求。
+- 修：`setManualBalance` 新增 `requireActive`，account.ts 传
+  「本次请求结束后是否活跃」（`body.is_active ?? existing.is_active`）。
+  判据从「库里旧值」改成「请求后的最终态」
+- 补 2 条回归用例，变异注入（忽略 `requireActive`）**两条都变红**
+
+**MAJOR-2 · D2 漏网 + 注释里的断言是假的**
+`goals.ts` 的 `today` 仍是 UTC，且 `goal_progress.snapshot_date` 与我修掉的 bug 同构；
+我写的「全仓不再散写 toISOString()」不成立。
+- 修：`goals.ts` 的 today、`goals.ts`+`stats.ts` 的 `estimated_completion`
+  （原为「本地时区 setMonth + UTC 格式化」的错位组合）、`export.ts` 的 formatDate
+  全部收口；新增 `monthOffset()` 避免同类错位；注释改为事实陈述
+
+**MAJOR-3 · 新错误类型在 assets.ts 无 catch**
+`BalanceWriteRejected` 在 `PUT /assets/snapshots` 没有 try/catch，今天不可达
+只因一道重复的前置守卫——一旦有人删掉它，同一条件立刻变 500。
+- 修：删掉那道重复守卫（归属校验已由 module 统一承担，省一次全表查询），
+  加 try/catch 映射；两个入口的 message 也统一（原先一个说「不存在」，对停用是撒谎）
+
+**MAJOR-4 · API.md 表格被我插断**
+D3 说明被插在表格中间，「账户名称已存在」那行变成孤儿行、渲染成裸文本。
+- 修：移到整表之后
+
+**MINOR 一并修的**
+- ARCHITECTURE 措辞：`/onboarding` 向导仍在，被删的只是 Dashboard 那段死判断（原来写得像 onboarding 下线了）
+- **onboarding 第 3 步「余额设置」从来没生效过**：传的是 `balance`，schema 只认 `current_balance`，
+  zod strip → 空更新 → 400，而 `catch { ignore }` 又把 400 咽了。已改字段名并停止静默吞错
+- `applyTxn` 补 `is_active` 守卫：订阅自动记账那条裸 SQL 写余额的路径此前绕过 D3
+- DATA.md §1.2 编号倒挂（排在 §1.1 前）；TESTING.md 过时（写着 supertest，实为 `app.inject`，
+  测试文件清单漏了一大半）；web date 加「海外与服务端差一天是刻意取舍」的说明
+- D3 的一条用例零鉴别力（被删的前置守卫独立兜住了），已改成真正测 module
+
+测试 417 → 419。
+
 ### 界面重做：仪表读数（Instrument）—— 替换上一版的「账本纸」
 
 > 上一版「账本纸」的设计规格已整体重写（见 `docs/UI-DESIGN.md`）。改动原因见该文件 §0：

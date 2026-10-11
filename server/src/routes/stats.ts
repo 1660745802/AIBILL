@@ -10,7 +10,7 @@ import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { chatCompletion, AiError } from '../ai/client.js'
-import { monthRange, prevMonthRange, today as todayStr, dateOffset, beijingYearMonth } from '../lib/date.js'
+import { monthRange, prevMonthRange, today as todayStr, dateOffset, beijingYearMonth, monthOffset } from '../lib/date.js'
 import { budgetProgress, WARN_PERCENT } from '../lib/budget.js'
 import { buildPortfolio, readAccounts, readHistory, countAccounts } from '../lib/portfolio.js'
 import { loadAccountHoldings } from '../lib/investments-repo.js'
@@ -521,9 +521,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       let estimated_completion: string | null = null
       if (g.monthly_contribution > 0 && remaining > 0) {
         const monthsLeft = Math.ceil(remaining / g.monthly_contribution)
-        const est = new Date()
-        est.setMonth(est.getMonth() + monthsLeft)
-        estimated_completion = est.toISOString().split('T')[0]
+        estimated_completion = monthOffset(monthsLeft)
       }
       return {
         id: g.id,

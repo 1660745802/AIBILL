@@ -72,7 +72,10 @@ export function deltasFor(tx: any): Array<[accountId: number, delta: number]> {
   return out
 }
 
-// 「今天」的唯一口径：北京时间（见 lib/date.ts）。全仓不再散写 toISOString()。
+/**
+ * 「今天」的唯一口径：北京时间，见 `lib/date.ts`。
+ * （import 位置在文件中段是因为紧跟它的就是这个函数；ESM 会提升，不影响可用性。）
+ */
 import { today } from './date.js'
 
 function toId(v: unknown): number | null {
@@ -102,9 +105,22 @@ export function applyTxn(
     // 跨用户改余额留了一条合法路径（PUT /transactions/:id 曾真的出过这个事）。
     // 现在必填：想写别人余额的代码必须先拿到 userId，拿不到就编译不过。
     const row = db
-      .prepare('SELECT balance, balance_as_of_txn_id FROM accounts WHERE id = ? AND user_id = ?')
-      .get(accountId, userId)
+      .prepare('SELECT balance, balance_as_of_txn_id, is_active FROM accounts WHERE id = ? AND user_id = ?')
+      .get(accountId, userId) as { balance: number; balance_as_of_txn_id: number | null; is_active: number } | undefined
     if (!row) continue
+    /**
+     * 停用账户不调整余额（D3，与 setManualBalance 同一理由）。
+     *
+     * 停用账户不在任何读模型里（`is_active=1` 才进），却会被账单加减余额、
+     * 推进基线——等于写进一个不被读的地方，将来恢复时那之间的差额会对不上。
+     * 这条覆盖**所有**调用点：手动记账（POST/PUT/DELETE /transactions）与
+     * `scheduler` 的订阅自动记账都经由本函数（那个路径用裸 SQL 建账单再调
+     * applyTxn，是先前唯一绕过 `is_active` 校验的写余额路径）。
+     */
+    if (row.is_active !== 1) {
+      out.push({ accountId, applied: false })
+      continue
+    }
 
     // 基准线之前就已存在的账单不再影响余额（否则就是重复扣减）
     const asOfId = row.balance_as_of_txn_id == null ? 0 : Number(row.balance_as_of_txn_id)
@@ -117,20 +133,6 @@ export function applyTxn(
   }
   return out
 }
-
-/**
- * 「今天」= **北京时间**（`lib/date.ts` 的 `today()`，见文件头 import），全仓唯一口径。
- *
- * 抽出来是因为两个写入函数都要用它，且**调用方必须拿到同一个值**：
- * 响应里的 `date` 和写进快照行的 `snapshot_date` 一旦分叉，
- * 「今日快照已存在」这句话就会对不上用户看到的日期。
- *
- * > **D2 已决**：原先用 SQLite 的 `date('now')`（UTC），与 `lib/date.ts`、
- * > `scheduler.beijingDate()` 三套并存。北京 00:00–08:00 指向不同日期，
- * > 深夜记账会把快照记到前一天。现已统一为北京时间。
- * > 快照日期语义**确实变了**：历史 `snapshot_date` 不动，新数据在北京时间
- * > 00:00–08:00 之间落在「当天」而不是「昨天」。曲线翻页时刻随之对齐。
- */
 
 /**
  * 手填余额 = **覆盖**，并把基准线刷到此刻。
@@ -210,13 +212,23 @@ export class BalanceWriteRejected extends Error {
  *
  * 修之前两条入口口径还相反：`PUT /assets/snapshots` 已拒（守卫带 `is_active`），
  * `PUT /api/accounts/:id` 却照写。现由本函数统一，两条路径同生共死。
+ *
+ * ## 日期口径（D2）
+ *
+ * 快照行的 `snapshot_date` 与响应里的 `date` 都取 `lib/date.ts` 的 `today()`
+ * ——**北京时间，全仓唯一口径**（原先是 SQLite `date('now')`，即 UTC，
+ * 与 `lib/date.ts`、`scheduler.beijingDate()` 三套并存，北京 00:00–08:00
+ * 会记到前一天）。
+ *
+ * 两者**必须同值**：一旦分叉，「今日快照已存在」这句话就对不上用户看到的日期。
+ * 快照日期语义确实变了：历史行不动，新数据在北京 00:00–08:00 之间落在「当天」。
  */
 export function setManualBalance(
   db: any,
   userId: number,
   accountId: number,
   value: number,
-  opts?: { date?: string },
+  opts?: { date?: string; requireActive?: number },
 ): void {
   const date = opts?.date ?? today()
 
@@ -225,8 +237,21 @@ export function setManualBalance(
       .prepare('SELECT id, is_active FROM accounts WHERE id = ? AND user_id = ?')
       .get(accountId, userId) as { id: number; is_active: number } | undefined
     if (!owned) throw new BalanceWriteRejected('not_owned', accountId)
-    // 停用账户不可写（见函数头「停用账户不写」）
-    if (owned.is_active !== 1) throw new BalanceWriteRejected('inactive', accountId)
+    /**
+     * 停用账户不可写（见函数头「停用账户不写」）。
+     *
+     * `requireActive` = 调用方声明的「**这次请求结束后**账户是否活跃」。
+     * 不传则按库里当前值判。
+     *
+     * 为什么要这个参数：`PUT /api/accounts/:id` 能同时改 `is_active` 与
+     * `current_balance`，而 `is_active` 的 UPDATE 在本函数**之后**才落库
+     * （见 `account.ts`）。若只看库里旧值，一次请求就能「先写余额、再把自己停用」，
+     * 于是产生一个「is_active=0 但余额已写、基线已推进」的账户——正是本函数要
+     * 消灭的那件事（审查 MAJOR-1）。而反向也要成立：停用账户「恢复 + 填余额」
+     * 应当**允许一次请求完成**，不能因为旧值是停用就拒。
+     */
+    const effectiveActive = opts?.requireActive ?? owned.is_active
+    if (effectiveActive !== 1) throw new BalanceWriteRejected('inactive', accountId)
 
     // 基准线 = 此刻已存在的最大流水 id。之后新建的才参与加减。
     const maxId = (db

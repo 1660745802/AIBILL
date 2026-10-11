@@ -16,7 +16,7 @@ import { getDb } from '../db/index.js'
 import { buildPortfolio, readAccounts, readHistory, countAccounts } from '../lib/portfolio.js'
 import { today as todayStr } from '../lib/date.js'
 import { loadAccountHoldings } from '../lib/investments-repo.js'
-import { setManualBalance } from '../lib/account-balance.js'
+import { setManualBalance, BalanceWriteRejected } from '../lib/account-balance.js'
 
 const updateAccountSchema = z.object({
   asset_type: z.enum(['liquid', 'savings', 'investment', 'credit', 'loan', 'property', 'other']).optional(),
@@ -208,29 +208,35 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
     const userId = request.user!.userId
     const date = body.data.date ?? todayStr()
 
-    // 账户归属校验：不能给别人的账户写快照
-    const owned = new Set(
-      (db.prepare('SELECT id FROM accounts WHERE user_id = ? AND is_active = 1')
-        .all(userId) as Array<{ id: number }>).map((r) => r.id),
-    )
-    const foreign = body.data.items.find((i) => !owned.has(i.account_id))
-    if (foreign) {
-      reply.code(400)
-      return { code: 2001, data: null, message: `账户 ${foreign.account_id} 不存在或不属于当前用户` }
-    }
-
-    // 快照行由 setManualBalance() 统一写入（upsert），这里不再重复写一遍。
-    const run = db.transaction(() => {
-      for (const item of body.data.items) {
-        // 手填 = **覆盖**余额，并把基准线刷到此刻。
-        //
-        // ⚠️ 基准线不能用用户选的 `date`：`date` 可补录到过去，基准线一旦倒退，
-        // 会把「那天之后、今天之前」已生效的账单效果抹掉，而那些账单又仍被判为
-        // 「基准线之外」——删掉还会再减一次。基准线只前进，date 只用于快照行日期。
-        setManualBalance(db, userId, item.account_id, item.balance, { date })
+    /**
+     * 归属与活跃态校验**由 module 统一承担**（`setManualBalance` 抛
+     * `BalanceWriteRejected`），路由不再重复查一遍——之前这里有一道带
+     * `is_active = 1` 的前置守卫，与 module 的检查重复，且它的 message
+     * 是「不存在或不属于当前用户」，对**停用**账户来说是撒谎（两条入口文案不一致）。
+     * 审查 MAJOR-3：若日后有人删掉那道守卫，新错误类型无人接 ⇒ 同一条件直接 500。
+     *
+     * 删掉它同时省掉一次全表查询。校验仍在事务内、逐账户、整批同生共死。
+     */
+    try {
+      // 快照行由 setManualBalance() 统一写入（upsert），这里不再重复写一遍。
+      const run = db.transaction(() => {
+        for (const item of body.data.items) {
+          // 手填 = **覆盖**余额，并把基准线刷到此刻。
+          //
+          // ⚠️ 基准线不能用用户选的 `date`：`date` 可补录到过去，基准线一旦倒退，
+          // 会把「那天之后、今天之前」已生效的账单效果抹掉，而那些账单又仍被判为
+          // 「基准线之外」——删掉还会再减一次。基准线只前进，date 只用于快照行日期。
+          setManualBalance(db, userId, item.account_id, item.balance, { date })
+        }
+      })
+      run()
+    } catch (err) {
+      if (err instanceof BalanceWriteRejected) {
+        reply.code(400)
+        return { code: 2001, data: null, message: err.message }
       }
-    })
-    run()
+      throw err
+    }
 
     const portfolio = buildPortfolio(
       readAccounts(db, userId),

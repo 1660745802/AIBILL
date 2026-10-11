@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import api from '@/api/index'
 import type { Account } from '@/api/types'
 import { generateUUID } from '@/utils/uuid'
+import { useToast } from '@/composables/useToast'
 import Money from '@/components/ui/Money.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import LedgerLabel from '@/components/ui/LedgerLabel.vue'
@@ -29,6 +30,7 @@ const trialLoading = ref(false)
 const trialParsed = ref<any[] | null>(null)
 const trialSuccess = ref(false)
 const trialError = ref('')
+const toast = useToast()
 
 // 示范短语（让新用户一键体验）
 const examplePhrases = [
@@ -98,13 +100,21 @@ async function confirmStep3() {
     const val = balances.value[id]
     if (val && parseFloat(val) !== 0) {
       const cents = Math.round(parseFloat(val) * 100)
-      updates.push(api.put(`/accounts/${id}`, { balance: cents }))
+      // 字段必须是 `current_balance`：服务端 `updateAccountSchema` 只认它，
+      // 之前这里写的是 `balance`——zod 把未知键 strip 掉 → 空更新 → 400，
+      // 而下面 `catch { ignore }` 又把 400 咽了，于是「余额设置」这一步
+      // **从来没生效过**，用户却以为存上了（审查 M-9）。
+      updates.push(api.put(`/accounts/${id}`, { current_balance: cents }))
     }
   }
   if (updates.length > 0) {
     try {
       await Promise.all(updates)
-    } catch { /* ignore */ }
+    } catch {
+      // 不再静默：余额没存上要让用户知道，而不是直接进入下一步
+      toast.error('余额没保存成功，请重试')
+      return
+    }
   }
   nextStep()
 }

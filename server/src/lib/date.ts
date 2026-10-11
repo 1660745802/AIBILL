@@ -98,3 +98,15 @@ export function prevMonthRange(year: number, month: number): { start: string; en
 export function dateOffset(days: number): string {
   return toDateStr(new Date(Date.now() + days * 86_400_000))
 }
+
+/**
+ * 从**今天（北京时间）**起偏移 n 个月的 YYYY-MM-DD（n 可为负）。
+ *
+ * 用于「预计完成日期」这类推算。⚠️ 不要写成
+ * `new Date(); d.setMonth(d.getMonth()+n); d.toISOString().slice(0,10)` ——
+ * 那是「本地时区做加月 + UTC 格式化」的**错位组合**，服务器 TZ 非 UTC 时会差一天。
+ */
+export function monthOffset(months: number): string {
+  const b = beijingWallClock()
+  return toDateStr(new Date(Date.UTC(b.getUTCFullYear(), b.getUTCMonth() + months, b.getUTCDate())))
+}

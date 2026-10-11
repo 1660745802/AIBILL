@@ -6,6 +6,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
+import { today as todayStr, monthOffset } from '../lib/date.js'
 
 const createGoalSchema = z.object({
   name: z.string().min(1, '目标名称不能为空').max(100),
@@ -70,9 +71,7 @@ export async function goalsRoutes(app: FastifyInstance): Promise<void> {
       let estimated_completion: string | null = null
       if (g.monthly_contribution > 0 && remaining > 0) {
         const monthsLeft = Math.ceil(remaining / g.monthly_contribution)
-        const est = new Date()
-        est.setMonth(est.getMonth() + monthsLeft)
-        estimated_completion = est.toISOString().split('T')[0]
+        estimated_completion = monthOffset(monthsLeft)
       }
 
       return { ...g, percent, remaining, estimated_completion }
@@ -199,7 +198,7 @@ export async function goalsRoutes(app: FastifyInstance): Promise<void> {
       const body = progressSchema.parse(request.body)
       const db = getDb()
       const userId = request.user!.userId
-      const today = new Date().toISOString().split('T')[0]
+      const today = todayStr()
 
       // 验证目标归属
       const goal = db.prepare(

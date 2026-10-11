@@ -134,11 +134,16 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
        */
       const outcome = db.transaction(() => {
         const existing = db
-          .prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
-          .get(Number(id), userId)
+          .prepare('SELECT id, is_active FROM accounts WHERE id = ? AND user_id = ?')
+          .get(Number(id), userId) as { id: number; is_active: number } | undefined
         if (!existing) {
           return { status: 404, body: { code: 3002, data: null, message: '账户不存在' } }
         }
+        /**
+         * 「本次请求结束后」账户是否活跃。余额写入按它判，而不是按库里的旧值——
+         * 否则一次请求就能「先写余额、再把自己停用」（审查 MAJOR-1）。
+         */
+        const effectiveActive = body.is_active ?? existing.is_active
 
         const updates: string[] = []
         const params: unknown[] = []
@@ -160,12 +165,12 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
           // 走 setManualBalance（upsert 快照）：之前这里用裸 INSERT，
           // 同一天改第二次余额会撞 UNIQUE(user_id, account_id, snapshot_date) → 500，
           // 而且它在 UPDATE 之前执行，所以余额一点没改就失败了。
-          setManualBalance(db, userId, Number(id), body.current_balance)
+          setManualBalance(db, userId, Number(id), body.current_balance, { requireActive: effectiveActive })
         } else if (body.initial_balance !== undefined) {
           // 017 之后 balance 才是读取端唯一真源。**必须走 setManualBalance**：
           // 直接覆盖 balance 而不推进基准线，会把「基准线之后已生效的账单」抹掉，
           // 而那些账单之后被删除时又会被再减一次 → 永久差额。
-          setManualBalance(db, userId, Number(id), body.initial_balance)
+          setManualBalance(db, userId, Number(id), body.initial_balance, { requireActive: effectiveActive })
           updates.push('initial_balance = ?')
           params.push(body.initial_balance)
         }
