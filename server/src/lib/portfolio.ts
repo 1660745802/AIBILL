@@ -332,41 +332,78 @@ export function buildPortfolio(
   }
   const netWorthComplete = unpricedAccounts === 0
 
-  // 用某日期 D 时每个账户的「截至 D 最新快照 + 当前持仓估值」算总价值
-  function valueAt(perAccount: Map<number, SnapshotPoint>): number {
-    let sum = 0
-    for (const [accId, r] of perAccount) {
-      const h = holdingsByAccount.get(accId) ?? null
-      if (h) {
-        if (h.marketValue != null) sum += h.marketValue + r.balance
-        // 行情缺失则该账户不计入（与 netWorth 口径一致）
-      } else {
-        sum += r.balance
-      }
-    }
-    return sum
+  /**
+   * 某条快照对净资产的贡献（O(1)，给增量扫描用）。
+   *
+   * **口径必须与 `netWorth` 逐字一致**：行情缺失的账户仍然计它的现金。
+   *
+   * 曾经这里是「行情缺失则该账户不计入」，注释还写着「与 netWorth 口径一致」——
+   * **那句话是假的**：`netWorth` 走 `a.value ?? a.cash`（计现金），
+   * 而这里把账户整个跳过。后果是 `previousNetWorth` 少了未定价账户的现金，
+   * 于是 `change = netWorth - previousNetWorth` 会凭空多出那笔现金：
+   * 账户 A（持仓取不到价、现金 ¥28,000）+ 账户 B（现金 ¥100,000）时，
+   * 实际什么都没变却显示「涨了 ¥28,000」。
+   *
+   * `curve` 一直是正确口径（未定价的 `balance` 计入 cash），所以当时只有这里错。
+   */
+  function contribution(accId: number, r: SnapshotPoint): number {
+    const h = holdingsByAccount.get(accId) ?? null
+    if (!h) return r.balance            // 无持仓：余额即总价值
+    return (h.marketValue ?? 0) + r.balance // 未定价 ⇒ 只计现金（下界）
   }
 
-  // 上一次「全员账户都覆盖到」的完整读数，用它算日变动。
-  // 判定标准：存在一个日期 D（严格早于最新数据），每个账户在 D 或之前都有快照。
-  // 找不到就返回 null —— 不能拿“只更新了两个账户”的部分之和冒充全量。
-  const dates = [...new Set(history.map((h) => h.snapshot_date))].sort()
-  const latestDate = dates[dates.length - 1] ?? ''
+  /**
+   * 上一次「全员账户都覆盖到」的完整读数，用它算日变动。
+   *
+   * 判定标准：存在一个日期 D（**严格早于**最新数据），每个账户在 D 或之前都有快照。
+   * 找不到就返回 null —— 不能拿「只更新了两个账户」的部分之和冒充全量。
+   *
+   * ## 为什么是增量扫描
+   *
+   * 原实现是「每个候选日期全量重建 `perAccount`」的 O(日期 × 行数)，
+   * 且每次重建后又用 O(账户数) 的 `valueAt` 求和。实测 20 账户 / 1095 天 /
+   * 16425 行 = 157ms、30 账户 = 253ms，**同步阻塞事件循环**，而
+   * `GET /api/stats/dashboard` 是每个页面都打的热端点。
+   *
+   * 现在：先按日期排序，**每行只处理一次**，用 running sum 增量维护
+   * `Σ contribution`。总量 O(n log n)（排序）+ O(n)，空间 O(账户数)。
+   *
+   * 两个不能省的细节：
+   *   1. **同一天的多行要应用完再判定**，否则会取到当天的中间态；
+   *   2. 同账户同日期的重复行保留**先到者**（与原实现的 `>` 严格比较一致）。
+   */
+  const ordered = [...history].sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date))
+  const latestDate = ordered[ordered.length - 1]?.snapshot_date ?? ''
+  const perAccount = new Map<number, SnapshotPoint>()
+  let runningValue = 0
   let previousNetWorth: number | null = null
-  for (let i = dates.length - 1; i >= 0; i--) {
-    const d = dates[i]!
-    if (d >= latestDate) continue
-    const perAccount = new Map<number, SnapshotPoint>()
-    for (const h of history) {
-      if (h.snapshot_date > d) continue
-      const cur = perAccount.get(h.account_id)
-      if (!cur || h.snapshot_date > cur.snapshot_date) perAccount.set(h.account_id, h)
-    }
-    if (expectedAccounts > 0 && perAccount.size === expectedAccounts) {
-      previousNetWorth = valueAt(perAccount)
-      break
+  let pendingDate = ''
+
+  const flushDate = () => {
+    if (
+      pendingDate !== '' &&
+      pendingDate < latestDate &&
+      expectedAccounts > 0 &&
+      perAccount.size === expectedAccounts
+    ) {
+      previousNetWorth = runningValue
     }
   }
+
+  for (const h of ordered) {
+    if (h.snapshot_date !== pendingDate) {
+      flushDate()
+      pendingDate = h.snapshot_date
+    }
+    const cur = perAccount.get(h.account_id)
+    // 严格 `>`：同账户同日期的重复行保留先到者，与原实现一致
+    if (!cur || h.snapshot_date > cur.snapshot_date) {
+      if (cur) runningValue -= contribution(h.account_id, cur)
+      perAccount.set(h.account_id, h)
+      runningValue += contribution(h.account_id, h)
+    }
+  }
+  flushDate()
 
   const change = previousNetWorth != null ? netWorth - previousNetWorth : null
 

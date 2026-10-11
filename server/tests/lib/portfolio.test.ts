@@ -14,7 +14,12 @@
  * 数据依据：线上 553 笔交易只有 1 笔带 account_id → 绝不能从流水回算资产。
  */
 import { describe, it, expect } from 'vitest'
-import { buildPortfolio, type AccountRow, type SnapshotPoint } from '../../src/lib/portfolio.js'
+import {
+  buildPortfolio,
+  type AccountRow,
+  type SnapshotPoint,
+  type AccountHoldings,
+} from '../../src/lib/portfolio.js'
 
 const TODAY = '2026-10-10'
 const INV = 2
@@ -446,5 +451,143 @@ describe('资产 / 负债的划分', () => {
     expect(p.netWorth).toBe(0)
     expect(p.liability.total).toBe(0)
     expect(p.assetComposition.total).toBe(0)
+  })
+})
+
+/* ══════════════════════════════════════════════════════════════
+   `previousNetWorth`：口径修正 + 算法等价
+
+   两件事分开验证，别混：
+     ① **口径**（语义）：行情缺失的账户要计现金，与 netWorth 一致
+     ② **算法**（实现）：增量扫描与朴素 O(日期×行数) 逐值相等
+   否则重构改了行为、还是口径改错了，从测试结果上分不出来。
+   ══════════════════════════════════════════════════════════════ */
+
+/**
+ * 参照实现：**朴素 O(日期 × 行数)** 的原算法（含求和）。
+ * 只用于对拍，故意不优化。
+ */
+function naivePreviousNetWorth(
+  history: SnapshotPoint[],
+  expectedAccounts: number,
+  holdingsByAccount: Map<number, AccountHoldings>,
+): number | null {
+  const contribution = (accId: number, r: SnapshotPoint) => {
+    const h = holdingsByAccount.get(accId) ?? null
+    if (!h) return r.balance
+    return (h.marketValue ?? 0) + r.balance
+  }
+  const dates = [...new Set(history.map((h) => h.snapshot_date))].sort()
+  const latestDate = dates[dates.length - 1] ?? ''
+  for (let i = dates.length - 1; i >= 0; i--) {
+    const d = dates[i]!
+    if (d >= latestDate) continue
+    const perAccount = new Map<number, SnapshotPoint>()
+    for (const h of history) {
+      if (h.snapshot_date > d) continue
+      const cur = perAccount.get(h.account_id)
+      if (!cur || h.snapshot_date > cur.snapshot_date) perAccount.set(h.account_id, h)
+    }
+    if (expectedAccounts > 0 && perAccount.size === expectedAccounts) {
+      let sum = 0
+      for (const [accId, r] of perAccount) sum += contribution(accId, r)
+      return sum
+    }
+  }
+  return null
+}
+
+/** 可复现的伪随机（固定种子，失败时可重放） */
+function mulberry32(seed: number) {
+  return () => {
+    seed |= 0
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+describe('previousNetWorth · 口径与算法', () => {
+  it('（口径修正）行情缺失的账户要计现金，与 netWorth 一致', () => {
+    /**
+     * 曾经的 bug：`valueAt` 写「行情缺失则该账户不计入」，注释却说
+     * 「与 netWorth 口径一致」——**那句话是假的**。
+     *
+     * 场景：A（持仓取不到价、现金 2,800,000）+ B（现金 10,000,000）。
+     * 今天与昨天都有快照。旧实现：昨天 = 10,000,000（A 被整个跳过），
+     * 今天 netWorth = 12,800,000 ⇒ change 显示「涨了 2,800,000」，
+     * 而实际上什么都没变。
+     */
+    const holdings = new Map<number, AccountHoldings>([
+      [1, { marketValue: null, unpricedCount: 1 }], // A：持仓取不到价
+    ])
+    const history: SnapshotPoint[] = [
+      { account_id: 1, snapshot_date: '2026-10-01', balance: 2800000 },
+      { account_id: 2, snapshot_date: '2026-10-01', balance: 10000000 },
+      { account_id: 1, snapshot_date: '2026-10-02', balance: 2800000 },
+      { account_id: 2, snapshot_date: '2026-10-02', balance: 10000000 },
+    ]
+    const rows = [acc(1, { balance: 2800000 }), acc(2, { balance: 10000000 })]
+
+    const p = buildPortfolio(rows, history, 2, '2026-10-10', holdings)
+
+    // 两天都一样 ⇒ 净资产 12,800,000，日变动必须是 0，不是 2,800,000
+    expect(p.netWorth).toBe(12800000)
+    expect(p.previousNetWorth).toBe(12800000)
+    expect(p.change).toBe(0)
+    // 而且必须标成下界（有账户没取到价）
+    expect(p.netWorthComplete).toBe(false)
+  })
+
+  it('（算法等价）增量扫描 ≡ 朴素 O(日期×行数)，60 组随机输入', () => {
+    /**
+     * 重构（F9）是纯算法优化，**语义不能变**。这里用一个故意不优化的
+     * 参照实现对拍：任何一组输入上两者不一致，就说明重构引入了行为差异。
+     */
+    const rand = mulberry32(20261011)
+    for (let round = 0; round < 60; round++) {
+      const accountCount = 1 + Math.floor(rand() * 5)
+      const dateCount = 1 + Math.floor(rand() * 8)
+      const accountIds = Array.from({ length: accountCount }, (_, i) => i + 1)
+      const expectedAccounts = rand() < 0.2 ? 0 : accountCount // 含「找不到全量覆盖」分支
+
+      // 持仓：部分账户无持仓，部分定价，部分未定价
+      const holdings = new Map<number, AccountHoldings>()
+      for (const id of accountIds) {
+        const kind = rand()
+        if (kind < 0.35) holdings.set(id, { marketValue: Math.floor(rand() * 100000), unpricedCount: 0 })
+        else if (kind < 0.55) holdings.set(id, { marketValue: null, unpricedCount: 1 })
+      }
+
+      // 快照：随机账户 × 随机日期（可能缺某些账户/日期），
+      // 且**刻意制造同账户同日期的重复行**——两个实现对「重复行取哪一个」的
+      // 约定必须一致（保留先到者），否则排序稳定性一变就悄悄分叉。
+      const history: SnapshotPoint[] = []
+      for (let d = 0; d < dateCount; d++) {
+        const date = `2026-01-${String(d + 1).padStart(2, '0')}`
+        for (const id of accountIds) {
+          if (rand() < 0.55) {
+            history.push({ account_id: id, snapshot_date: date, balance: Math.floor(rand() * 200000) - 50000 })
+            // 同键重复行（约 20% 概率）
+            if (rand() < 0.2) {
+              history.push({ account_id: id, snapshot_date: date, balance: Math.floor(rand() * 200000) - 50000 })
+            }
+          }
+        }
+      }
+      // 刻意打乱顺序，验证实现不依赖输入顺序
+      for (let i = history.length - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1))
+        ;[history[i], history[j]] = [history[j]!, history[i]!]
+      }
+
+      const rows = accountIds.map((id) => acc(id, { balance: 0 }))
+      const fast = buildPortfolio(rows, history, expectedAccounts, '2026-12-31', holdings)
+        .previousNetWorth
+      const slow = naivePreviousNetWorth(history, expectedAccounts, holdings)
+
+      expect(fast, `round ${round}`).toBe(slow)
+    }
   })
 })
