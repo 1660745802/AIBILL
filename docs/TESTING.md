@@ -12,7 +12,7 @@
 | 集成测试 | API 路由 + DB（内存 SQLite） | Vitest + Fastify `app.inject` |
 | E2E | 核心用户流程 | 手动验证 / 后续 Playwright |
 
-当前测试文件位于 `server/tests/`（30 个文件 / 419 用例），按关注点分组：
+当前测试文件位于 `server/tests/`（30 个文件 / 423 用例），按关注点分组：
 
 **AI 解析**
 - `ai/category-matcher.test.ts`、`ai/parser.test.ts`、`ai/verify.test.ts`
@@ -38,14 +38,15 @@
 - `db/migration017.test.ts`（017 回填 SQL 的分支判据）
 - `routes/account-balance-model.test.ts`（余额模型主测试面：增量加减、手填覆盖、
   基准线挡掉旧账、归属隔离、`PUT /accounts/:id` 的请求级原子性与错误码，
-  **以及停用账户不可写 D3**：400/2001、零写入、两入口文案一致、
+  **撤销对停用账户仍然生效**（审查 MAJOR-A 回归），
+  **停用账户不可写 D3**：400/2001、零写入、两入口文案一致、
   组合请求「停用+写余额」整单拒绝、「恢复+写余额」一次完成）
 - `routes/asset-snapshots-guard.test.ts`（`asset_snapshots` 表的读写护栏。**删表是故障**：
   portfolio / dashboard / analysis / 快照写入会集体 500，不是「曲线变空」那种慢问题）
 
 日期与时区（D2）：
 - `lib/helpers.test.ts`（北京时间口径：跨日边界、`beijingNow` 的星期/分钟、
-  `dateOffset`）
+  `dateOffset`、**`monthOffsetFrom` 月末钳位与迭代不漂移**）
 
 行情 / 汇率采集（抓取 → 落库 → 降级事实）：
 - `lib/quote-acquisition.test.ts`（**module 的 test surface**：失败不写、降级分类、

@@ -9,7 +9,7 @@
 import { getDb } from '../db/index.js'
 import { appLog as log } from './logger.js'
 import crypto from 'node:crypto'
-import { beijingNow, beijingDate } from '../lib/date.js'
+import { beijingNow, beijingDate, monthOffsetFrom } from '../lib/date.js'
 import { today as todayStr, toDateStr } from '../lib/date.js'
 import { currencyOf, marketOfCode, type Market } from '../lib/quotes.js'
 import { acquireAndStorePrices, acquireAndStoreFxRates } from '../lib/quote-acquisition.js'
@@ -25,12 +25,28 @@ function processSubscriptionAutoRecord(): void {
   const db = getDb()
   const today = todayStr()
 
+  /**
+   * 到期订阅里，`account_id` 指向**停用账户**的要跳过（D3）。
+   *
+   * 手动记账（`POST/PUT /transactions`）在路由层已用 `is_active = 1` 过滤，
+   * 但订阅自动记账是后台裸 SQL 建账单、只经 `applyTxn` 改余额——那是先前唯一
+   * 绕过活跃态校验的写余额路径。停用账户不在任何读模型里，却会被自动记账
+   * 改余额、推进基线，等于写进一个不被读的地方。
+   *
+   * ⚠️ 注意：守卫只能放在**这里**（正向挑订阅），不能放进 `applyTxn`。
+   * `applyTxn` 是正负两向都走的，而撤销（删账单 / 还原）**必须**能对停用账户
+   * 生效——否则建账单时账户活跃、之后删账户、再删账单时余额被静默跳过，
+   * 账户还原后金额永久对不上（审查 MAJOR-A）。applyTxn 保持只按归属过滤。
+   */
   const dueSubscriptions = db
     .prepare(
-      `SELECT * FROM subscriptions
-       WHERE status = 'active' AND auto_record = 1
-         AND next_payment_date IS NOT NULL
-         AND next_payment_date <= ?`,
+      `SELECT s.* FROM subscriptions s
+       WHERE s.status = 'active' AND s.auto_record = 1
+         AND s.next_payment_date IS NOT NULL
+         AND s.next_payment_date <= ?
+         AND (s.account_id IS NULL
+              OR EXISTS (SELECT 1 FROM accounts a
+                         WHERE a.id = s.account_id AND a.is_active = 1))`,
     )
     .all(today) as Array<{
     id: number
@@ -102,11 +118,11 @@ function processSubscriptionAutoRecord(): void {
         status: 'confirmed',
       }, 1, sub.user_id)
 
-      // 计算下一个付款日
+      // 计算下一个付款日：按「本付款日 + N 月」钳位到月末（monthOffsetFrom）。
+      // 原先用 `Date.setMonth` 会溢出（2026-01-31 +1 月 = 3-03），逐月漂移且
+      // 永不收敛（审查 MAJOR-C）；monthOffsetFrom 不会。
       const months = sub.cycle === 'monthly' ? 1 : sub.cycle === 'quarterly' ? 3 : 12
-      const nextDate = new Date(sub.next_payment_date)
-      nextDate.setMonth(nextDate.getMonth() + months)
-      const nextPaymentStr = toDateStr(nextDate)
+      const nextPaymentStr = monthOffsetFrom(sub.next_payment_date, months)
 
       updateNextDate.run(nextPaymentStr, sub.id)
 

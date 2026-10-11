@@ -100,13 +100,40 @@ export function dateOffset(days: number): string {
 }
 
 /**
- * 从**今天（北京时间）**起偏移 n 个月的 YYYY-MM-DD（n 可为负）。
+ * 从**今天（北京时间）**起偏移 n 个月的 YYYY-MM-DD（n 可为负），**钳位到目标月最后一天**。
  *
  * 用于「预计完成日期」这类推算。⚠️ 不要写成
  * `new Date(); d.setMonth(d.getMonth()+n); d.toISOString().slice(0,10)` ——
  * 那是「本地时区做加月 + UTC 格式化」的**错位组合**，服务器 TZ 非 UTC 时会差一天。
+ *
+ * ⚠️ 也不能直接 `Date.UTC(y, m+n, day)`：它不钳位，`Date.UTC(2026,1,31)`
+ * （1月31日+1月）会归一化成 **3月3日**（溢出到下个月），约 10% 的日期会踩到
+ * （审查 MAJOR-B）。必须先钳到目标月的天数。
  */
 export function monthOffset(months: number): string {
   const b = beijingWallClock()
-  return toDateStr(new Date(Date.UTC(b.getUTCFullYear(), b.getUTCMonth() + months, b.getUTCDate())))
+  return addMonths(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate(), months)
+}
+
+/**
+ * 从**任意 Beijing 日期串**（YYYY-MM-DD）偏移 n 个月，同样钳位到月末。
+ *
+ * 订阅的 `next_payment_date` 推进用它（`subscription.ts` 的 calcNextPayment 与
+ * `scheduler.ts` 的到期推进）——那两处原先用 `setMonth` 会溢出且漂移
+ * （2026-01-31 +1 月会变成 3-03，再逐月累加，永不收敛，审查 MAJOR-C）。
+ */
+export function monthOffsetFrom(dateStr: string, months: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr)
+  if (!m) return monthOffset(months)
+  return addMonths(Number(m[1]), Number(m[2]) - 1, Number(m[3]), months)
+}
+
+/** 年月日 + n 个月，日钳位到目标月最后一天（内部） */
+function addMonths(year: number, month0: number, day: number, months: number): string {
+  const target = month0 + months
+  const y = year + Math.floor(target / 12)
+  const mo = ((target % 12) + 12) % 12
+  const lastDay = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate()
+  const d = Math.min(day, lastDay)
+  return `${y}-${pad(mo + 1)}-${pad(d)}`
 }

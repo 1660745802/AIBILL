@@ -94,6 +94,50 @@ describe('账户余额模型（增量 + 覆盖）', () => {
     expect(await balanceOf(bankId)).toBe(afterAdd - 3000)
   })
 
+  /**
+   * **审查 MAJOR-A 回归**：撤销（删账单 / 还原 / 改金额）必须对**停用账户也生效**。
+   *
+   * 曾经把 `is_active` 守卫放进 `applyTxn`，以为能统一口径，结果它是不对称的：
+   * 正向记账路由层本来就查了 `is_active=1`（守卫冗余），
+   * 而撤销路径不查 ⇒ 守卫把撤销**静默丢掉**：
+   *
+   *   建账单(账户活跃) → 删账户 → 删账单 → 还原账户 ⇒ 余额永久少一笔
+   *
+   * 守卫只能放在 scheduler 挑订阅那一步（正向），`applyTxn` 保持只按归属过滤。
+   * 这条测试守住「撤销永远生效」，防止守卫再被加回来。
+   */
+  it('账户停用期间删除账单，余额要退回；还原账户后金额仍对得上', async () => {
+    const start = await balanceOf(bankId)
+    const res = await addTxn({ type: 'expense', amount: 5000, date: '2099-02-01', description: '停用期间删', account_id: bankId })
+    const id = JSON.parse(res.payload).data.created[0].id
+    expect(await balanceOf(bankId)).toBe(start - 5000)
+
+    // 停用账户（软删）
+    await app.inject({ method: 'DELETE', url: `/api/accounts/${bankId}`, headers: authHeaders(token) })
+
+    // 期间删账单 → 余额必须退回（守卫不能把它丢掉）
+    await app.inject({ method: 'DELETE', url: `/api/transactions/${id}`, headers: authHeaders(token) })
+
+    // 还原账户
+    await app.inject({ method: 'POST', url: `/api/accounts/${bankId}/restore`, headers: authHeaders(token), payload: {} })
+
+    expect(await balanceOf(bankId)).toBe(start)
+  })
+
+  it('账户停用期间改账单金额，余额跟着变；还原后对得上', async () => {
+    const start = await balanceOf(bankId)
+    const res = await addTxn({ type: 'expense', amount: 5000, date: '2099-03-01', description: '停用期间改', account_id: bankId })
+    const id = JSON.parse(res.payload).data.created[0].id
+
+    await app.inject({ method: 'DELETE', url: `/api/accounts/${bankId}`, headers: authHeaders(token) })
+
+    // 改金额 5000 → 20000：应多扣 15000（与账户是否停用无关）
+    await app.inject({ method: 'PUT', url: `/api/transactions/${id}`, headers: authHeaders(token), payload: { amount: 20000 } })
+    await app.inject({ method: 'POST', url: `/api/accounts/${bankId}/restore`, headers: authHeaders(token), payload: {} })
+
+    expect(await balanceOf(bankId)).toBe(start - 20000)
+  })
+
   it('手填覆盖后，基准线之前的历史账单不再重复计算', async () => {
     // 这是核心不变式：手填一次，然后去改那笔「已经烤进手填值里」的旧账，
     // 余额不能变——否则说明旧账被减了两次。

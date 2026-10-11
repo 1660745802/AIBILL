@@ -105,22 +105,9 @@ export function applyTxn(
     // 跨用户改余额留了一条合法路径（PUT /transactions/:id 曾真的出过这个事）。
     // 现在必填：想写别人余额的代码必须先拿到 userId，拿不到就编译不过。
     const row = db
-      .prepare('SELECT balance, balance_as_of_txn_id, is_active FROM accounts WHERE id = ? AND user_id = ?')
-      .get(accountId, userId) as { balance: number; balance_as_of_txn_id: number | null; is_active: number } | undefined
+      .prepare('SELECT balance, balance_as_of_txn_id FROM accounts WHERE id = ? AND user_id = ?')
+      .get(accountId, userId)
     if (!row) continue
-    /**
-     * 停用账户不调整余额（D3，与 setManualBalance 同一理由）。
-     *
-     * 停用账户不在任何读模型里（`is_active=1` 才进），却会被账单加减余额、
-     * 推进基线——等于写进一个不被读的地方，将来恢复时那之间的差额会对不上。
-     * 这条覆盖**所有**调用点：手动记账（POST/PUT/DELETE /transactions）与
-     * `scheduler` 的订阅自动记账都经由本函数（那个路径用裸 SQL 建账单再调
-     * applyTxn，是先前唯一绕过 `is_active` 校验的写余额路径）。
-     */
-    if (row.is_active !== 1) {
-      out.push({ accountId, applied: false })
-      continue
-    }
 
     // 基准线之前就已存在的账单不再影响余额（否则就是重复扣减）
     const asOfId = row.balance_as_of_txn_id == null ? 0 : Number(row.balance_as_of_txn_id)

@@ -5,7 +5,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
-import { today, toDateStr } from '../lib/date.js'
+import { today as todayStrFn, dateOffset, monthOffsetFrom } from '../lib/date.js'
 
 const createSubscriptionSchema = z.object({
   name: z.string().min(1).max(100),
@@ -36,21 +36,20 @@ const updateSubscriptionSchema = z.object({
  * 从 startDate 开始按 cycle 累加，直到超过当前时间
  */
 function calcNextPayment(startDate: string, cycle: 'monthly' | 'quarterly' | 'yearly'): string {
-  const start = new Date(startDate)
-  if (isNaN(start.getTime())) {
-    // Fallback: use today as start if date is invalid
-    return today()
-  }
-  const now = new Date()
   const months = cycle === 'monthly' ? 1 : cycle === 'quarterly' ? 3 : 12
+  const today = todayStrFn()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return today
 
-  let next = new Date(start)
+  // 按「起始日 + n 月」逐月推进到超过今天。日钳位到月末（monthOffsetFrom）
+  // ——原先用 `Date.setMonth` 会溢出（2026-01-31 +1 月 = 3-03），且逐月累加
+  // 会漂移、永远不收敛（审查 MAJOR-C）。
+  let next = startDate
   let iterations = 0
-  while (next <= now && iterations < 10000) {
-    next.setMonth(next.getMonth() + months)
+  while (next <= today && iterations < 10000) {
+    next = monthOffsetFrom(next, months)
     iterations++
   }
-  return toDateStr(next)
+  return next
 }
 
 export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
@@ -106,12 +105,10 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // 即将到期的订阅（7天内）
-    const now = new Date()
-    const sevenDaysLater = new Date(now)
-    sevenDaysLater.setDate(sevenDaysLater.getDate() + 7)
-    const todayStr = today()
-    const sevenDaysStr = toDateStr(sevenDaysLater)
+    // 即将到期的订阅（7天内）。用 `dateOffset(7)` 算窗口（北京时间口径），
+    // 不要用本地 Date + setDate 再 toDateStr 的错位组合。
+    const todayStr = todayStrFn()
+    const sevenDaysStr = dateOffset(7)
 
     const upcoming = db
       .prepare(
@@ -359,7 +356,7 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // 从今天开始重新计算 next_payment_date
-    const nextPaymentDate = calcNextPayment(today(), existing.cycle)
+    const nextPaymentDate = calcNextPayment(todayStrFn(), existing.cycle)
 
     db.prepare(
       `UPDATE subscriptions SET status = 'active', next_payment_date = ?, updated_at = datetime('now')

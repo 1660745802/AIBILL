@@ -2,7 +2,7 @@
  * 公共 lib 单元测试：日期区间 + 预算进度
  */
 import { describe, it, expect } from 'vitest'
-import { monthRange, prevMonthRange, toDateStr, dateOffset, today, beijingNow } from '../../src/lib/date.js'
+import { monthRange, prevMonthRange, toDateStr, dateOffset, today, beijingNow, monthOffset, monthOffsetFrom } from '../../src/lib/date.js'
 import { budgetProgress, budgetStatus, spentPercent, WARN_PERCENT, OVER_PERCENT } from '../../src/lib/budget.js'
 
 describe('lib/date', () => {
@@ -49,6 +49,25 @@ describe('lib/date', () => {
     expect(n.mins).toBe(90)
     // 2026-01-04 是周日，UTC；北京已是周一
     expect(n.day).toBe(1)
+  })
+
+  it('monthOffsetFrom 月末钳位，不溢出到下个月（审查 MAJOR-B/C）', () => {
+    // `Date.UTC(y, m+n, 31)` 会把「1月31日+1月」归一化成 3月3日；必须钳到月末。
+    expect(monthOffsetFrom('2026-01-31', 1)).toBe('2026-02-28') // 平年2月
+    expect(monthOffsetFrom('2024-01-31', 1)).toBe('2024-02-29') // 闰年2月
+    expect(monthOffsetFrom('2026-10-31', 1)).toBe('2026-11-30')
+    expect(monthOffsetFrom('2026-12-31', 1)).toBe('2027-01-31') // 跨年
+    expect(monthOffsetFrom('2026-01-31', -1)).toBe('2025-12-31') // 跨年向前
+    expect(monthOffsetFrom('2026-01-31', 3)).toBe('2026-04-30')
+    expect(monthOffsetFrom('2026-03-15', 12)).toBe('2027-03-15') // 不涉及月末
+  })
+
+  it('monthOffsetFrom 迭代推进不会逐月漂移（订阅付款日）', () => {
+    // 原 `Date.setMonth` 对月末起始日会溢出且逐月累加、永不收敛。
+    let next = '2026-01-31'
+    for (let i = 0; i < 12; i++) next = monthOffsetFrom(next, 1)
+    expect(next).toBe('2027-01-28') // 12 个月后回到同一天（每月钳到月末）
+    expect(monthOffset(1)).toBe(monthOffsetFrom(today(), 1))
   })
 })
 
