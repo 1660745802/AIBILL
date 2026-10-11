@@ -168,6 +168,49 @@ export function applyTxn(
  * 换句话说：这是把正确性从「每个调用点的纪律」变成「module 自身的性质」。
  * 代价只是嵌套时多一层 SAVEPOINT，better-sqlite3 原生支持，无需调用点配合。
  */
+
+/**
+ * 手填余额被拒的原因（D3）。
+ *
+ * 用**类型化错误**而不是字符串：调用方要把它翻成合适的 HTTP 响应，
+ * 而字符串匹配会在改文案时静默失效——之前就是抛裸 Error，一路穿透成 500，
+ * 「停用账户不能写」会变成「服务器错误」，用户完全看不懂。
+ */
+export type BalanceWriteRejection = 'not_owned' | 'inactive'
+
+export class BalanceWriteRejected extends Error {
+  constructor(
+    readonly reason: BalanceWriteRejection,
+    readonly accountId: number,
+  ) {
+    super(
+      reason === 'not_owned'
+        ? `账户 ${accountId} 不存在或不属于当前用户`
+        : `账户 ${accountId} 已停用，不能修改余额`,
+    )
+    this.name = 'BalanceWriteRejected'
+  }
+}
+
+/**
+ * 手填余额 = **覆盖**，并把基准线刷到此刻。
+ *
+ * 两条路径（账户 PUT / 资产快照 PUT）走这里。
+ *
+ * 同时写一行 `asset_snapshots` 作为历史/回滚凭证：用 upsert，
+ * 同一天反复填不会撞 UNIQUE(user_id, account_id, snapshot_date)。
+ *
+ * ## 停用账户不写（D3）
+ *
+ * `is_active = 0` 的账户**拒绝**手填余额。这不是洁癖：
+ * 所有读模型（`readAccounts` / `readHistory` / `countAccounts`）都过滤
+ * `is_active = 1`，给它写余额等于「写进一个不被读的地方」——快照行进库了，
+ * 而净资产、曲线、构成全都看不到它，用户却以为记上了；而且基准线被推进了，
+ * 将来恢复该账户时，那之间的账单加减会被静默跳过。
+ *
+ * 修之前两条入口口径还相反：`PUT /assets/snapshots` 已拒（守卫带 `is_active`），
+ * `PUT /api/accounts/:id` 却照写。现由本函数统一，两条路径同生共死。
+ */
 export function setManualBalance(
   db: any,
   userId: number,
@@ -179,9 +222,11 @@ export function setManualBalance(
 
   const run = db.transaction(() => {
     const owned = db
-      .prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
-      .get(accountId, userId)
-    if (!owned) throw new Error(`账户 ${accountId} 不存在或不属于当前用户`)
+      .prepare('SELECT id, is_active FROM accounts WHERE id = ? AND user_id = ?')
+      .get(accountId, userId) as { id: number; is_active: number } | undefined
+    if (!owned) throw new BalanceWriteRejected('not_owned', accountId)
+    // 停用账户不可写（见函数头「停用账户不写」）
+    if (owned.is_active !== 1) throw new BalanceWriteRejected('inactive', accountId)
 
     // 基准线 = 此刻已存在的最大流水 id。之后新建的才参与加减。
     const maxId = (db

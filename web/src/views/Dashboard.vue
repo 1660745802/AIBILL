@@ -7,7 +7,6 @@ import {
 import api from '@/api/index'
 import Money from '@/components/ui/Money.vue'
 import { useClusterStore } from '@/stores/cluster'
-import AppIcon from '@/components/ui/AppIcon.vue'
 import LedgerLabel from '@/components/ui/LedgerLabel.vue'
 import SheetRow from '@/components/ui/SheetRow.vue'
 import Notice from '@/components/ui/Notice.vue'
@@ -134,14 +133,6 @@ const visibleAlerts = computed(() =>
   (data.value?.alerts ?? []).filter((_: AlertItem, i: number) => !dismissed.value.has(i)),
 )
 
-/** 首次使用：一个数据都没有，插引导块而不是让人对着空页面发呆 */
-const isFirstRun = computed(() => {
-  if (!data.value) return false
-  return data.value.summary.transaction_count === 0
-    && (data.value.net_worth?.total ?? 0) === 0
-    && (data.value.net_worth?.accounts?.length ?? 0) === 0
-})
-
 const alertTone = (t: string) =>
   t.includes('exceeded') || t === 'large_expense' ? 'danger'
     : t === 'subscription_due' ? 'info' : 'warn'
@@ -180,24 +171,6 @@ const monthProgress = computed(() => {
            仪表回答「我现在什么状况」，本页回答「为什么」。
            所以主栏从待办和趋势开始，进来第一眼是事情，不是数字。      -->
       <div class="space-y-6 min-w-0">
-
-        <!-- 首次使用引导 -->
-        <section v-if="isFirstRun" class="surface p-4">
-          <LedgerLabel>从这里开始</LedgerLabel>
-          <p class="text-sm leading-relaxed" style="color: var(--color-ink-2)">
-            还没有任何记录。先写一句话试试，比如
-            <span class="chip !h-auto !py-0.5 align-middle">午饭 32，打车 15</span>
-            ，AI 会自动拆成两笔。也支持从微信、支付宝导入历史账单。
-          </p>
-          <div class="flex flex-wrap gap-2 mt-3.5">
-            <router-link to="/" class="btn btn-primary btn-sm">
-              <AppIcon name="pen" :size="13" />记第一笔
-            </router-link>
-            <router-link to="/import" class="btn btn-outline btn-sm">
-              <AppIcon name="upload" :size="13" />导入账单
-            </router-link>
-          </div>
-        </section>
 
         <!-- 待办 -->
         <section v-if="visibleAlerts.length" class="space-y-2">

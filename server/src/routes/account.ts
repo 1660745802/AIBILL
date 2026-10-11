@@ -5,7 +5,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
-import { setManualBalance } from '../lib/account-balance.js'
+import { setManualBalance, BalanceWriteRejected } from '../lib/account-balance.js'
 
 const createAccountSchema = z.object({
   name: z.string().min(1, '账户名称不能为空').max(20, '账户名称最多20个字符'),
@@ -193,6 +193,16 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
       if (err instanceof z.ZodError) {
         reply.code(400)
         return { code: 2000, data: null, message: err.errors[0].message }
+      }
+      /**
+       * 手填余额被 module 拒收（D3）：停用账户 / 不属于当前用户。
+       * 必须在这里翻成 4xx —— 否则抛出的异常会一路穿透成 500，
+       * 「这个账户已停用」会变成「服务器错误」，用户完全看不懂。
+       * 与 `PUT /assets/snapshots` 的 2001 同一套错误码，两条入口口径一致。
+       */
+      if (err instanceof BalanceWriteRejected) {
+        reply.code(400)
+        return { code: 2001, data: null, message: err.message }
       }
       // 改名撞 UNIQUE(user_id, name)：与 POST /api/accounts 用同一套错误，
       // 不再把 SQLite 的 "UNIQUE constraint failed: …" 当 500 透给客户端。

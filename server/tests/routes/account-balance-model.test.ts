@@ -328,3 +328,115 @@ describe('PUT /api/accounts/:id · 请求级原子性', () => {
     expect(snapCount(acc)).toBe(snapsBefore)
   })
 })
+
+/* ══════════════════════════════════════════════════════════════
+   停用账户不可写（D3）
+
+   之前两条入口口径相反：
+     PUT /api/assets/snapshots   → 守卫生效，拒（2001）
+     PUT /api/accounts/:id       → 只校验归属，照写（余额 + 快照 + 推进基线）
+   而写进去的余额**任何读模型都看不到**（readAccounts / readHistory /
+   countAccounts 全过滤 is_active=1），用户以为记上了，实际没有。
+   现在由 `setManualBalance` 统一拦，两条入口同生共死。
+   ══════════════════════════════════════════════════════════════ */
+describe('停用账户不可写余额（D3）', () => {
+  let app: FastifyInstance
+  let token: string
+  let accId: number
+
+  const row = () => getDb()
+    .prepare('SELECT balance, balance_as_of_txn_id FROM accounts WHERE id = ?').get(accId) as
+    { balance: number; balance_as_of_txn_id: number }
+  const snapCount = () => (getDb()
+    .prepare('SELECT count(*) c FROM asset_snapshots WHERE account_id = ?').get(accId) as { c: number }).c
+
+  beforeAll(async () => {
+    app = await buildApp()
+    token = await createUser(app, 'inactive_write')
+    const accs = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/accounts', headers: authHeaders(token) })).payload,
+    ).data.items
+    accId = accs.find((a: any) => a.name === '银行卡').id
+    // 停用（软删）
+    const del = await app.inject({
+      method: 'DELETE', url: `/api/accounts/${accId}`, headers: authHeaders(token),
+    })
+    expect(del.statusCode).toBe(200)
+    const after = getDb().prepare('SELECT is_active FROM accounts WHERE id = ?').get(accId) as { is_active: number }
+    expect(after.is_active).toBe(0)
+  })
+
+  afterAll(async () => { await teardownApp(app) })
+
+  it('PUT /api/accounts/:id 传 current_balance → 400/2001，且一个字节都不写', async () => {
+    const before = row()
+    const snapsBefore = snapCount()
+
+    const r = await app.inject({
+      method: 'PUT', url: `/api/accounts/${accId}`,
+      headers: authHeaders(token),
+      payload: { current_balance: 999999 },
+    })
+
+    // 不是 500：那会让用户看到「服务器错误」，完全看不懂发生了什么
+    expect(r.statusCode).toBe(400)
+    const body = JSON.parse(r.payload)
+    expect(body.code).toBe(2001)
+    expect(body.message).toMatch(/停用/)
+
+    // 余额、基线、快照一个都没动
+    expect(row().balance).toBe(before.balance)
+    expect(row().balance_as_of_txn_id).toBe(before.balance_as_of_txn_id)
+    expect(snapCount()).toBe(snapsBefore)
+  })
+
+  it('传 initial_balance 同样被拒（它也走 setManualBalance）', async () => {
+    const before = row()
+    const r = await app.inject({
+      method: 'PUT', url: `/api/accounts/${accId}`,
+      headers: authHeaders(token),
+      payload: { initial_balance: 555 },
+    })
+    expect(r.statusCode).toBe(400)
+    expect(JSON.parse(r.payload).code).toBe(2001)
+    expect(row().balance).toBe(before.balance)
+  })
+
+  it('两条入口口径一致：/assets/snapshots 也拒，且用的是同一个 2001', async () => {
+    const r = await app.inject({
+      method: 'PUT', url: '/api/assets/snapshots',
+      headers: authHeaders(token),
+      payload: { items: [{ account_id: accId, balance: 12345 }] },
+    })
+    expect(r.statusCode).toBe(400)
+    expect(JSON.parse(r.payload).code).toBe(2001)
+    expect(row().balance).not.toBe(12345)
+  })
+
+  it('仍然可以改停用账户的其它字段（改名等）——只拦余额写入', async () => {
+    const r = await app.inject({
+      method: 'PUT', url: `/api/accounts/${accId}`,
+      headers: authHeaders(token),
+      payload: { name: '改个名' },
+    })
+    expect(r.statusCode).toBe(200)
+    expect(JSON.parse(r.payload).data.name).toBe('改个名')
+  })
+
+  it('恢复账户后可以正常写余额（拦截只针对停用态）', async () => {
+    const r = await app.inject({
+      method: 'POST', url: `/api/accounts/${accId}/restore`,
+      headers: authHeaders(token),
+      payload: {},
+    })
+    expect(JSON.parse(r.payload).code).toBe(0)
+
+    const w = await app.inject({
+      method: 'PUT', url: `/api/accounts/${accId}`,
+      headers: authHeaders(token),
+      payload: { current_balance: 4242 },
+    })
+    expect(w.statusCode).toBe(200)
+    expect(row().balance).toBe(4242)
+  })
+})
