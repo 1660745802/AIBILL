@@ -7,6 +7,7 @@ import {
   LineElement, ArcElement, Tooltip, Legend, Filler,
 } from 'chart.js'
 import api from '@/api/index'
+import type { Transaction } from '@/api/types'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
 import LedgerLabel from '@/components/ui/LedgerLabel.vue'
@@ -56,12 +57,6 @@ const TABS = [
 ]
 
 /* ── 流水 ── */
-interface Transaction {
-  id: number; type: string; amount: number; description: string; date: string
-  category_id: number | null; account_id: number | null; target_account_id: number | null
-  category_name: string; category_icon: string; account_name: string
-  target_account_name?: string; tags?: string
-}
 
 /** tags 存的是 JSON 字符串（见 EditTransactionModal 的解析），直接渲染会显示成
  *  #["a","b"]。这里拆成数组，最多显示 2 个，多余的收敛为 +N。 */

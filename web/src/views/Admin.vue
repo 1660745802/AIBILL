@@ -171,7 +171,7 @@ async function resetPassword() {
     } else {
       toast.error(data.message)
     }
-  } catch { toast.error('重置失败') }
+  } catch { /* 提示见 api 拦截器 */ }
 }
 
 async function deleteUser(id: number, username: string) {
@@ -189,7 +189,7 @@ async function deleteUser(id: number, username: string) {
     } else {
       toast.error(data.message)
     }
-  } catch { toast.error('删除失败') }
+  } catch { /* 提示见 api 拦截器 */ }
 }
 
 async function saveSettings() {
@@ -326,7 +326,7 @@ async function activateRule(id: number) {
       toast.success(data.message)
       await fetchNotifRules()
     }
-  } catch { toast.error('激活失败') }
+  } catch { /* 提示见 api 拦截器 */ }
 }
 
 async function createRule() {
@@ -353,7 +353,7 @@ async function createRule() {
     } else {
       toast.error(data.message)
     }
-  } catch { toast.error('创建失败') }
+  } catch { /* 提示见 api 拦截器 */ }
   finally { savingRule.value = false }
 }
 
@@ -390,7 +390,7 @@ async function fetchUserTransactions(userId: number, page = 1) {
       userTransactions.value = data.data.items
       userTxTotal.value = data.data.total
     }
-  } catch { toast.error('获取账单失败') }
+  } catch { /* 提示见 api 拦截器 */ }
   finally { userTransactionsLoading.value = false }
 }
 

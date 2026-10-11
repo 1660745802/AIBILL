@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '@/api/index'
+import type { Account } from '@/api/types'
 import { generateUUID } from '@/utils/uuid'
 import Money from '@/components/ui/Money.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
@@ -15,13 +16,6 @@ const step = ref(1)
 const totalSteps = 4
 
 // Step 2: 账户选择
-interface Account {
-  id: number
-  name: string
-  icon: string
-  balance: number
-}
-
 const accounts = ref<Account[]>([])
 const selectedAccountIds = ref<number[]>([])
 const defaultAccountId = ref<number | null>(null)

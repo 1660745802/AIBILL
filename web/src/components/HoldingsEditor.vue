@@ -79,9 +79,7 @@ async function add() {
       await load()
       emit('changed')
     } else toast.error(data.message || '添加失败')
-  } catch (e: any) {
-    toast.error(e.response?.data?.message || '添加失败')
-  } finally { saving.value = false }
+  } catch { /* 提示见 api 拦截器 */ } finally { saving.value = false }
 }
 
 /**
@@ -117,7 +115,7 @@ async function setQty(h: InvestmentItem, e: Event) {
     const { data } = await updateInvestment(h.id, { quantity: q })
     if (data.code === 0) { emit('changed') }
     else { toast.error(data.message || '改股数失败'); rollback() }
-  } catch { toast.error('改股数失败'); rollback() }
+  } catch { rollback() }
 }
 
 /** 加仓 / 减仓 N 股 */
@@ -137,14 +135,14 @@ async function applyAdjust(h: InvestmentItem) {
       emit('changed')
       toast.success(a.dir > 0 ? `已加仓 ${n} 股` : `已减仓 ${n} 股`)
     } else toast.error(data.message || '调仓失败')
-  } catch { toast.error('调仓失败') }
+  } catch { /* 提示见 api 拦截器 */ }
 }
 
 async function remove(h: InvestmentItem) {
   try {
     const { data } = await deleteInvestment(h.id)
     if (data.code === 0) { toast.success('已移除'); await load(); emit('changed') }
-  } catch { toast.error('移除失败') }
+  } catch { /* 提示见 api 拦截器 */ }
 }
 </script>
 

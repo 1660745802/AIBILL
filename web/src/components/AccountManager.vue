@@ -76,7 +76,7 @@ async function addAccount() {
     showAdd.value = false
     await fetchAccounts()
     toast.success(`已添加「${data.data.name}」`)
-  } catch { toast.error('创建失败') }
+  } catch { /* 提示见 api 拦截器 */ }
   finally { loading.value = false }
 }
 
@@ -96,7 +96,7 @@ async function confirmDelete() {
     toast.success(data.message || '已删除')
     pendingDelete.value = null
     await fetchAccounts()
-  } catch { toast.error('删除失败') }
+  } catch { /* 提示见 api 拦截器 */ }
   finally { loading.value = false }
 }
 
@@ -106,7 +106,7 @@ async function restore(acc: any) {
     if (data.code !== 0) { toast.error(data.message || '还原失败'); return }
     await fetchAccounts()
     toast.success('已还原')
-  } catch { toast.error('还原失败') }
+  } catch { /* 提示见 api 拦截器 */ }
 }
 
 // 行内展开编辑

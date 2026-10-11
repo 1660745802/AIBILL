@@ -5,17 +5,7 @@ import TagInput from '@/components/TagInput.vue'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import Money from '@/components/ui/Money.vue'
 
-interface Transaction {
-  id: number
-  type: string
-  amount: number
-  description: string
-  date: string
-  category_id: number | null
-  account_id: number | null
-  target_account_id: number | null
-  tags?: string
-}
+import type { Transaction } from '@/api/types'
 
 const props = defineProps<{ show: boolean; transaction: Transaction | null }>()
 const emit = defineEmits<{ close: []; saved: [] }>()

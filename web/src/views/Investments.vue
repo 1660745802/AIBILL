@@ -32,36 +32,17 @@ import AppIcon from '@/components/ui/AppIcon.vue'
 const toast = useToast()
 const cluster = useClusterStore()
 
-interface Account {
-  id: number
-  name: string
-  icon?: string
-  asset_type: string
-  invested_total: number | null
-}
-interface Position {
-  accountId: number
-  cash: number
-  holdingsValue: number | null
-  value: number | null
-  totalInvested: number | null
-  unrealized: number | null
-  unrealizedRate: number | null
-  holdingsPending: boolean
-  hasHoldings: boolean
-  staleDays: number | null
-  lastUpdated: string
-}
+import type { Account, PortfolioPosition } from '@/api/types'
 
 const loading = ref(true)
 const accounts = ref<Account[]>([])
-const positions = ref<Position[]>([])
+const positions = ref<PortfolioPosition[]>([])
 /** 每个账户的输入草稿（总投入 / 现金，单位为元） */
 const draft = ref<Record<number, { invested: string; cash: string; busy: boolean }>>({})
 
 const investAccounts = computed(() => accounts.value.filter((a) => a.asset_type === 'investment'))
 
-function positionOf(id: number): Position | null {
+function positionOf(id: number): PortfolioPosition | null {
   return positions.value.find((p) => p.accountId === id) ?? null
 }
 
@@ -98,7 +79,7 @@ async function load() {
       }
     }
     draft.value = next
-  } catch { toast.error('读取投资数据失败') } finally { loading.value = false }
+  } catch { /* 提示见 api 拦截器 */ } finally { loading.value = false }
 }
 onMounted(load)
 
@@ -125,7 +106,7 @@ async function saveInvested(acc: Account) {
       invested_total: d.invested === '' ? null : Math.round(yuan * 100),
     })
     if (data.code === 0) { toast.success('总投入已更新'); refreshAll() }
-  } catch { toast.error('更新失败') } finally { d.busy = false }
+  } catch { /* 提示见 api 拦截器 */ } finally { d.busy = false }
 }
 
 /** 现金：写今天的快照，和资产页「各账户余额」是同一份数据 */
@@ -140,7 +121,7 @@ async function saveCash(acc: Account) {
       items: [{ account_id: acc.id, balance: Math.round(yuan * 100) }],
     })
     if (data.code === 0) { toast.success('现金已记录'); refreshAll() }
-  } catch { toast.error('记录失败') } finally { d.busy = false }
+  } catch { /* 提示见 api 拦截器 */ } finally { d.busy = false }
 }
 
 const pct = (v: number | null) => (v == null ? '' : `（${(v * 100).toFixed(1)}%）`)
@@ -231,7 +212,7 @@ async function refreshQuotes() {
     }
     cluster.loadPortfolio()
   } catch {
-    toast.error('刷新失败')
+    /* 提示见 api 拦截器 */
   } finally { refreshing.value = false }
 }
 </script>
@@ -293,7 +274,7 @@ async function refreshQuotes() {
           <header class="inv-head">
             <div class="inv-head-main">
               <span class="inv-name">{{ acc.name }}</span>
-              <span class="inv-tag">{{ ASSET_LABEL[acc.asset_type] || '理财投资' }}</span>
+              <span class="inv-tag">{{ ASSET_LABEL[acc.asset_type || 'liquid'] || '理财投资' }}</span>
             </div>
             <!-- 读数的统一排版：标签在上、数字在下。
                  之前标签在数字**下面**，和下面 .inv-cell 的 label/value 顺序不一致，

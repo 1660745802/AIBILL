@@ -10,18 +10,7 @@ import Skeleton from '@/components/ui/Skeleton.vue'
 import Money from '@/components/ui/Money.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 
-interface Transaction {
-  id: number
-  type: string
-  amount: number
-  description: string
-  date: string
-  deleted_at: string
-  category_name: string
-  category_icon: string
-  account_name: string
-  target_account_name?: string
-}
+import type { Transaction } from '@/api/types'
 
 const router = useRouter()
 const confirm = useConfirm()

@@ -2,7 +2,6 @@
 import { ref, onMounted, computed } from 'vue'
 import { getAssetsOverview } from '@/api/assets'
 import type { AssetOverview } from '@/api/assets'
-import { useToast } from '@/composables/useToast'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import Skeleton from '@/components/ui/Skeleton.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
@@ -10,7 +9,6 @@ import { useClusterStore } from '@/stores/cluster'
 import AccountsPanel from '@/components/AccountsPanel.vue'
 import { useInvestmentNav } from '@/composables/useInvestmentNav'
 
-const toast = useToast()
 const cluster = useClusterStore()
 const { refreshInvestmentNav } = useInvestmentNav()
 const loading = ref(true)
@@ -23,7 +21,7 @@ async function loadData() {
     // 账户设置只用到账户级元数据（额度/账单日），dashboard 不带，仍走 /assets/overview。
     const o = await getAssetsOverview()
     overview.value = o.data.data
-  } catch { toast.error('加载失败') }
+  } catch { /* 提示见 api 拦截器 */ }
   finally { loading.value = false }
 }
 

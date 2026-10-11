@@ -6,8 +6,6 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
-import { monthRange } from '../lib/date.js'
-import { budgetProgress, WARN_PERCENT } from '../lib/budget.js'
 import { matchParse, backfillLanding } from '../lib/parse-landing.js'
 import { applyTxn } from '../lib/account-balance.js'
 
@@ -189,61 +187,17 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
 
       insertAll()
 
-      // 检查预算是否超支（仅支出类交易触发）
-      const hasExpense = created.some((t: any) => t.type === 'expense')
-      let budget_warnings: Array<{ category_name: string; percent: number; status: string }> = []
+      /* 这里曾经算一遍当月预算超支并随响应返回 budget_warnings，已删除：
+         产出后全仓库无任何消费方——Web 前端不读，Android App 的
+         CreateTransactionResponse 只声明 created/duplicates 两个字段（Moshi
+         静默忽略多余字段），docs/API.md 也没收录它，等于从没进过契约。
+         而且它本身有缺陷：预警按 created 数组里**第一笔**的月份算就break，
+         一次批量若跨月，另一个月的预警会被静默丢掉。
 
-      if (hasExpense) {
-        // 预警按**交易所在月**计算，而不是当前月
-        const now = new Date()
-        let y = now.getFullYear()
-        let m = now.getMonth() + 1
-        for (const t of created) {
-          if (typeof t.date === 'string' && /^\d{4}-\d{2}/.test(t.date)) {
-            y = Number(t.date.slice(0, 4))
-            m = Number(t.date.slice(5, 7))
-            break
-          }
-        }
-        const { start: startDate, end: endDate } = monthRange(y, m)
-
-        const budgets = db
-          .prepare(
-            `SELECT b.category_id, b.amount, c.name as category_name
-             FROM budgets b
-             LEFT JOIN categories c ON b.category_id = c.id AND b.category_id != 0
-             WHERE b.user_id = ? AND b.year = ? AND (b.month = ? OR b.month = 0)`,
-          )
-          .all(userId, y, m) as Array<{ category_id: number; amount: number; category_name: string | null }>
-
-        if (budgets.length > 0) {
-          const spentRows = db
-            .prepare(
-              `SELECT category_id, SUM(amount) as total FROM transactions
-               WHERE user_id = ? AND type = 'expense' AND status = 'confirmed' AND deleted_at IS NULL
-                 AND date BETWEEN ? AND ?
-               GROUP BY category_id`,
-            )
-            .all(userId, startDate, endDate) as Array<{ category_id: number; total: number }>
-
-          const totalSpent = spentRows.reduce((s, r) => s + r.total, 0)
-          const spentMap = new Map(spentRows.map((r) => [r.category_id, r.total]))
-
-          for (const b of budgets) {
-            const spent = b.category_id === 0 ? totalSpent : (spentMap.get(b.category_id) || 0)
-            const { percent, status } = budgetProgress(spent, b.amount)
-            if (percent >= WARN_PERCENT) {
-              budget_warnings.push({
-                category_name: b.category_id === 0 ? '总预算' : (b.category_name || '分类预算'),
-                percent,
-                status,
-              })
-            }
-          }
-        }
-      }
-
-      return { code: 0, data: { created, duplicates, budget_warnings }, message: '' }
+         预算预警的活机制是 GET /api/stats/dashboard 的 alerts[]（type=
+         'budget_warning'），那一套有消费方、有测试，且复用同一份 budget_progress。
+         顺带省掉每次建单都要跑的两条 SQL。 */
+      return { code: 0, data: { created, duplicates }, message: '' }
     } catch (err) {
       if (err instanceof z.ZodError) {
         reply.code(400)

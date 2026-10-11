@@ -96,59 +96,34 @@ async function start(): Promise<void> {
     done()
   })
 
-  await registerRoutes(app)
+  // 全局错误出口。
+  //
+  // 以前这里挂的是 onSend「自动包装」钩子，但全仓库 168 处响应都是路由手工返回
+  // `{code,data,message}` 信封，唯一返回裸对象的 /health 又正好在钩子的跳过名单里
+  // ——也就是说自动包装一次都没生效过，只是凭空多了一套可能误判的规则
+  // （isWrapped 靠「payload 里有没有数字型code」猜形状，将来哪个接口的业务数据
+  //  恰好带 code 字段就会被误判为已包装而原样放行）。
+  // 已删除。现在约定很干脆：响应信封一律由路由手工写，框架级错误走这里。
+  //
+  // 位置很关键：**必须在 registerRoutes() 之前**。放在之后的话，body 解析失败
+  // 这类发生在路由匹配之前的错误不会被它接管，仍然漏出 Fastify 默认体。
+  app.setErrorHandler((err: unknown, request, reply) => {
+    // Fastify 自家错误带 statusCode；其余一律按未捕获异常处理
+    const status =
+      typeof (err as { statusCode?: unknown })?.statusCode === 'number'
+        ? (err as { statusCode: number }).statusCode
+        : 500
+    // 5xx 一律对外只说「服务器内部错误」：真实原因（堆栈、SQL）只进日志，不外泄。
+    // 4xx 是请求方自己的问题（body 解析失败、超限、限流……），原样给出可读原因。
+    const rawMessage = err instanceof Error ? err.message : String(err ?? '')
+    const message = status >= 500 ? '服务器内部错误' : rawMessage
 
-  // 全局响应包装：未包装的响应自动加 {code:0, data, message}
-  // 已含 `code` 字段的（手工 success/fail）保持原样
-  // 跳过：/health（外部探针）、文件下载（Content-Disposition: attachment）、静态文件
-  // 注意：Fastify onSend 要求返回 string/Buffer/object；返回 object 时需确保 Content-Type 是 JSON
-  const { isWrapped } = await import('./lib/response.js')
-  app.addHook('onSend', async (request, reply, payload) => {
-    const status = reply.statusCode
-    const contentType = String(reply.getHeader('content-type') || '')
-    const contentDisposition = reply.getHeader('content-disposition') || ''
-    const url = request.url || ''
+    request.log.error({ err, status, url: request.url }, 'request failed')
 
-    // 跳过条件：
-    // 1. 健康检查（k8s/外部探针）
-    // 2. 文件下载（导出 JSON/CSV）
-    // 3. 静态资源（text/html、css、js 等）
-    // 4. 非 API 路由（前端 SPA 静态文件）
-    if (
-      url === '/health' ||
-      String(contentDisposition).includes('attachment') ||
-      contentType.includes('text/') ||
-      contentType.includes('octet-stream') ||
-      (!url.startsWith('/api/') && status < 400)
-    ) {
-      return payload
-    }
-
-    // payload 可能是 string（已 JSON 序列化）或 object（Fastify 待序列化）
-    let parsed: unknown = payload
-    if (typeof payload === 'string') {
-      try {
-        parsed = JSON.parse(payload)
-      } catch {
-        return payload // 非 JSON 字符串，原样返回
-      }
-    }
-
-    // 已包装 → 原样返回
-    if (isWrapped(parsed)) {
-      return payload
-    }
-
-    // 未包装 → 自动包装
-    if (parsed === null || parsed === undefined) {
-      return JSON.stringify({ code: 0, data: null, message: '' })
-    }
-    return JSON.stringify({
-      code: status >= 400 ? status : 0,
-      data: parsed,
-      message: '',
-    })
+    reply.code(status).send({ code: status, data: null, message })
   })
+
+  await registerRoutes(app)
 
   // 生产模式：服务前端静态文件
   const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -182,30 +157,38 @@ async function start(): Promise<void> {
     return reply.send(fs.createReadStream(filepath))
   })
 
-  if (fs.existsSync(publicDir)) {
+  const hasPublicDir = fs.existsSync(publicDir)
+
+  if (hasPublicDir) {
     await app.register(fastifyStatic.default, {
       root: publicDir,
       prefix: '/',
       decorateReply: false, // 避免与上面的注册冲突
       wildcard: false,
     })
+  }
 
+  // 404 处理**无条件注册**（之前它嵌在 if (fs.existsSync(publicDir)) 里，
+  // 于是本地开发 / 没构建前端时，/api/xxx 打错字会漏出 Fastify 默认体
+  // {statusCode,error,message}，和其余接口的信封形状对不上——前端解包就炸）。
+  const indexHtml = path.join(publicDir, 'index.html')
+  app.setNotFoundHandler(async (request, reply) => {
+    if (request.url.startsWith('/api/')) {
+      reply.code(404).send({ code: 4004, data: null, message: '接口不存在' })
+      return
+    }
     // SPA fallback：非 API 路由返回 index.html。
-    // 注意：上面用 decorateReply:false 注册，reply.sendFile 不可用，
+    // 注意：静态用 decorateReply:false 注册，reply.sendFile 不可用，
     // 必须自己读文件流发送（否则 /quick 等深链会 500）。
-    const indexHtml = path.join(publicDir, 'index.html')
-    app.setNotFoundHandler(async (request, reply) => {
-      if (request.url.startsWith('/api/')) {
-        reply.code(404).send({ code: 4004, data: null, message: '接口不存在' })
-        return
-      }
+    if (hasPublicDir && fs.existsSync(indexHtml)) {
       if (request.url === '/favicon.ico') {
         return reply.redirect('/icons/icon-512.svg', 302)
       }
       reply.type('text/html; charset=utf-8')
       return reply.send(fs.createReadStream(indexHtml))
-    })
-  }
+    }
+    reply.code(404).send({ code: 4004, data: null, message: 'Not Found' })
+  })
 
   // 优雅关闭
   const shutdown = async () => {

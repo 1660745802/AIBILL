@@ -42,7 +42,7 @@ interface Snap {
   holdingsValue: number | null
   isDebt: boolean
   hasHoldings: boolean
-  lastUpdated: string
+  lastUpdated: string | null
   staleDays: number | null
 }
 
@@ -80,7 +80,7 @@ async function load() {
       unpriced.value = data.data.unpricedAccounts ?? 0
       seedDraft()
     }
-  } catch { toast.error('读取账户失败') } finally { loading.value = false }
+  } catch { /* 提示见 api 拦截器 */ } finally { loading.value = false }
 }
 
 /** 预填快照值（只在还没被用户改过时刷新，不覆盖正在输入的内容） */
@@ -163,7 +163,7 @@ async function save(row: { accountId: number; name: string }) {
       await load()
       emit('changed')
     } else toast.error(data.message || '保存失败')
-  } catch { toast.error('保存失败') }
+  } catch { /* 提示见 api 拦截器 */ }
   finally { saving.value = false }
 }
 
@@ -188,7 +188,7 @@ async function saveEdit() {
       editing.value = null
       emit('changed')          // 父页会重算读数 + 刷新侧栏的「投资」入口
     } else toast.error(data.message || '更新失败')
-  } catch { toast.error('更新失败') }
+  } catch { /* 提示见 api 拦截器 */ }
 }
 </script>
 
