@@ -134,7 +134,14 @@ export interface NetWorthPoint {
   expectedAccounts: number
 }
 
-/** 负债合计（负余额账户）。信用卡欠款是负数，这是合法状态不是错误 */
+/**
+ * 负债合计（负余额账户）。信用卡欠款是负数，这是合法状态不是错误。
+ *
+ * ⚠️ 判据是 **`cash < 0`**，而 `assetComposition` 按 **`value > 0`** 判。
+ * 所以「现金为负但持仓市值把总价值顶成正」的账户会**同时**出现在这里和构成条里
+ * （审查 M-1）。这不是 bug，但意味着
+ * `assetComposition.total - liability.total ≠ netWorth`，别把它当恒等式用。
+ */
 export interface Liability {
   total: number
   accountCount: number
@@ -169,7 +176,14 @@ export interface AssetCompositionRow {
 
 export interface AssetComposition {
   state: AssetCompositionState
-  /** 构成条的分母 = 所有正资产合计（分）。**负债账户不进构成条**（UI-DESIGN §6.8 规则 7），它们由 `liability` 单列 */
+  /**
+   * 构成条的分母 = 所有正资产合计（分）。**负债账户不进构成条**
+   * （UI-DESIGN §6.8 规则 7），它们由 `liability` 单列。
+   *
+   * ⚠️ **例外**：现金为负但总价值为正的账户（如透支账户挂着盈利持仓）
+   * 会**同时**进构成条与 `liability` —— 构成按 `value > 0` 判、负债按 `cash < 0` 判。
+   * 因此 `total - liability.total` **不等于** `netWorth`，别当恒等式。
+   */
   total: number
   /** 按 value 降序。仪表只取前 4 段，顺序在这里定死，前端不再排序 */
   rows: AssetCompositionRow[]
@@ -403,7 +417,9 @@ export function buildPortfolio(
       runningValue += contribution(h.account_id, h)
     }
   }
-  flushDate()
+  // 不需要在这里补一次 `flushDate()`：循环结束时 `pendingDate` 必等于
+  // `latestDate`，而判定要求 `pendingDate < latestDate`，所以那调用永远是空操作。
+  // （审查 NIT-13：曾误留过一次；真把它删了，性质测试 60 组对拍也会红。）
 
   const change = previousNetWorth != null ? netWorth - previousNetWorth : null
 

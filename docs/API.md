@@ -400,8 +400,9 @@ liability, investment, curve, accounts, empty, lastUpdated, change, previousNetW
 | `netWorthComplete` / `unpricedAccounts` | false = 有 N 个账户算不出总额，UI 显示 `≥¥X` |
 | `hasReadings` | 有没有余额读数（017 判据）：任一活跃账户**有快照行**、**余额非 0**、**或持仓能估值**；三者都不满足才算「没有读数」 |
 | `empty` | 旧字段：有没有写过 `asset_snapshots` 行。**不等于**「没有余额读数」 |
-| `assetComposition` | `{ state, total, rows: [{ type, value, percent }] }`。按 `asset_type` 用账户总价值分组；`percent` 分母 = **正资产合计**（**负债账户不进构成条**，见 UI-DESIGN §6.8 规则 7，负债由 `liability` 单列）；`state ∈ ok \| no_readings \| no_positive_assets`，不变式 `rows.length > 0 ⟺ state === 'ok'` |
-| `liability` | `{ total, accountCount }`，负余额账户合计（**负数**） |
+| `assetComposition` | `{ state, total, rows: [{ type, value, percent }] }`。按 `asset_type` 用账户总价值分组；`percent` 分母 = **正资产合计**（**负债账户不进构成条**，见 UI-DESIGN §6.8 规则 7，负债由 `liability` 单列）；`state ∈ ok \| no_readings \| no_positive_assets`，不变式 `rows.length > 0 ⟺ state === 'ok'`。⚠️ **例外**：现金为负但总价值为正的账户会**同时**进构成条与 `liability`（构成按 `value > 0` 判、负债按 `cash < 0` 判），故 `total − liability.total ≠ netWorth`，别当恒等式 |
+| `liability` | `{ total, accountCount }`，负余额账户合计（**负数**）。判据是 **`cash < 0`**（与构成条的 `value > 0` 不同，见上一行的例外） |
+| `previousNetWorth` / `change` / `changeRate` | 上一次「全员账户都覆盖过」的读数与日变动。**口径与 `netWorth` 完全一致**（未定价账户计现金）；找不到全量覆盖日时三者皆 `null`。**当前 web 端无消费者**，留给其他端 |
 
 ### PUT `/api/assets/snapshots`
 手填余额（覆盖 + 推进基线 + upsert 快照行），可带 `date` 补录。

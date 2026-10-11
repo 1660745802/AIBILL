@@ -112,8 +112,8 @@ const goExpense = () => router.push('/ledger?type=expense')
         </button>
       </p>
       <strong class="readout-value readout-lead" :class="{ 'readout-redline': cluster.netNegative }">
-        <!-- 读数不可知（portfolio 加载失败）→ 显示「—」。宁可空着也不显示
-             另一个口径的数字：那个数更小、且没有任何提示，等于说谎。 -->
+        <!-- 读数不可知（portfolio 加载失败）→ 显示「—」。宁可空着也不在
+             读数不可知时编一个数——那比空白更坏。 -->
         <template v-if="cluster.netWorthUnknown">
           <span class="val-full">—</span><span class="val-compact">—</span>
         </template>
