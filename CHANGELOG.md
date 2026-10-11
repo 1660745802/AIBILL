@@ -108,6 +108,42 @@ Android 客户端保留」的注释是**错的**，已一并移除——正因�
 `asset_snapshots` 长得像「跟已删端点同名的表」，下一个人清理时很容易顺手删掉，
 而删表**不会报错**，只会让 portfolio 曲线变空、手填余额不再留痕。
 
+### 净资产口径归一：只剩一个算法（D1）
+
+`/api/stats/dashboard` 与 `/api/assets/overview` 原本用 `Σ accounts.balance`
+（**现金口径**，不含持仓市值），而仪表读的 `/api/assets/portfolio` 是
+「现金 + 持仓市值」（**总价值口径**）。实测同一份数据下仪表显示 ¥114,170、
+另两个接口算出 ¥28,000 —— 差额恰好是一整块持仓市值。
+
+**动手前先做了只读核查**（不是猜）：Web 早已收敛到 portfolio
+（`Dashboard.vue` 的构成与负债只读 portfolio，`cluster.ts` 也只把 dashboard
+当首屏兑底）；Android 根本不调 `stats/dashboard` 与 `assets/*`。
+所以这组改动对两端**零行为影响**，纯粹是拆掉服务端剩下的第二套算法。
+
+- **`GET /api/stats/dashboard`**：`net_worth` 改走 `lib/portfolio.ts` 的读模型，
+  与 portfolio 逐分相同；`accounts[]` 改为 `cash` / `value`（**净资产用的是 `value`**，
+  `cash` 只是现金——挂了持仓的账户两者差一整块持仓市值）
+- **新增 `net_worth.netWorthComplete` / `unpricedAccounts`**（D1-D）：
+  以前只在 portfolio 上有，于是「portfolio 还没到」的那几十毫秒里，首屏兑底值
+  会被当成精确值显示，而它其实是个下界。现在两个阶段都拿得到真话
+- **删除** `dashboard.total_assets` / `total_liabilities` / `asset_breakdown`
+- **删除** `overview.total_assets` / `total_liabilities` / `net_worth` / `by_type`
+- **删除 `lib/assets.ts` 的 `summarizeNetWorth()`**（删后已无调用者，整个文件移除）
+- 三个读取源 `readAccounts` / `readHistory` / `countAccounts` 下沉到 `lib/portfolio.ts`，
+  两个路由共用同一份数据——「两接口口径不一致」在结构上不再可能
+
+**不变量没有跟着丢**：`helpers.test.ts` 里守着两个真实踩过的 bug
+（负余额一律算负债、信用卡溢缴款不抵扣欠款）的用例迁到了 `lib/portfolio.test.ts`。
+`networth.test.ts` 从「两套口径对不齐」的回归，升级成「两接口必须逐分相同」的护栏，
+并锁住「overview 不得再长出第二套算法」。
+
+测试计数 403 → 403（删 6 个 `summarizeNetWorth` 用例，加 5 个资产/负债划分用例，
+`networth` 5 → 6）。
+
+> **已知残留（不在本次范围）**：`POST /api/stats/analysis` 的 `data_summary.net_worth`
+> 是**第三处**净资产计算（`SUM(a.balance)`，喂给 AI 提示词）。它不在批准的改动面内，
+> 本次未动。要不要一并归一，待定。
+
 ### 界面重做：仪表读数（Instrument）—— 替换上一版的「账本纸」
 
 > 上一版「账本纸」的设计规格已整体重写（见 `docs/UI-DESIGN.md`）。改动原因见该文件 §0：

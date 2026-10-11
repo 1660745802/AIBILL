@@ -314,18 +314,26 @@ describe('资产工作台 · 零快照但余额已记上（017 判据）', () =>
     expect(p.assetComposition.state).toBe('ok')
   })
 
-  it('dashboard 仍是现金口径（本次不改 overview/dashboard）—— 差额恰为持仓市值', async () => {
+  it('dashboard 与 portfolio 给出同一个净资产（D1 之后）—— 持仓市值已计入', async () => {
     const dash = JSON.parse(
       (await app.inject({ method: 'GET', url: '/api/stats/dashboard', headers: authHeaders(token) })).payload,
     ).data
     const ov = JSON.parse(
       (await app.inject({ method: 'GET', url: '/api/assets/overview', headers: authHeaders(token) })).payload,
     ).data
-    // 两个 adapter 仍是 Σ accounts.balance（不含持仓市值）—— 已发布契约，本次不动
-    expect(dash.net_worth.total).toBe(2800000)
-    expect(ov.net_worth).toBe(2800000)
-    // 差额 = 持仓市值；前端必须以 portfolio 为准，否则就是漏算
-    expect(11417000 - dash.net_worth.total).toBe(8617000)
+    const p = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/assets/portfolio', headers: authHeaders(token) })).payload,
+    ).data
+
+    // 以前这里断言的是**两接口不一致**（dashboard = Σbalance = 2,800,000，
+    // portfolio = 11,417,000，差额恰好是持仓市值 8,617,000）。那是两套口径，
+    // 前端只能靠“以 portfolio 为准”这种约定来遮。D1 之后是同一个读模型：
+    expect(dash.net_worth.total).toBe(11417000)   // 现金 28,000 + 市值 86,170
+    expect(dash.net_worth.total).toBe(p.netWorth) // 两接口必须逐分相同
+    expect(dash.net_worth.netWorthComplete).toBe(p.netWorthComplete)
+
+    // 而 overview 已经不再参与净资产——它是账户元数据，不是第二个算法
+    expect('net_worth' in ov).toBe(false)
   })
 
   /**

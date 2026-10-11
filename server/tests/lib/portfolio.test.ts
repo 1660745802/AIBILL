@@ -352,3 +352,79 @@ describe('buildPortfolio · hasReadings 与资产构成', () => {
     }
   })
 })
+
+/* ══════════════════════════════════════════════════════════════
+   资产 / 负债的划分
+
+   这组不变量原来写在 `tests/lib/helpers.test.ts` 里测 `lib/assets.ts` 的
+   `summarizeNetWorth`。那个函数（以及它给出的 `total_assets`/`total_liabilities`）
+   已随 D1 删除——它是一套**现金口径**的第二算法。但**不变量本身不能跟着丢**：
+   它守的是两个真实踩过的 bug，所以原样迁到这里（纯函数，鉴别力不降）。
+   ══════════════════════════════════════════════════════════════ */
+describe('资产 / 负债的划分', () => {
+  it('负余额一律计入负债（不论 asset_type）', () => {
+    // 活期透支 50000 + 信用卡欠款 80000。两者都是负债，
+    // 不能因为 asset_type=liquid 就当成资产——透支同样是欠钱。
+    const p = buildPortfolio(
+      [
+        acc(1, { balance: 200000 }),
+        acc(2, { asset_type: 'liquid', balance: -50000 }),
+        acc(3, { asset_type: 'credit', balance: -80000 }),
+      ],
+      [], 3, TODAY,
+    )
+    expect(p.liability.total).toBe(-130000)
+    expect(p.liability.accountCount).toBe(2)
+    expect(p.netWorth).toBe(70000)
+  })
+
+  it('信用卡溢缴款（正余额）算资产，不抵扣其他卡的欠款', () => {
+    // 早期 dashboard 的 bug：按 asset_type 分组求和后取绝对值
+    // → 100 的溢缴把 500 的欠款抵消成 400，而真实欠款是 500。
+    const p = buildPortfolio(
+      [
+        acc(1, { asset_type: 'credit', balance: -50000 }),
+        acc(2, { asset_type: 'credit', balance: 10000 }),
+      ],
+      [], 2, TODAY,
+    )
+    // 负债只算欠的那张卡：不能被另一张卡的溢缴款抵掉
+    expect(p.liability.total).toBe(-50000)
+    expect(p.liability.accountCount).toBe(1)
+    // 溢缴款算正资产
+    expect(p.assetComposition.total).toBe(10000)
+    // 而净资产是两者相抵后的真值
+    expect(p.netWorth).toBe(-40000)
+  })
+
+  it('全负余额时净负债，且不因没有正资产就报“没记过”', () => {
+    const p = buildPortfolio(
+      [acc(1, { balance: -10000 }), acc(2, { balance: -20000 })],
+      [], 2, TODAY,
+    )
+    expect(p.netWorth).toBe(-30000)
+    expect(p.liability.total).toBe(-30000)
+    expect(p.assetComposition.state).toBe('no_positive_assets')
+  })
+
+  it('净资产 = 各账户价值之和（会计恒等式）', () => {
+    const rows = [
+      acc(1, { balance: 12345 }),
+      acc(2, { balance: -6789 }),
+      acc(3, { balance: 0 }),
+      acc(4, { balance: 100000 }),
+      acc(5, { balance: -1 }),
+    ]
+    const p = buildPortfolio(rows, [], 5, TODAY)
+    expect(p.netWorth).toBe(rows.reduce((s, r) => s + (r.balance ?? 0), 0))
+    // 正资产 − 负债 = 净资产
+    expect(p.assetComposition.total + p.liability.total).toBe(p.netWorth)
+  })
+
+  it('空账户列表应返回 0 而不是 NaN', () => {
+    const p = buildPortfolio([], [], 0, TODAY)
+    expect(p.netWorth).toBe(0)
+    expect(p.liability.total).toBe(0)
+    expect(p.assetComposition.total).toBe(0)
+  })
+})

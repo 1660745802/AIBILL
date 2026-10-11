@@ -289,11 +289,18 @@
 ### GET `/api/stats/dashboard`
 聚合首页仪表盘：本月收支 + 净资产 + 趋势 + 分类饼图 + 预算进度 + 异常提醒。
 
-**净资产口径**（与 `/api/assets/overview` 完全一致，见 `lib/assets.ts`）：
-- `total_assets` = 所有余额 ≥ 0 的账户余额之和
-- `total_liabilities` = 所有余额 < 0 的账户的绝对值之和（信用卡欠款、活期透支都算）
-- `net_worth.total` = `total_assets − total_liabilities` = 所有账户余额之和
-- `asset_type` 只用于 `asset_breakdown` 展示分组，不参与债务计算
+**净资产口径**（与 `/api/assets/portfolio` 同一个读模型、逐分相同，见 `lib/portfolio.ts`）：
+- `net_worth.total` = Σ 账户总价值 = Σ(现金 + 持仓市值)。行情缺失的账户只计入已知的现金 → 这是**下界**
+- `net_worth.netWorthComplete`：`false` 时 `total` 是下界，UI 必须显示「≥¥X」而不是当精确值
+- `net_worth.unpricedAccounts`：因行情缺失无法估值的账户数
+- `net_worth.accounts[]` = `{ id, name, icon, asset_type, cash, value }`
+  - `cash` = 现金；`value` = 总价值（现金 + 持仓市值），行情缺失为 `null`
+  - **净资产用的是 `value`，不是 `cash`**——挂了持仓的账户两者差一整块持仓市值
+
+> ✅ **已删除 `total_assets` / `total_liabilities` / `asset_breakdown`**（D1）。
+> 它们是 `Σ accounts.balance` 的**现金口径**第二套算法，Web / Android 均零消费者
+> （Android 根本不调本接口）。要资产/负债拆分与构成，请用
+> `GET /api/assets/portfolio` 的 `liability` / `assetComposition`。
 
 ### POST `/api/stats/analysis`
 ```json
@@ -348,12 +355,16 @@
 ## 8. 资产 `/api/assets/*`（财务工作台）
 
 ### GET `/api/assets/overview`
-返回 `{ net_worth, total_assets, total_liabilities, by_type: [...], accounts: [...] }`。**单条聚合 SQL**（已修 N+1）。
-净资产口径与 `/api/stats/dashboard` 一致：负余额计负债，正余额计资产（详见上方 dashboard 小节）。
+返回 `{ accounts: [...] }`。**单条聚合 SQL**（已修 N+1）。
 
-> ⚠️ 这两个接口的净资产是**现金口径**（Σ `accounts.balance`，**不含持仓市值**），
-> 而 `GET /api/assets/portfolio` 是**总价值口径**。两者数值在有持仓时会不同，
-> 这是**当前有意保留**的差异（overview / dashboard 是已发布契约，未确认跨端消费前不改）。
+**只提供账户元数据 + 每账户现金余额**（`balance` = `accounts.balance`），
+不含任何净资产口径的字段。
+
+> ✅ **已删除 `total_assets` / `total_liabilities` / `net_worth` / `by_type`**（D1）。
+> 它们是 `Σ accounts.balance` 的现金口径第二套算法，Web 对它们零使用
+> （`Assets.vue` 只取 `accounts[]` 的 id/name/asset_type/icon），Android 不调本接口。
+>
+> **净资产 / 负债 / 构成只有一个真源：`GET /api/assets/portfolio`。**
 > 前端仪表读数一律以 `/api/assets/portfolio` 为准。
 
 ### GET `/api/assets/portfolio` — 工作台读模型（净资产口径的**权威来源**）

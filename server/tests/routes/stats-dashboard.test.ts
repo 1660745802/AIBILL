@@ -112,6 +112,11 @@ describe('Dashboard Route - GET /api/stats/dashboard', () => {
 
     expect(net_worth).toHaveProperty('total')
     expect(net_worth).toHaveProperty('accounts')
+    // D1-D：下界标记必须随响应带出，否则瞬态兜底会把下界当精确值
+    expect(net_worth).toHaveProperty('netWorthComplete')
+    expect(net_worth).toHaveProperty('unpricedAccounts')
+    expect(net_worth.netWorthComplete).toBe(true)
+    expect(net_worth.unpricedAccounts).toBe(0)
     expect(Array.isArray(net_worth.accounts)).toBe(true)
     // Default accounts have 0 initial balance
     expect(net_worth.total).toBe(0)
@@ -119,7 +124,11 @@ describe('Dashboard Route - GET /api/stats/dashboard', () => {
       expect(acc).toHaveProperty('id')
       expect(acc).toHaveProperty('name')
       expect(acc).toHaveProperty('icon')
-      expect(acc).toHaveProperty('balance')
+      expect(acc).toHaveProperty('asset_type')
+      // `cash` 是现金、`value` 是总价值（现金 + 持仓市值）。
+      // 以前这里只有一个 `balance`，挂了持仓的账户两者会差一整块持仓市值。
+      expect(acc).toHaveProperty('cash')
+      expect(acc).toHaveProperty('value')
     }
   })
 

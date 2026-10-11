@@ -23,9 +23,14 @@
  *
  * 4. **行情缺失时市值 = null，不给 0**。0 会被读成「持仓归零了」，是错误信息；
  *    null 才是「暂时不知道它值多少」。某账户持仓无法估值时，它的总价值也是 null，
+ *    但它的现金仍然要算进净资产（下界）。
  *    该账户**只把现金计入净资产**（持仓那块未知），并通过
  *    `netWorthComplete=false` + `unpricedAccounts` 告知 UI 这是个下界，要显示「≥¥X」。
  */
+
+import type { getDb } from '../db/index.js'
+
+type Db = ReturnType<typeof getDb>
 
 /**
  * 行源：**每个活跃账户一行**（不管有没有填过余额）。
@@ -36,6 +41,8 @@ export interface AccountRow {
   account_id: number
   account_name: string
   asset_type: string
+  /** 图标，只用于展示，不参与任何计算 */
+  icon?: string | null
   /** 账户级总投入（分），来自 `accounts.invested_total` */
   invested_total: number | null
   /**
@@ -71,6 +78,8 @@ export interface AccountPosition {
   accountId: number
   name: string
   assetType: string
+  /** 图标，只用于展示，不参与任何计算 */
+  icon: string | null
   isInvestment: boolean
   /** 该账户挂了持仓（balance 当现金处理） */
   hasHoldings: boolean
@@ -284,6 +293,7 @@ export function buildPortfolio(
       accountId,
       name: r.account_name,
       assetType: r.asset_type,
+      icon: r.icon ?? null,
       isInvestment,
       hasHoldings,
       /** 有净投入但还没配持仓：UI 该说「持仓未配置」而不是「亏损」 */
@@ -494,4 +504,50 @@ export function buildPortfolio(
     assetComposition,
     lastUpdated: accounts[0]?.lastUpdated ?? null,
   }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   三个读取源
+
+   **两个路由共用**：`/api/assets/portfolio` 与 `/api/stats/dashboard` 必须从
+   同一份数据算净资产。曾经 dashboard 自己写了一遍 `SUM(a.balance)`，
+   于是同一个数字有两套算法（一个是现金口径、一个是总价值口径）。
+   把读取源集中到这里，让「两个接口口径不一致」这种事在结构上就不可能。
+   ────────────────────────────────────────────────────────────── */
+
+/**
+ * 行源：每个活跃账户一行（不管有没有填过余额）。
+ *
+ * 「想填就填，不想填就是 0」——所以没填过的账户也必须在这里，
+ * 否则它既进不了净资产、页面上也没处填。
+ * 停用账户（软删）要排除：它的快照还在库里，留着会让最后一笔现金
+ * 永远留在净资产里，也会让「日变动」因覆盖数永不相等而恒为 null。
+ */
+export function readAccounts(db: Db, userId: number): AccountRow[] {
+  return db.prepare(
+    `SELECT a.id AS account_id, a.name AS account_name, a.asset_type, a.invested_total,
+            a.icon, a.balance
+       FROM accounts a
+      WHERE a.user_id = ? AND a.is_active = 1
+      ORDER BY a.sort_order ASC, a.id ASC`,
+  ).all(userId) as AccountRow[]
+}
+
+/** 曲线源：快照历史（每账户每天一条）。和行源是两个问题，分开读 */
+export function readHistory(db: Db, userId: number, sinceDays = 3650): SnapshotPoint[] {
+  const since = new Date(Date.now() - sinceDays * 86400000)
+    .toISOString().slice(0, 10)
+  return db.prepare(
+    `SELECT s.account_id, s.snapshot_date, s.balance
+       FROM asset_snapshots s
+       JOIN accounts a ON a.id = s.account_id
+      WHERE s.user_id = ? AND a.is_active = 1 AND s.snapshot_date >= ?
+      ORDER BY s.snapshot_date ASC`,
+  ).all(userId, since) as SnapshotPoint[]
+}
+
+export function countAccounts(db: Db, userId: number): number {
+  return (db.prepare(
+    'SELECT count(*) c FROM accounts WHERE user_id = ? AND is_active = 1',
+  ).get(userId) as { c: number }).c
 }

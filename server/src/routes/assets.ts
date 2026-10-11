@@ -6,8 +6,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
-import { summarizeNetWorth } from '../lib/assets.js'
-import { buildPortfolio, type AccountRow, type SnapshotPoint } from '../lib/portfolio.js'
+import { buildPortfolio, readAccounts, readHistory, countAccounts, type AccountRow, type SnapshotPoint } from '../lib/portfolio.js'
 import { loadAccountHoldings } from '../lib/investments-repo.js'
 import { setManualBalance } from '../lib/account-balance.js'
 
@@ -50,6 +49,12 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware)
 
   // GET /api/assets/overview - 资产全景概览
+  //
+  // 只提供**账户元数据 + 每账户现金余额**，不再提供任何净资产口径的字段。
+  // 净资产/总负债/资产构成只有一个真源：`GET /api/assets/portfolio`。
+  // 曾经这里还返回 `total_assets` / `total_liabilities` / `net_worth` / `by_type`，
+  // 且是**现金口径**（不含持仓市值），而仪表读的是 portfolio 的总价值口径——
+  // 同一个数字两套算法，正是这个项目大半历史 bug 的来源。已删除。
   app.get('/api/assets/overview', async (request: FastifyRequest) => {
     const db = getDb()
     const userId = request.user!.userId
@@ -62,42 +67,19 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
        ORDER BY sort_order, id`
     ).all(userId) as any[]
 
-    const byType: Record<string, { total: number; count: number }> = {}
-
     // 单条聚合 SQL 取所有账户余额（修复 N+1）
     const balances = calcAccountBalances(db, userId)
 
-    // 口径：负余额 = 负债（信用卡欠款、活期透支都算），正余额 = 资产。
-    // asset_type 只用于展示分组。与 /api/stats/dashboard 共用 summarizeNetWorth。
-    const accountsWithBalance = accounts.map((acc: any) => {
-      const balance = balances.get(acc.id) ?? 0
-      const assetType = acc.asset_type || 'liquid'
-
-      if (!byType[assetType]) {
-        byType[assetType] = { total: 0, count: 0 }
-      }
-      byType[assetType].total += balance
-      byType[assetType].count += 1
-
-      return { ...acc, balance }
-    })
-
-    const { total_assets: totalAssets, total_liabilities: totalLiabilities, net_worth: netWorth } =
-      summarizeNetWorth(accountsWithBalance)
-
-    const typeBreakdown = Object.entries(byType).map(([type, data]) => ({
-      type,
-      total: data.total,
-      count: data.count,
+    // `balance` 是**现金**（`accounts.balance`），不是账户总价值——
+    // 理财账户还要加持仓市值，那部分在 portfolio 里算。
+    const accountsWithBalance = accounts.map((acc: any) => ({
+      ...acc,
+      balance: balances.get(acc.id) ?? 0,
     }))
 
     return {
       code: 0,
       data: {
-        total_assets: totalAssets,
-        total_liabilities: totalLiabilities,
-        net_worth: netWorth,
-        by_type: typeBreakdown,
         accounts: accountsWithBalance,
       },
       message: '',
@@ -175,43 +157,6 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
       balance: z.number().int(),
     })).min(1).max(50),
   })
-
-  /**
-   * 行源：每个活跃账户一行（不管有没有填过余额）。
-   *
-   * 「想填就填，不想填就是 0」——所以没填过的账户也必须在这里，
-   * 否则它既进不了净资产、页面上也没处填。
-   * 停用账户（软删）要排除：它的快照还在库里，留着会让最后一笔现金
-   * 永远留在净资产里，也会让「日变动」因覆盖数永不相等而恒为 null。
-   */
-  function readAccounts(db: ReturnType<typeof getDb>, userId: number): AccountRow[] {
-    return db.prepare(
-      `SELECT a.id AS account_id, a.name AS account_name, a.asset_type, a.invested_total,
-              a.balance
-         FROM accounts a
-        WHERE a.user_id = ? AND a.is_active = 1
-        ORDER BY a.sort_order ASC, a.id ASC`,
-    ).all(userId) as AccountRow[]
-  }
-
-  /** 曲线源：快照历史（每账户每天一条）。和行源是两个问题，分开读 */
-  function readHistory(db: ReturnType<typeof getDb>, userId: number, sinceDays = 3650): SnapshotPoint[] {
-    const since = new Date(Date.now() - sinceDays * 86400000)
-      .toISOString().slice(0, 10)
-    return db.prepare(
-      `SELECT s.account_id, s.snapshot_date, s.balance
-         FROM asset_snapshots s
-         JOIN accounts a ON a.id = s.account_id
-        WHERE s.user_id = ? AND a.is_active = 1 AND s.snapshot_date >= ?
-        ORDER BY s.snapshot_date ASC`,
-    ).all(userId, since) as SnapshotPoint[]
-  }
-
-  function countAccounts(db: ReturnType<typeof getDb>, userId: number): number {
-    return (db.prepare(
-      'SELECT count(*) c FROM accounts WHERE user_id = ? AND is_active = 1',
-    ).get(userId) as { c: number }).c
-  }
 
   /**
    * 构建「每账户持仓估值」映射，喂给 buildPortfolio。

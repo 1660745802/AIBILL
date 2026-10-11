@@ -12,7 +12,8 @@ import { getDb } from '../db/index.js'
 import { chatCompletion, AiError } from '../ai/client.js'
 import { monthRange, prevMonthRange, today as todayStr, dateOffset } from '../lib/date.js'
 import { budgetProgress, WARN_PERCENT } from '../lib/budget.js'
-import { summarizeNetWorth } from '../lib/assets.js'
+import { buildPortfolio, readAccounts, readHistory, countAccounts } from '../lib/portfolio.js'
+import { loadAccountHoldings } from '../lib/investments-repo.js'
 
 export async function statsRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware)
@@ -265,37 +266,48 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       transaction_count: transactionCount,
     }
 
-    // === 2. 净资产（单条聚合 SQL，修复 N+1：原每账户 4 个相关子查询） ===
-    const accounts = db
-      .prepare(
-        // 017：余额取 accounts.balance 权威列，不再「期初 + 流水」重算。
-        // 重算会和手填覆盖打架，且 551/553 笔无归属流水让重算几乎恒等于期初值。
-        `SELECT a.id, a.name, a.icon, a.asset_type, a.balance
-        FROM accounts a
-        WHERE a.user_id = ? AND a.is_active = 1
-        ORDER BY a.sort_order ASC, a.id ASC`,
-      )
-      .all(userId) as Array<{ id: number; name: string; icon: string; asset_type: string; balance: number }>
+    // === 2. 净资产（与 /api/assets/portfolio 同一个读模型、同一个口径） ===
+    //
+    // 曾经这里自己写了一遍 `SUM(a.balance)`（**现金口径**，不含持仓市值），
+    // 而仪表读的是 portfolio 的**总价值口径**——同一个数字两套算法，
+    // 正是本项目大半历史 bug 的来源。现在直接复用 buildPortfolio，
+    // 读取源在 `lib/portfolio.ts`，两个接口结构上不可能再漂移。
+    //
+    // 「今天」用与 portfolio 路由**完全相同**的取值（UTC 日期），否则 `staleDays` 会
+    // 在两个接口之间差一天。注意它与本 handler 里的 `today`（本地时区，见
+    // `lib/date.ts`）**不是一回事**：两者的统一是 deferred 决策 D2，不在这里夹带。
+    const portfolioToday = new Date().toISOString().slice(0, 10)
+    const portfolio = buildPortfolio(
+      readAccounts(db, userId),
+      readHistory(db, userId),
+      countAccounts(db, userId),
+      portfolioToday,
+      loadAccountHoldings(db, userId),
+    )
 
-    // 资产/负债/净资产口径与 /api/assets/overview 完全一致：见 lib/assets.ts
-    // 净资产 = 所有账户余额之和 = 总资产 − 总负债
-    const { total_assets, total_liabilities, net_worth: netWorthTotal } = summarizeNetWorth(accounts)
-    const net_worth = { total: netWorthTotal, accounts }
-
-    // === 2.1 资产分布（按 asset_type 分组）===
-    // 直接复用上面已查出的 accounts 行在内存分组，不再重跑一遍同样的聚合
-    const assetTypeMap: Record<string, { total: number; count: number }> = {}
-    for (const acc of accounts) {
-      const t = acc.asset_type || 'liquid'
-      if (!assetTypeMap[t]) assetTypeMap[t] = { total: 0, count: 0 }
-      assetTypeMap[t].total += acc.balance
-      assetTypeMap[t].count += 1
+    /**
+     * `accounts` 仍返回（Dashboard 用它的 `length` 判断空态），但每行补上
+     * **总价值 `value`**（行情缺失为 null）。
+     *
+     * `cash` 与 `value` 是两个真实存在、都该给的量：`cash` 是账户现金，
+     * `value = cash + 持仓市值`。**净资产用的是 `value`，不是 `cash`**——
+     * 挂了持仓的账户两者差着整整一块持仓市值。
+     * `total = Σ(value ?? cash)`（行情缺失的账户只计入已知的现金 → 下界）。
+     */
+    const net_worth = {
+      total: portfolio.netWorth,
+      /** false = `total` 是个下界，UI 必须显示「≥¥X」而不是当精确值 */
+      netWorthComplete: portfolio.netWorthComplete,
+      unpricedAccounts: portfolio.unpricedAccounts,
+      accounts: portfolio.accounts.map((a) => ({
+        id: a.accountId,
+        name: a.name,
+        icon: a.icon,
+        asset_type: a.assetType,
+        cash: a.cash,
+        value: a.value,
+      })),
     }
-    const asset_breakdown = Object.entries(assetTypeMap).map(([type, v]) => ({
-      type,
-      total: v.total,
-      count: v.count,
-    }))
 
     // === 3. 7天支出趋势 ===
     const sevenDaysAgoStr = dateOffset(-6)
@@ -548,10 +560,16 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       code: 0,
       data: {
         summary: { ...summary, saving_rate },
+        /**
+         * 净资产 —— **唯一口径 = 总价值**（现金 + 持仓市值），来自 portfolio 读模型。
+         *
+         * 曾经这里还有 `total_assets` / `total_liabilities` / `asset_breakdown`，
+         * 都是 `SUM(accounts.balance)` 的**现金口径**。Web 前端对这三项零使用
+         * （负债改读 `portfolio.liability`，构成改读 `portfolio.assetComposition`），
+         * Android 也不调本接口。留着只会让「净资产」这个数字在服务端有第二套算法。
+         * 已删除：**要资产/负债拆分和构成，请用 `GET /api/assets/portfolio`**。
+         */
         net_worth,
-        total_assets,
-        total_liabilities,
-        asset_breakdown,
         trend_7days,
         top_categories,
         budget_progress,

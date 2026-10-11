@@ -75,15 +75,32 @@ export const useClusterStore = defineStore('cluster', () => {
    * 净资产是不是一个**下界**。
    * 有账户的持仓没取到价时，那个账户只有现金被算进来，实际值 ≥ 显示值。
    * UI 必须显示「≥¥X」而不是把下界当精确值——曾经这里是静默少算、无任何提示。
+   *
+   * **transient 阶段也要正确**（D1-D）：portfolio 还没到手的那几十毫秒里，
+   * 显示的是 dashboard 的兑底值。以前这里只看 portfolio，于是兑底阶段
+   * 恒为「完整」——一个下界被当成精确值报给了用户。
+   * D1 之后 dashboard 也带这两个字段，所以两个阶段都拿得到真话。
    */
-  const netWorthIncomplete = computed(() => portfolio.value?.netWorthComplete === false)
-  const unpricedAccounts = computed<number>(() => portfolio.value?.unpricedAccounts ?? 0)
+  const netWorthIncomplete = computed(() =>
+    (portfolio.value
+      ? portfolio.value.netWorthComplete
+      : data.value?.net_worth?.netWorthComplete) === false,
+  )
+  const unpricedAccounts = computed<number>(() =>
+    portfolio.value
+      ? portfolio.value.unpricedAccounts
+      : (data.value?.net_worth?.unpricedAccounts ?? 0),
+  )
   /**
    * 净资产读数（分）。`null` = **不可知**，UI 必须显示「—」而不是编一个数。
    *
    * portfolio 已加载 → 它的数（唯一口径）。
-   * 还在飞 → 暂时用 dashboard 的现金口径，免得首屏先闪一个 0（瞬态，不是口径仲裁）。
-   * 加载失败 → `null`：宁可说“不知道”，也不长期静默显示另一个口径的更小的数。
+   * 还在飞 → 暂时用 dashboard 的数，免得首屏先闪一个 0。
+   * 加载失败 → `null`：宁可说“不知道”，也不长期静默显示一个编出来的数。
+   *
+   * D1 之后兑底值与最终值是**同一个口径**（都是总价值，都来自
+   * `lib/portfolio.ts`），所以这里不再是「两套口径择一」，只是同一口径的
+   * 两个来源先后到达。
    */
   const netWorth = computed<number | null>(() =>
     portfolio.value ? portfolio.value.netWorth
