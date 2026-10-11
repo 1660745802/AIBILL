@@ -140,9 +140,37 @@ Android 客户端保留」的注释是**错的**，已一并移除——正因�
 测试计数 403 → 403（删 6 个 `summarizeNetWorth` 用例，加 5 个资产/负债划分用例，
 `networth` 5 → 6）。
 
-> **已知残留（不在本次范围）**：`POST /api/stats/analysis` 的 `data_summary.net_worth`
-> 是**第三处**净资产计算（`SUM(a.balance)`，喂给 AI 提示词）。它不在批准的改动面内，
-> 本次未动。要不要一并归一，待定。
+> **接着做的（见下一节）**：`POST /api/stats/analysis` 的 `data_summary.net_worth`
+> 是**第三处**净资产计算（`SUM(a.balance)`，喂给 AI 提示词）。已一并归一。
+
+### 第三处口径归一：`POST /api/stats/analysis`
+
+D1 拆掉了 dashboard / overview 的第二套算法，但勘察时发现**第三处**：
+`stats.ts` 里一段裸的 `SELECT COALESCE(SUM(a.balance), 0)`，结果既进 `data_summary`，
+**又写进 AI 提示词**。
+
+它比「页面显示错数」更糟：AI 会把漏算持仓的净资产当成事实写进分析报告，
+用一段自信的散文告诉用户「你的净资产是 ¥28,000」，而实际是 ¥114,170。
+
+- `data_summary.net_worth` 改走 `lib/portfolio.ts`（总价值），与 portfolio 逐分相同
+- 新增 `data_summary.net_worth_complete` / `unpriced_accounts`
+- **提示词也带下界约束**：不完整时写「净资产: ≥¥X（还有 N 个账户的持仓没取到价）」，
+  否则 AI 会把下界说成精确值
+
+**新增 4 条测试**（该接口此前零覆盖），并做了**变异测试验证鉴别力**：
+夹具放真实持仓，现金 28,000 与总价值 114,170 差 86,170。
+
+| 变异 | 结果 |
+|---|---|
+| `netWorth` 改回 Σcash | 3 条变红 |
+| 提示词去掉「≥」分支 | 对应 1 条变红 |
+
+只测「无持仓」场景是测不出来的（现金 == 总价值，回归也会绿）——所以夹具必须带持仓。
+
+顺带修正 `API.md` 里该接口的请求/响应描述（原本写的是 `{ dimension, months }`，
+照文档调用会 400；实际是 `{ type }`，响应是 `{ analysis, data_summary }`）。
+
+测试计数 403 → 407（30 个文件）。
 
 ### 界面重做：仪表读数（Instrument）—— 替换上一版的「账本纸」
 

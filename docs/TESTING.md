@@ -19,6 +19,8 @@
 - `routes/budgets.test.ts`
 - `routes/memories.test.ts`
 - `routes/stats-dashboard.test.ts`
+- `routes/stats-analysis.test.ts`（**AI 提示词里的净资产口径**：变金测试验证过鉴别力，
+  夹具必须带持仓否则回归测不出）
 - `routes/subscriptions.test.ts`
 - `routes/transactions.test.ts`
 

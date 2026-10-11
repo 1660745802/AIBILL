@@ -304,11 +304,32 @@
 
 ### POST `/api/stats/analysis`
 ```json
-{ "dimension": "overall | spending | forecast", "months": 4 }
+// Request
+{ "type": "overview | spending | forecast" }
 // Response
-{ "code": 0, "data": { "analysis": "AI 生成的报告...", "chart_data": {...} }, "message": "" }
+{ "code": 0, "data": {
+    "type": "overview",
+    "analysis": "AI 生成的报告…",
+    "data_summary": {
+      "months": [{ "month": "2026-10", "expense": 0, "income": 0 }],
+      "categories": [{ "name": "…", "icon": "…", "total": 0 }],
+      "net_worth": 0,
+      "net_worth_complete": true,
+      "unpriced_accounts": 0
+    },
+    "generated_at": "…"
+}, "message": "" }
 ```
 服务端**单条 `GROUP BY substr(date,1,7)`** 取多个月数据。
+
+**`net_worth` 是总价值**（现金 + 持仓市值），与 `GET /api/assets/portfolio`
+逐分相同。曾经这里是裸的 `SUM(accounts.balance)`，是同一个数字在服务端的
+**第三套**算法 —— 差着一整块持仓市值，而这个数被**写进 AI 提示词**，
+于是 AI 会把漏算的净资产当成事实写进分析报告。
+
+行情缺失的账户只计入现金 → `net_worth` 可能是**下界**，必须配
+`net_worth_complete` / `unpriced_accounts` 读。提示词里也带这个约束：
+不完整时写「净资产: ≥¥X」，而不是把下界说成精确值。
 
 ---
 

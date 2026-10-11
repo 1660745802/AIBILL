@@ -640,16 +640,25 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
         )
         .all(userId, thisStart, thisEnd) as Array<{ name: string; icon: string; total: number }>
 
-      // 净资产（单条聚合 SQL，修复 N+1）
-      const netWorthRow = db
-        .prepare(
-          // 017：同上，权威列
-        `SELECT COALESCE(SUM(a.balance), 0) AS total
-          FROM accounts a
-          WHERE a.user_id = ? AND a.is_active = 1`,
-        )
-        .get(userId) as { total: number } | undefined
-      const netWorth = netWorthRow?.total ?? 0
+      /**
+       * 净资产 —— 与 `/api/assets/portfolio` / `/api/stats/dashboard` **同一个读模型**。
+       *
+       * 曾经这里自己写了一遍 `SUM(a.balance)`（现金口径），于是同一个数字在服务端
+       * 有**第三套**算法。喂给 AI 的数比仪表少一整块持仓市值时，AI 会把
+       * 「漏算持仓的净资产」当成事实写进分析报告——那是比显示错数更糟的错误。
+       *
+       * 「今天」取值与另外两个接口一致（UTC 日期），否则同一份数据在
+       * `staleDays` 上会差一天。（本地时区的统一是 deferred 决策 D2。）
+       */
+      const portfolioToday = new Date().toISOString().slice(0, 10)
+      const portfolio = buildPortfolio(
+        readAccounts(db, userId),
+        readHistory(db, userId),
+        countAccounts(db, userId),
+        portfolioToday,
+        loadAccountHoldings(db, userId),
+      )
+      const netWorth = portfolio.netWorth
 
       // 订阅月支出
       const subRow = db
@@ -690,7 +699,13 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
       }
 
       dataLines.push(`\n## 资产概况`)
-      dataLines.push(`净资产: ¥${(netWorth / 100).toFixed(0)}`)
+      /**
+       * 下界必须在提示词里说清：否则 AI 会把「至少 ¥X」写成「净资产 ¥X」。
+       * 某账户持仓取不到价时只有现金被算进来，实际值 ≥ 这个数。
+       */
+      dataLines.push(portfolio.netWorthComplete
+        ? `净资产: ¥${(netWorth / 100).toFixed(0)}`
+        : `净资产: ≥¥${(netWorth / 100).toFixed(0)}（还有 ${portfolio.unpricedAccounts} 个账户的持仓没取到价，实际不低于此数）`)
       if (subscriptionMonthly > 0) {
         dataLines.push(`固定订阅月支出: ¥${(subscriptionMonthly / 100).toFixed(0)}`)
       }
@@ -762,6 +777,12 @@ ${dataText}
             months,
             categories: categories.map((c) => ({ name: c.name, icon: c.icon, total: c.total })),
             net_worth: netWorth,
+            /**
+             * `net_worth` 是**总价值**（现金 + 持仓市值），与仪表逐分相同。
+             * 行情缺失的账户只计入现金 → 它可能是**下界**，必须配下两个字段读。
+             */
+            net_worth_complete: portfolio.netWorthComplete,
+            unpriced_accounts: portfolio.unpricedAccounts,
             subscription_monthly: subscriptionMonthly,
           },
           generated_at: new Date().toISOString(),

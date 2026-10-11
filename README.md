@@ -106,7 +106,7 @@ bill/
 │   │   ├── routes/            # 16 个路由模块（80 端点）
 │   │   ├── services/          # auth / logger / scheduler
 │   │   └── lib/               # response / error-codes（统一响应包装）
-│   └── tests/                 # 29 个测试文件（403 用例）
+│   └── tests/                 # 30 个测试文件（407 用例）
 ├── web/                       # 前端（Vue 3 + TailwindCSS）
 │   ├── src/
 │   │   ├── App.vue            # PC 侧边栏 + 移动端 Tab + Toast
