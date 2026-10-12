@@ -15,8 +15,10 @@ import { chatCompletion, AiError } from '../ai/client.js'
 import { today, toDateStr, addDaysTo, beijingYearMonth } from '../lib/date.js'
 import { buildParsePrompt } from '../ai/prompts.js'
 import { extractJsonArray, validateParsedItems, ParseError } from '../ai/parser.js'
-import { matchCategory } from '../ai/category-matcher.js'
+import { matchCategory, isExactCategoryMatch } from '../ai/category-matcher.js'
 import { quickParse } from '../ai/quick-parser.js'
+import { extractParsedExtras, deriveReviewMeta } from '../lib/parse-extract.js'
+import { getSourceMapping } from './notification-rules.js'
 import {
   classifyNotification,
   shouldCallAi,
@@ -124,6 +126,18 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         hints: body.hints ? JSON.stringify(body.hints) : null,
       }
 
+      /* ═══ 出参扩展（契约 §6）：机械抽取，不进 prompt ═══
+         `input` 为主，抽不到再退回 title/body（S2 已收）。
+         ⚠️ 只有**抽取**能退回 title/body；tier/佐证判据（deriveReviewMeta 的
+         `input`）**只许用 input**——title/body 暂不参与判据。 */
+      const friendlySource = body.source
+        ? getSourceMapping(db)[body.source.package_name]
+        : undefined
+      const fallbackText = [body.title, body.body]
+        .filter((s): s is string => !!s)
+        .join(' ')
+      const extras = extractParsedExtras(body.input, { fallbackText, sourceName: friendlySource })
+
       // 获取用户的分类和账户列表
       const categories = db
         .prepare('SELECT id, name, type, icon FROM categories WHERE user_id = ? AND is_active = 1')
@@ -151,7 +165,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       if (quickResult) {
         // 快捷解析成功，匹配分类 ID + 账户 ID
-        const result = quickResult.map((item) => {
+        const items = quickResult.map((item) => {
           const type = item.type === 'expense' ? 'expense' : 'income'
           const matched = matchCategory(
             item.category,
@@ -168,6 +182,14 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
             if (matchedAcc) { accountId = matchedAcc.id; accountName = matchedAcc.name }
           }
 
+          // §6：既有键一字不改，只追加机械字段
+          const meta = deriveReviewMeta({
+            path: 'quick',
+            categoryExact: isExactCategoryMatch(item.category, matched?.name ?? null),
+            amountCents: Math.round(item.amount * 100),
+            input: body.input,
+          })
+
           return {
             type: item.type,
             amount: Math.round(item.amount * 100),
@@ -180,6 +202,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
             account_name: accountName,
             target_account_id: null,
             target_account_name: '',
+            ...extras,
+            ...meta,
           }
         })
 
@@ -190,7 +214,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           rawInput: body.input,
           cleanedInput,
           aiResponse: '[quick-parse]',
-          parsedItems: JSON.stringify(result),
+          parsedItems: JSON.stringify(items),
           status: 'success',
           errorMessage: null,
           durationMs,
@@ -200,7 +224,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         return {
           code: 0,
           data: {
-            items: result,
+            items,
             raw_input: body.input,
             parse_log_id: logId,
             source: 'quick',
@@ -411,12 +435,33 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       // Log success
       const durationMs = Date.now() - startTime
+
+      /* §6：既有键一字不改，只追加机械字段。
+         `source` 补 `'ai'`（#4 原先缺失）。needs_review/confidence 用 verifyParsed
+         的**逐项**判定 + 分类是否精确命中 + classifyNotification 的 reasons。 */
+      const items = result.map((it, i) => {
+        const raw = validItems[i]!
+        const categoryExact =
+          raw.type === 'transfer'
+            ? true // 转账本就不需要分类，不因此判 needs_review
+            : isExactCategoryMatch(raw.category, it.category_name || null)
+        const meta = deriveReviewMeta({
+          path: 'ai',
+          categoryExact,
+          amountCents: it.amount,
+          input: body.input, // 判据只许用 input（不用 title/body）
+          classifyReasons: classification.reasons,
+          verifyVerdict: verified.perItem[i]?.verdict,
+        })
+        return { ...it, ...extras, ...meta }
+      })
+
       const logId = insertParseLog(db, {
         userId,
         rawInput: body.input,
         cleanedInput,
         aiResponse,
-        parsedItems: JSON.stringify(result),
+        parsedItems: JSON.stringify(items),
         status: 'success',
         errorMessage: null,
         durationMs,
@@ -424,14 +469,15 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       })
 
       // 记下这次解析的指纹，等 /transactions 写入时回关联（见 lib/parse-landing.ts）
-      rememberParse(userId, logId, result as any, body.input)
+      rememberParse(userId, logId, items as any, body.input)
 
       return {
         code: 0,
         data: {
-          items: result,
+          items,
           raw_input: body.input,
           parse_log_id: logId,
+          source: 'ai',
           hints_conflict: hintsConflict,
         },
         message: '',

@@ -144,6 +144,22 @@ export function matchCategory(
 }
 
 /**
+ * 该匹配是不是「精确命中」。
+ *
+ * 判据：匹配到的分类名与模型给出的分类名**逐字相同**，且不是兜底的「其他」。
+ * 供出参扩展（契约 §6）派生 `needs_review` / `confidence` 用——
+ * 模糊匹配（包含/同义词）或回落「其他」都算**非精确**。
+ */
+export function isExactCategoryMatch(
+  aiCategoryName: string,
+  matchedName: string | null | undefined,
+): boolean {
+  if (!matchedName) return false
+  if (matchedName === '其他') return false
+  return aiCategoryName.trim() === matchedName
+}
+
+/**
  * 兜底分类：优先「其他」，否则第一个该类型的分类。
  *
  * ⚠️ 一个都没有时返回 **null**，绝不返回 `{ id: 0 }`：

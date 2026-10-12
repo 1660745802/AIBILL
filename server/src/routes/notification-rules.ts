@@ -36,6 +36,27 @@ function loadActiveRules(): void {
 }
 
 /**
+ * 当前激活规则里的 `source_mapping`（包名→友好名）。
+ *
+ * 供 `/api/ai/parse` 机械补出参 `merchant`（契约 §6）——只读、只做抽取，
+ * **绝不进 prompt**。直接读库而不走懒加载缓存，避免冷启动/换库时缓存未就绪。
+ */
+export function getSourceMapping(db: ReturnType<typeof getDb> = getDb()): Record<string, string> {
+  const row = db
+    .prepare('SELECT rules FROM notification_rules WHERE is_active = 1 ORDER BY id DESC LIMIT 1')
+    .get() as { rules: string } | undefined
+  if (!row) return {}
+  try {
+    const rules = JSON.parse(row.rules)
+    const m = rules?.source_mapping
+    if (m && typeof m === 'object' && !Array.isArray(m)) return m as Record<string, string>
+  } catch {
+    // 规则损坏时视为无映射：`merchant` 回落正文抽取，不让它阻断解析
+  }
+  return {}
+}
+
+/**
  * 客户端读取接口（无认证）
  */
 export async function configRoutes(app: FastifyInstance): Promise<void> {
