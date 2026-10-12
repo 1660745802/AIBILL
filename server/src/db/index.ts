@@ -6,7 +6,7 @@ import Database from 'better-sqlite3'
 import path from 'node:path'
 import fs from 'node:fs'
 import { config } from '../config.js'
-import { migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015, migration016, migration017, migration018, seedSettings } from './schema.js'
+import { migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015, migration016, migration017, migration018, migration019, seedSettings } from './schema.js'
 
 let db: Database.Database
 
@@ -89,6 +89,7 @@ function runMigrations(): void {
     { version: 16, name: 'drop_holding_cost_basis', sql: migration016 },
     { version: 17, name: 'account_balance_single_source', sql: migration017 },
     { version: 18, name: 'app_updates_version_code_unique', sql: migration018 },
+    { version: 19, name: 'ai_parse_input_context', sql: migration019 },
   ]
 
   const applied = db

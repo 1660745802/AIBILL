@@ -766,3 +766,32 @@ DROP INDEX IF EXISTS idx_app_updates_version_code;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_app_updates_version_code
   ON app_updates(version_code);
 `
+
+/**
+ * 019 — 解析入参上下文落库（契约 docs/recognition-flow.md §5）。
+ *
+ * 客户端在 `POST /api/ai/parse` 里多送 `channel` / `source` / `received_at` / `hints`，
+ * 服务端这些字段**只做归因与留档**（`hints` 明确不喂 prompt），所以要给两张表加列：
+ *
+ *   ai_parse_logs     channel / source_package / received_at / hints
+ *   ai_parse_filters  channel / source_package
+ *
+ * 为什么用 `ALTER TABLE ADD COLUMN` 而不是重建表（照 016/017 的风格）：
+ * - 老行天然为 NULL，向后兼容（读到的旧日志就是「没有入口归因」这个事实）；
+ * - `ai_parse_logs` 线上有上千行真实解析记录，为了加几个可空列去 DROP+RENAME
+ *   迁移风险远大于收益，而且 CHECK 约束/索引都得原样搬一遍。
+ *
+ * 靠 `schema_migrations` 保证这段 SQL 每个库只跑一次（见 db/index.ts）。
+ * 不带 DEFAULT / NOT NULL：新列对旧代码完全透明，旧 INSERT 语句不受影响。
+ * `hints` 存 JSON 字符串（与 parsed_items 同风格），不是可拆分的列——
+ * 现在只用来算 `hints_conflict`，「hints 里到底有哪些键」还会演进，拆成列等于提前上锁。
+ */
+export const migration019 = `
+ALTER TABLE ai_parse_logs ADD COLUMN channel TEXT;
+ALTER TABLE ai_parse_logs ADD COLUMN source_package TEXT;
+ALTER TABLE ai_parse_logs ADD COLUMN received_at TEXT;
+ALTER TABLE ai_parse_logs ADD COLUMN hints TEXT;
+
+ALTER TABLE ai_parse_filters ADD COLUMN channel TEXT;
+ALTER TABLE ai_parse_filters ADD COLUMN source_package TEXT;
+`
