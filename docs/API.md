@@ -3,7 +3,7 @@
 > **Base URL**: `http(s)://<host>:3000/api`
 > **认证**: 除 `/health`、`/api/auth/*`、`/api/config/notification-rules`、`/api/app/update` 外均需 `Authorization: Bearer <jwt>`
 > **响应格式**: 统一 `{ code: 0, data: <T>, message: "" }`
-> **路由**: 见 `server/src/routes/*.ts`。本文档逐条枚举全部 88 个端点；
+> **路由**: 见 `server/src/routes/*.ts`。本文档逐条枚举全部 90 个端点；
 > 若与 `scripts/gen-api-docs.ts` 输出不一致，**以脚本为准**（它直接读 `routes/*.ts`）。
 
 > ⚠️ **已废弃接口（deprecated，2026-10）**：`/api/budgets/*`、`/api/goals/*`、
@@ -173,14 +173,56 @@
 ## 3. AI `/api/ai/*` & `/api/memories/*`
 
 ### POST `/api/ai/parse`
-**限流：20/分钟**。用户输入 `<user_input>` 包裹后送 LLM。
-```json
-{ "input": "午饭32，打车15" }
-// Response 成功
-{ "code": 0, "data": { "items": [{ "type": "expense", "amount": 3200, "category_id": 1, "category_name": "餐饮", "category_icon": "🍜", "description": "午饭", "date": "2026-07-02", "account_id": null, "account_name": "", "target_account_id": null, "target_account_name": "" }], "raw_input": "..." }, "message": "" }
+**限流：20/分钟**。用户输入 `<user_input>` 包裹后送 LLM。**完整契约（8 种响应形态、
+入参/出参扩展、跨端约定）见 [recognition-flow.md §1/§5/§6](recognition-flow.md)**；此处只列要点：
+```jsonc
+// Request（只有 input 必填；其余可选，不传时行为与旧版完全一致）
+{ "input": "午饭32，打车15",
+  "channel": "nls",                                  // nls | sms | a11y | manual
+  "source": { "package_name": "com.tencent.mm", "source_name": "微信支付" },
+  "title": "...", "body": "...",
+  "received_at": "2026-10-12T23:40:00+08:00",        // 必须带时区偏移
+  "hints": { "amount_cents": 3200, "merchant": "美团" } }
+// Response 成功（items 元素在原有键之外**追加**机械推导字段）
+{ "code": 0, "data": { "items": [{
+    "type": "expense", "amount": 3200, "category_id": 1, "category_name": "餐饮",
+    "category_icon": "🍜", "description": "午饭", "date": "2026-07-02",
+    "account_id": null, "account_name": "", "target_account_id": null, "target_account_name": "",
+    // —— 追加（不进 prompt、不写账本，客户端做本地校验用）——
+    "merchant": null, "order_no": null, "card_tail": null,
+    "balance_after_cents": null, "balance_text": null, "time": null,
+    "confidence": "high", "confidence_reasons": ["quick","category_exact","amount_unit"],
+    "needs_review": false }],
+  "raw_input": "...", "parse_log_id": 123, "source": "quick", "hints_conflict": false },
+  "message": "" }
 // 失败 fallback
-{ "code": 5001, "data": null, "message": "AI 无法解析...", "fallback": "manual", "raw_input": "..." }
+{ "code": 5001, "data": null, "message": "AI 无法解析...", "fallback": "manual",
+  "raw_input": "...", "parse_log_id": 123 }   // ⚠️ 失败态在**顶层**，成功态在 data 里
 ```
+- `source`：`quick`（正则快捷）/`ai`（模型）/`prefilter`（入站预筛挡下，**无 parse_log_id**）/
+  `postfilter`（出站判为噪声，**无 parse_log_id**）。
+- `confidence` 是**枚举** `high|medium|low`（服务端派生，非模型自评）；**待审判据请用 `needs_review`**，
+  不要自己对 `confidence` 设阈值。
+- `balance_after_cents` 仅是提示，**服务端不会用它改余额**。
+
+### POST `/api/ai/filter-report`
+**限流：20/分钟**。客户端上报「发请求前拦掉了什么」（按窗口聚合计数），供 admin 侧与服务端口径对照。
+```jsonc
+{ "window_start": "2026-10-12 00:00:00", "window_end": "2026-10-12 23:59:59",
+  "client_version": "1.4.0", "channel": "nls",
+  "counts": [{ "rule_id": "precheck.coupon_facevalue", "count": 3 },
+             { "rule_id": "client_only.SELF_NOTIFICATION", "count": 9 }],
+  "totals": { "notifications": 100, "blocked": 53 } }
+// Response
+{ "code": 0, "data": { "accepted": 2, "unknown_precheck_ids": [] }, "message": "" }
+```
+- `rule_id` 只允许 `precheck.*`（命中服务端下发的判据，**可比**）或 `client_only.*`
+  （客户端独有判据，**服务端无对应**）；第三个前缀 → 400。
+- **幂等 = 覆盖**：同 (user, client_version, channel, 窗口, rule_id) 重复上报改写而非累加。
+- 无时区的窗口串按**北京时间**解释，存储与去重统一为 **UTC**；`2026-10-12T00:00:00+08:00`
+  与 `2026-10-12 00:00:00` 是同一个键。
+- 新表 `client_filter_stats` / `client_filter_totals`（migration021），详见
+  [recognition-flow.md §4](recognition-flow.md)。
 
 ### POST `/api/ai/parse-feedback`
 记录用户是否修正（用于质量统计 + 自动学习）。
@@ -498,9 +540,15 @@ liability, investment, curve, accounts, empty, lastUpdated, change, previousNetW
 **无需认证**。客户端启动时/定时拉取。支持 ETag/304 缓存。
 ```
 GET /api/config/notification-rules
-If-None-Match: "15"
+If-None-Match: "ab12…"
 ```
-返回 `{ version, updated_at, rules: { nls, a11y, sms, source_mapping, processor } }`。
+返回 `{ version, content_hash, updated_at, rules: { nls, a11y, sms, source_mapping, processor, precheck } }`。
+- **`ETag = "<content_hash>"`**（不再绑手填的 `version`）：内容真源是仓库文件
+  `server/config/rules.json`，启动时校验并发布，规则内容或代码判决据（`precheck` 由
+  `ai/verify.ts` 派生注入）变化都会换 hash → 客户端凭 304 自动重拉。详见
+  [ARCHITECTURE.md §3.7](ARCHITECTURE.md) 与 [recognition-flow.md §3/§9](recognition-flow.md)。
+- `rules.precheck`：服务端预筛判据（`rule_id = precheck. + 服务端 reason`，可被客户端在**发请求前**
+  复现）；`testcases` **不在下发 payload 内**。
 
 ### POST `/api/admin/notification-rules`
 **需要 admin**。创建新版本规则。
@@ -532,6 +580,7 @@ If-None-Match: "15"
 | GET | `/api/admin/ai-parse-logs` | 解析日志分页（**返回用户原始输入 `raw_input`**，访问写审计日志） |
 | GET | `/api/admin/ai-parse-logs/:id` | 单条日志（含 `raw_input` 原文，访问写审计日志） |
 | GET | `/api/admin/logs` | 应用日志分页 |
+| GET | `/api/admin/filter-stats` | 客户端拦截计数 vs 服务端**入站** reason 对照（`?days=30`；不含用户内容；**不返回误杀率**——那要靠语料判定） |
 
 > 隐私口径：**用户之间完全隔离**。管理员默认只在管理面板做用户/系统管理；
 > 跨用户查看流水明细与解析原文属**排障用途**，服务端会写审计日志
@@ -567,7 +616,7 @@ If-None-Match: "15"
 
 ## 附录 A：模块-端点索引
 
-与 `scripts/gen-api-docs.ts` 的输出**逐条对齐**（17 个模块 / 88 个端点）。
+与 `scripts/gen-api-docs.ts` 的输出**逐条对齐**（17 个模块 / 90 个端点）。
 
 | 模块 | 端点数 | 关键端点 |
 |------|--------|---------|
@@ -578,18 +627,18 @@ If-None-Match: "15"
 | assets | 4 | overview, **portfolio**, snapshots, accounts（trend / snapshot 已删） |
 | investments | 5 | 持仓 CRUD + quotes/refresh |
 | stats | 5 | summary, by-category, trend, dashboard, analysis |
-| ai | 5 | parse, chat, sessions, parse-feedback |
+| ai | 6 | parse, chat, sessions, parse-feedback, **filter-report** |
 | memory | 4 | CRUD |
 | budget | 4 | CRUD |
 | goals | 6 | CRUD + progress |
 | subscription | 6 | CRUD + cancel, renew |
 | import | 1 | CSV 预览 |
 | export | 2 | JSON, CSV |
-| admin | 17 | invites / users / settings / ai-stats / logs |
+| admin | 18 | invites / users / settings / ai-stats / logs / **filter-stats** |
 | app-update | 3 | update, updates |
 | notification-rules | 4 | config + admin |
 
-> `/health` 不在 `routes/` 里注册，故不计入上表的 88 个端点。
+> `/health` 不在 `routes/` 里注册，故不计入上表的 90 个端点。
 > 上表若与 `gen-api-docs.ts` 输出不一致，**以脚本为准**（它直接读 `routes/*.ts`）。
 
 ## 附录 B：自动生成脚本

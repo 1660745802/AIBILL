@@ -195,3 +195,61 @@ git pull origin main
 docker-compose up -d --build
 ```
 数据库 migration 自动应用。
+
+### 3.7 通知规则分发（`server/config/rules.json`）
+
+客户端（Android 通知记账）的预筛词表/包名/窗口参数不随 App 发版，而是**从服务端下发**：
+
+| 角色 | 是谁 |
+|------|------|
+| **内容真源** | `server/config/rules.json`（进 git，可 review / `git revert`） |
+| 发布载体 | 表 `notification_rules`（历史 + 激活态 + `content_hash`） |
+| 下发接口 | `GET /api/config/notification-rules`（无认证；`ETag = "<content_hash>"`，支持 304） |
+| 管理面板 | **只看/激活历史/回滚，不做在线编辑**（避免与文件双写） |
+| 契约细节 | [recognition-flow.md §9/§10](recognition-flow.md) |
+
+**启动流程（幂等 + fail-fast）**：读文件 → 严格校验（顶层键白名单 / 必需形状清单 / 正则交集子集 /
+`testcases` 自检）→ 算内容 hash（剔除 `testcases`，**含代码派生的 `precheck`**）→ 与激活版本 hash
+不同则插入新版本并激活，相同则不动。**任何一步失败都拒绝启动**（宁起不来，也不下发坏规则）。
+
+**部署面**：镜像内置 `config/`；`docker-compose.yml` 只读挂载 `./server/config/rules.json:/app/config/rules.json:ro`；
+env `RULES_PATH`（默认 `<cwd>/config/rules.json`）。非 Docker 部署需保证该文件存在（或设 `RULES_PATH`）。
+
+**改规则的流程**：改 `server/config/rules.json` → commit → `docker-compose up -d --build`（已挂载时
+`docker restart bill-app` 即可）→ 客户端凭 ETag 自动重拉。**回滚**：`git revert` 该文件后重启。
+⚠️ 老库升级后首次启动会发布一个新版本（存量行里没有 `precheck`），客户端会重拉一次；再启动即幂等。
+
+### 3.8 App 自更新与 `versionCode` 纪律
+
+Android 客户端用 `GET /api/app/update?versionCode=` 检查更新；`app_updates` 表里激活版本的
+`force_update=1` 时，所有 **`versionCode` 低于该版本**的客户端都会被要求强制升级
+（服务端只回标志，是否强更由客户端 `UpdateManager` 执行）。
+
+| 事实 | 值 |
+|------|-----|
+| **最低安全版本**（含「转账 `category_id` 可空」修复 `9e318a2`） | **`versionCode = 2`（v1.0.0）** |
+| **客户端支持基线** | **Android ≥ 1.5.0 = `versionCode ≥ 7`**；更老的包不做专门兼容（v0.4 垫片已撤除，见 [recognition-flow.md §11](recognition-flow.md)） |
+| 记录本文时的 HEAD | `versionCode = 24` / `1.6.0` |
+
+**发布检查单（发版前跑一遍）：`versionCode` 必须唯一且严格递增。**
+
+```sql
+-- ① 重复：有返回行即违规（历史真实出现过：v1.0.0/v1.1.0 都是 2；v1.3.0/v1.3.1 都是 4）
+SELECT version_code, COUNT(*) c, GROUP_CONCAT(version_name) names
+  FROM app_updates GROUP BY version_code HAVING c > 1;
+
+-- ② 非严格递增：有返回行即违规（按 id/created_at 排序后出现 <= 前一个）
+SELECT version_code, version_name, prev FROM (
+  SELECT id, version_code, version_name,
+         LAG(version_code) OVER (ORDER BY id) AS prev
+    FROM app_updates
+) WHERE prev IS NOT NULL AND version_code <= prev;
+```
+
+⚠️ **什么才算违规**：**只有「重复」与「非严格递增」是问题**。**跳号（gap）是正常的**——历史上
+`v1.4.0 = 5 → v1.5.0 = 7` 就跳过了 6（发版节奏/取消过一版都会造成），不要为此去查原因，
+更不要在检查单里加「必须连续」这种规则。
+
+⚠️ **为什么必须有这条**：更新判断只看 `versionCode`。一旦重复，**自报相同 code 的老安装会被判成
+「已是最新」，强更推不到它**（例：装了 v1.1.0 的机器自报 2，而服务器激活版本也可能自报 2）。
+两条 SQL 已用上述历史序列实测：① 检出 2 与 4 两组重复，② 检出 v1.1.0、v1.3.1。

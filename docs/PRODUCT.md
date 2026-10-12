@@ -77,7 +77,7 @@
 | 阶段 | 模块 | 状态 |
 |------|------|------|
 | **P0** | 鉴权（邀请码 + JWT） | ✅ |
-| **P0** | AI 快速记账 + 确认卡片 | ✅ |
+| **P0** | AI 快速记账 + 确认卡片 | ✅（解析链路含：入站预筛、`precheck` 云控判据、机械字段 `confidence`/`needs_review`、客户端拦截计数上报；契约见 [recognition-flow.md](recognition-flow.md)） |
 | **P0** | 手动记账（AI fallback） | ✅ |
 | **P0** | 流水列表 / 软删除 | ✅ |
 | **P0** | 注册后引导（`/onboarding` 4 步向导） | ✅ |

@@ -317,6 +317,9 @@ INSERT OR IGNORE INTO settings (key, value) VALUES (...);
 | **016** | **drop_holding_cost_basis** | 删三列冗余/误导性字段 + 加 `accounts.invested_total`（见下 §10.5） |
 | **017** | **account_balance_single_source** | 账户余额归一：加 `accounts.balance` / `balance_as_of_txn_id`（见下 §12） |
 | **018** | **app_updates_version_code_unique** | `app_updates.version_code` 唯一索引：先去重（优先留 `is_active=1` / 最大 id）再建 `UNIQUE INDEX`（幂等） |
+| **019** | **ai_parse_input_context** | `ai_parse_logs` 加 channel/source_package/received_at/hints；`ai_parse_filters` 加 channel/source_package（解析入参上下文留档，见 §13.1） |
+| **020** | **notification_rules_content_hash** | `notification_rules` 加 `content_hash`；`version` 先去重再建 UNIQUE，`content_hash` 建 UNIQUE（ETag 绑内容，见 §13.2） |
+| **021** | **client_filter_stats** | 新建 `client_filter_stats` / `client_filter_totals`（客户端拦截计数上报，见 §13.3） |
 
 > ⚠️ migration 012 曾被原地改写：早期版本重建过 `ai_parse_logs`（放宽 `status` CHECK 加 `filtered`），
 > 并被误应用到**生产库**（记录名 `parse_landing_tracking`）。当前代码里 012 是「新建 `ai_parse_filters`」版，
@@ -424,10 +427,12 @@ UNIQUE(code, quote_date, quoted_at)   同一时刻重复抓取直接忽略
 
 ```
 id, user_id, raw_input, cleaned_input,
-stage        inbound（调模型前挡下）| outbound（模型给了结果后判定为噪声）
-tier         INTEGER  classifyNotification 档位：0=命中噪声 … 4=无任何信号
-reasons      TEXT     JSON 数组
-duration_ms  INTEGER  判定耗时（分流是纯字符串匹配，应 <1ms）
+stage         inbound（调模型前挡下）| outbound（模型给了结果后判定为噪声）
+tier          INTEGER  classifyNotification 档位：0=命中噪声 … 4=无任何信号
+reasons       TEXT     JSON 数组
+duration_ms   INTEGER  判定耗时（分流是纯字符串匹配，应 <1ms）
+channel       TEXT     （019 加）入口归因：nls|sms|a11y|manual；老行为 NULL
+source_package TEXT    （019 加）来源应用包名；老行为 NULL
 created_at
 索引：(user_id) / (stage) / (created_at)
 ```
@@ -605,3 +610,42 @@ balance == 上次手填的值 + 基准线之后新建的有归属流水的增减
 > ⚠️ 判据是 `EXISTS(asset_snapshots)`，不能用 `balance_as_of_txn_id = 0`——
 > 后者会把「有快照但该用户一笔账都没记过」的账户误判为无快照，用 `initial_balance`
 > 覆盖掉快照值。
+
+---
+
+## 13. 解析链路留档与客户端上报（migration 019–021）
+
+### 13.1 解析入参上下文（019）
+
+`ai_parse_logs` 追加四列（**全部可空**，老行 NULL = 「无入口归因」这个事实）：
+
+| 列 | 用途 |
+|---|---|
+| `channel` | 入口：`nls`｜`sms`｜`a11y`｜`manual` |
+| `source_package` | 来源 App 包名（友好名由 `rules.source_mapping` 派生，**不重复存**） |
+| `received_at` | 通知到达时刻（带时区偏移）；服务端取它的**北京日期**作为该请求的「今天」 |
+| `hints` | 客户端本地正则候选（JSON 串）。⚠️ **只留档、不进 prompt**（进 prompt 会让模型抄 hint、绕过金额佐证） |
+
+`ai_parse_filters` 同步加 `channel` / `source_package`，供 §13.3 的上报按同一维度对齐。
+
+### 13.2 通知规则的「内容 hash」（020）
+
+内容真源是仓库文件 `server/config/rules.json`（见 [ARCHITECTURE.md §3.7](ARCHITECTURE.md)），
+DB 只是发布载体：`notification_rules.content_hash` = 发布载荷（**剔除 `testcases`、含代码派生的
+`precheck`**）的 canonical JSON sha256，`GET /api/config/notification-rules` 的
+**ETag 就用它**。这样「内容变了忘 bump version」不再可能让客户端永远 304。
+`version` 与 `content_hash` 都建了 UNIQUE（020 先按 version 去重再建索引，避免老库重复行导致启动失败）。
+
+### 13.3 客户端拦截计数（021）
+
+| 表 | 粒度 | 说明 |
+|---|---|---|
+| `client_filter_stats` | (user, client_version, **channel**, window_start, window_end, rule_id) | 命中数 `hits`；**上报是覆盖不是累加**（幂等重试安全） |
+| `client_filter_totals` | (user, client_version, channel, window_start, window_end) | `notifications` / `blocked`（拦截率的分母） |
+
+- `channel` **非空且进唯一键**：SQLite 唯一索引里 NULL 互不相等，允许 NULL 会让重复上报变成多行。
+- 窗口无时区串按**北京时间**解释，存储统一 **UTC** `YYYY-MM-DD HH:MM:SS`。
+- `rule_id` 命名空间只有两个：`precheck.*`（命中服务端下发判据，**可比**）与
+  `client_only.*`（客户端独有，服务端**无对应**，不参与误杀率比较）。
+- ⚠️ 这张表是**聚合计数**，与 `ai_parse_filters`（逐条事件）是两回事，**刻意不合并**：
+  合并会让「服务端挡掉 53%」这个口径不可比。
