@@ -95,25 +95,24 @@
 - ⚠️ `hints` v1 **只落库、不喂 prompt**（进 prompt 会让模型抄 hint、绕过金额佐证→假账）；响应新增可选 `hints_conflict`。
   落库：`ai_parse_logs` 加 `channel/source_package/received_at/hints`，`ai_parse_filters` 加 `channel/source_package`（migration019）。
 
-## 6. 出参扩展（Q5）—— 6 项可给（**机械推导/抽取，不进 prompt**），1 项建议复用
-| 客户端要的 | 结论 | 来源 |
+## 6. 出参扩展（Q5）—— 全部**机械推导/抽取，不进 prompt**；`method` 复用 `account`
+| 字段 | 取值 | 来源（均为机械，模型不参与） |
 |---|---|---|
-| `merchant` | 可给 | 文本商户关键词 + description 机械抽取（用于分类预填/学习） |
-| `order_no` | 可给 | 正文正则机械抽取（**不让模型复制**，纯复制任务必幻觉） |
-| `card_tail` | 可给 | 正文尾号正则机械抽取 |
-| `balance` → `balance_after_cents` | 可给，**仅提示** | 正文「余额/剩余」机械抽取 |
-| `method` | **建议复用现有 `account`/`account_name`** | 同义字段会造成「支付方式」两套口径 |
-| `business_time` | 可给，**命名用 `time`** | 与 `POST /transactions` 的 `date`+`time` 契约一致，别造新名 |
-| `confidence` | 可给，**服务端派生** | tier + 是否 quick + 分类是否精确命中 + 金额佐证；**不由模型输出** |
-
-- **prompt 成本**：模型现在只输出 `type/amount/category/description/date/account/target_account`。
-  再加 7 个键会让每次调用多输出约 7×N 个键，且 identifier 类字段属纯复制（幻觉高发）→ **不加**。
-- **落库成本**：`ai_parse_logs` 的 `parsed_items/final_items/modification_detail` 都是 JSON TEXT →
-  **零 migration**。仅当要按 `confidence` 做 SQL 聚合才需加列（建议不做）。
-- ⚠️ 这些键是**解析元数据**，不是账本字段：提交 `POST /transactions` 时会被现有 zod schema 剥掉，
-  不会污染账本，但客户端**不要依赖**它们落库；`balance_after_cents` **不得**用于写余额
-  （余额唯一写入口 = 归属账单增量 + 手填覆盖，DATA §12）。
-- 一并补齐：`source` 在 #4 缺失（补 `'ai'`），取值 `quick|ai|prefilter|postfilter`。
+| `source` | `quick｜ai｜prefilter｜postfilter` | 补齐 #4 缺失的 `'ai'` |
+| `merchant` | string｜null | 商户关键词/描述前缀抽取（供分类预填与学习）；与 `description` 并存 |
+| `order_no` / `card_tail` | string｜null | 正文正则（订单号/流水号、`尾号\d{4}`）；**不让模型复制**（纯复制必幻觉） |
+| `balance_after_cents` | int｜null，**仅提示** | 正文「余额/剩余」抽取；**语义未定**（可用余额 vs 账户余额无法区分） |
+| `balance_text` | string｜null | 上项命中的**原始片段**（含「可用余额」等前缀词）→ 客户端按前缀做**同模板自比** |
+| `time` | `HH:mm`｜null | 正文时刻抽取；日期仍在 `date`。**已核实**与 `POST /transactions` 同格式（`^\d{2}:\d{2}$`） |
+| `confidence` | `high｜medium｜low`（**枚举，非 0~1**） | 派生：quick? + 分类是否精确命中 + 金额是否有佐证 |
+| `confidence_reasons` | string[] | 上述判据的机械原因（阈值可审计） |
+| `needs_review` | boolean | **服务端用唯一阈值算**：`verifyParsed=review`／分类未精确命中／金额来自裸数字 |
+- **客户端请用 `needs_review` 作「不自动入账」判据，不要自己对 `confidence` 设阈值**——否则又是两套阈值（本项目顽疾）；`confidence` 仅供展示/排序。
+- `confidence` **不是模型自评**（模型根本不输出它），派生自 tier/quick/精确分类/金额佐证 → 语义稳定、可回归；**不要**用 0~1 浮点。
+- `card_tail` 与 `balance_after_cents`/`balance_text` **必在同一 items 元素**（按元素抽取，抽不到则同为 null）。
+- `hints_conflict` 只反映「客户端 hint 与文本不一致」，属 **hint 质量问题**，**不进** `needs_review`/`confidence`；客户端用作本地诊断即可，**不据此降级或拒收**（本地正则不得间接决定账目）。
+- 模型只输出 `type/amount/category/description/date/account/target_account`：再加 7 个键会每次多输出约 7×N 个键，且 identifier 属纯复制（幻觉高发）→ **不加**；落库**零 migration**（`parsed_items` 等都是 JSON TEXT）。
+- ⚠️ 这些是**解析元数据**不是账本字段（提交 `POST /transactions` 会被 zod 剥掉，不污染账本）；`balance_after_cents` **不得**用于写余额（唯一写入口 = 归属账单增量 + 手填覆盖，DATA §12）。
 
 ## 7. 兼容与灰度（Q6）—— 确认可行
 - payload **只加键、不改既有键语义**；新增键一律可选且有默认值。
