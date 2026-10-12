@@ -37,7 +37,7 @@
 | 📤 数据导出 | JSON 全量备份 + CSV 流水导出（Excel 兼容） |
 | 👥 多用户 | 邀请码注册，数据完全隔离，管理员不可见他人数据 |
 | 🗑️ 回收站 | 软删除可恢复，30 天后自动清理 |
-| 🔧 管理面板 | 用户管理、AI 配置、解析质量监控、客户端拦截计数对照、系统日志、通知规则 |
+| 🔧 管理面板 | **异常优先概览**（需要处理：解析失败率/超时、判据漂移告警、规则未激活、无分发版本）、用户与邀请码、解析质量（含服务端预筛）、自动化对照（客户端上报 vs 服务端入站）、通知规则（查看/激活/回滚）、AI 设置、系统日志、App 版本分发 |
 
 ### 产品口径（跨端一致）
 
@@ -190,7 +190,7 @@ bill/
 │   │   ├── services/          # auth / logger / scheduler
 │   │   └── lib/               # 纯领域逻辑：portfolio / account-balance / precheck /
 │   │                          # quotes·fx·holdings·quote-acquisition / date
-│   └── tests/                 # 53 个测试文件（687 用例）
+│   └── tests/                 # 54 个测试文件（689 用例）
 ├── web/                       # 前端（Vue 3 + TailwindCSS）
 │   ├── src/
 │   │   ├── App.vue            # PC 侧边栏 + 移动端 Tab + Toast

@@ -1,37 +1,102 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import api from '@/api/index'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
+import Notice from '@/components/ui/Notice.vue'
 import Money from '@/components/ui/Money.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 
 const auth = useAuthStore()
+const route = useRoute()
+const router = useRouter()
 const toast = useToast()
 const confirm = useConfirm()
 
-type TabKey = 'overview' | 'users' | 'codes' | 'ai' | 'quality' | 'logs' | 'rules'
+type TabKey =
+  | 'overview'
+  | 'users'
+  | 'ai'
+  | 'quality'
+  | 'automation'
+  | 'logs'
+  | 'rules'
+  | 'release'
 
-// Tab navigation
-const activeTab = ref<TabKey>('overview')
-
-const navItems: { key: TabKey; label: string; short: string; icon: string }[] = [
-  { key: 'overview', label: '概览', short: '概览', icon: 'overview' },
-  { key: 'users', label: '用户管理', short: '用户', icon: 'users' },
-  { key: 'codes', label: '邀请码', short: '邀请码', icon: 'ticket' },
-  { key: 'ai', label: 'AI 设置', short: 'AI', icon: 'spark' },
-  { key: 'quality', label: '解析质量', short: '质量', icon: 'search' },
-  { key: 'logs', label: '系统日志', short: '日志', icon: 'list' },
-  { key: 'rules', label: '通知规则', short: '规则', icon: 'code' },
+/* ── 导航按「问题」分三组（与侧栏同一原则），而不是按接口 ──
+   上一版是 9 个 tab 平铺：“解析质量 / 自动化对照 / 系统日志”概念上同族却并列，
+   “邀请码”本是“用户与访问”的子项，手机端还得横滑 9 个 chip。
+   现在：访问（用户+邀请码）· 自动化（质量/对照/规则/AI 设置）· 运维（概览/日志/App 更新）。 */
+interface NavItem { key: TabKey; label: string; short: string; icon: string }
+const navGroups: { key: string; label: string; items: NavItem[] }[] = [
+  {
+    key: 'access',
+    label: '访问',
+    items: [{ key: 'users', label: '用户与邀请码', short: '用户', icon: 'users' }],
+  },
+  {
+    key: 'automation',
+    label: '自动化',
+    items: [
+      { key: 'quality', label: '解析质量', short: '质量', icon: 'search' },
+      { key: 'automation', label: '自动化对照', short: '自动化', icon: 'spark' },
+      { key: 'rules', label: '通知规则', short: '规则', icon: 'code' },
+      { key: 'ai', label: 'AI 设置', short: 'AI', icon: 'spark' },
+    ],
+  },
+  {
+    key: 'ops',
+    label: '运维',
+    items: [
+      { key: 'overview', label: '概览', short: '概览', icon: 'overview' },
+      { key: 'logs', label: '系统日志', short: '日志', icon: 'list' },
+      { key: 'release', label: 'App 更新', short: '更新', icon: 'upload' },
+    ],
+  },
 ]
+/** 手机端 chip 用扁平列表（底栏塞不进组） */
+const navItems: NavItem[] = navGroups.flatMap((g) => g.items)
+
+const TAB_KEYS: TabKey[] = navItems.map((i) => i.key)
+
+/* tab 落 URL（`/admin?tab=xxx`）：可刷新、可深链、可分享。
+   只接受已知 key，URL 里塞奇怪值就回退到「概览」。 */
+function tabFromQuery(): TabKey {
+  const t = String(route.query.tab ?? '')
+  return (TAB_KEYS as string[]).includes(t) ? (t as TabKey) : 'overview'
+}
+const activeTab = ref<TabKey>(tabFromQuery())
+
+/* 读失败的统一展示（上一版有 11 处 静默 catch：读不到时页面空着，
+   管理员会判成“没有数据”而不是“读不到”）。 */
+const loadErrors = ref<Partial<Record<TabKey, boolean>>>({})
+function markLoaded(key: TabKey): void { delete loadErrors.value[key] }
+function markFailed(key: TabKey): void { loadErrors.value[key] = true }
+function retryActiveTab(): void {
+  const key = activeTab.value
+  markLoaded(key)
+  if (key === 'overview') { fetchSystemStats(); fetchOpsSignals() }
+  else if (key === 'users') fetchAdminData()
+  else if (key === 'quality') { fetchParseStats(); fetchParseLogs(1) }
+  else if (key === 'automation') fetchAutomationStats()
+  else if (key === 'rules') fetchNotifRules()
+  else if (key === 'logs') fetchAppLogs()
+  else if (key === 'release') fetchAppUpdates()
+}
 
 function switchTab(key: TabKey) {
   activeTab.value = key
+  // replace 避免每次切 tab 都往历史里塞一条
+  router.replace({ query: { ...route.query, tab: key } })
   if (key === 'logs') fetchAppLogs()
   if (key === 'rules') fetchNotifRules()
+  if (key === 'automation') fetchAutomationStats()
+  if (key === 'release') fetchAppUpdates()
+  if (key === 'overview') fetchOpsSignals()
 }
 
 // 系统概览
@@ -59,10 +124,6 @@ const loadingAppLogs = ref(false)
 // 通知规则
 const notifRules = ref<any[]>([])
 const loadingRules = ref(false)
-const previewRuleId = ref<number | null>(null)
-const newRuleVersion = ref('')
-const newRuleContent = ref('')
-const savingRule = ref(false)
 
 // 邀请码生成
 const newCodeMaxUses = ref(1)
@@ -76,13 +137,21 @@ const resetPasswordId = ref<number | null>(null)
 const newPasswordInput = ref('')
 
 onMounted(async () => {
-  if (auth.isAdmin) {
-    await fetchAdminData()
-    fetchSystemStats()
-  }
+  if (!auth.isAdmin) return
+  await fetchAdminData()
+  fetchSystemStats()
+  /* 深链（`/admin?tab=xxx`）进来时，把该 tab 的数据也取上——否则会看到空内容 */
+  const t = activeTab.value
+  if (t === 'quality') { fetchParseStats(); fetchParseLogs(1) }
+  else if (t === 'automation') fetchAutomationStats()
+  else if (t === 'rules') fetchNotifRules()
+  else if (t === 'logs') fetchAppLogs()
+  else if (t === 'release') fetchAppUpdates()
+  fetchOpsSignals()
 })
 
 async function fetchAdminData() {
+  markLoaded('users') // 开始加载 = 清掉上一次的错误提示
   try {
     const [codesRes, usersRes, settingsRes] = await Promise.all([
       api.get('/admin/invite-codes'),
@@ -94,7 +163,9 @@ async function fetchAdminData() {
     if (settingsRes.data.code === 0) globalSettings.value = settingsRes.data.data
     await fetchParseStats()
     await fetchParseLogs()
-  } catch { /* ignore */ }
+  } catch {
+    markFailed('users')
+  }
 }
 
 async function generateCode() {
@@ -200,15 +271,19 @@ async function saveSettings() {
 }
 
 async function fetchParseStats() {
+  markLoaded('quality') // 开始加载 = 清掉上一次的错误提示
   try {
     const { data } = await api.get('/admin/ai-parse-stats', {
       params: { days: parseLogsFilter.value.days },
     })
     if (data.code === 0) parseStats.value = data.data
-  } catch { /* ignore */ }
+  } catch {
+    markFailed('quality')
+  }
 }
 
 async function fetchParseLogs(page = 1) {
+  markLoaded('quality') // 开始加载 = 清掉上一次的错误提示
   loadingParseLogs.value = true
   try {
     const params: any = {
@@ -224,7 +299,9 @@ async function fetchParseLogs(page = 1) {
       parseLogs.value = data.data.items ?? []
       parseLogsPagination.value = { ...parseLogsPagination.value, ...(data.data.pagination ?? {}) }
     }
-  } catch { /* ignore */ }
+  } catch {
+    markFailed('quality')
+  }
   finally { loadingParseLogs.value = false }
 }
 
@@ -269,6 +346,7 @@ function statusBadge(status: string): string {
 
 // === 系统概览 ===
 async function fetchSystemStats() {
+  markLoaded('overview') // 开始加载 = 清掉上一次的错误提示
   try {
     const [usersRes, logsRes] = await Promise.all([
       api.get('/admin/users'),
@@ -285,11 +363,14 @@ async function fetchSystemStats() {
       totalTransactions,
       todayLogs: logsRes.data?.data?.pagination?.total || 0,
     }
-  } catch { /* ignore */ }
+  } catch {
+    markFailed('overview')
+  }
 }
 
 // === 应用日志 ===
 async function fetchAppLogs(page = 1) {
+  markLoaded('logs') // 开始加载 = 清掉上一次的错误提示
   loadingAppLogs.value = true
   try {
     const params: any = { page, page_size: appLogsPagination.value.page_size, days: appLogsFilter.value.days }
@@ -300,7 +381,9 @@ async function fetchAppLogs(page = 1) {
       appLogs.value = data.data.items ?? []
       appLogsPagination.value = { ...appLogsPagination.value, ...(data.data.pagination ?? {}) }
     }
-  } catch { /* ignore */ }
+  } catch {
+    markFailed('logs')
+  }
   finally { loadingAppLogs.value = false }
 }
 
@@ -309,13 +392,205 @@ function logLevelBadge(level: string): string {
   return map[level] || 'badge'
 }
 
+/* 「需要处理」信号：管理面板的价值是**发现异常**，不是看总数。
+   汇总 4 个只读接口（解析质量 / 自动化对照 / 通知规则 / App 更新），
+   只把「需要人看一眼」的项列出来，并带上跳转 tab。 */
+const opsSignals = ref<{ level: 'warn' | 'danger' | 'info'; title: string; detail: string; tab: TabKey }[]>([])
+const loadingOpsSignals = ref(false)
+
+async function fetchOpsSignals(): Promise<void> {
+  loadingOpsSignals.value = true
+  try {
+    const [parseRes, filterRes, rulesRes, updatesRes] = await Promise.allSettled([
+      api.get('/admin/ai-parse-stats?days=30'),
+      api.get('/admin/filter-stats?days=30'),
+      api.get('/admin/notification-rules'),
+      api.get('/admin/updates?page=1&page_size=1'),
+    ])
+    const signals: typeof opsSignals.value = []
+
+    const parse = parseRes.status === 'fulfilled' ? parseRes.value.data?.data : null
+    if (parse && Number(parse.overview?.total ?? 0) > 0) {
+      const rate = Number(parse.overview?.success_rate ?? 0)
+      if (rate < 80) {
+        signals.push({
+          level: 'warn',
+          title: 'AI 解析成功率偏低',
+          detail: `近 30 天 ${rate}%（共 ${parse.overview.total} 次调用）`,
+          tab: 'quality',
+        })
+      }
+      const bad = (parse.by_status ?? [])
+        .filter((x: any) => x.status === 'error' || x.status === 'timeout')
+        .reduce((n: number, x: any) => n + Number(x.count ?? 0), 0)
+      if (bad > 0) {
+        signals.push({
+          level: 'warn',
+          title: `解析失败/超时 ${bad} 次`,
+          detail: '可在「解析质量」按状态筛选，能看到原始输入与失败原因',
+          tab: 'quality',
+        })
+      }
+    }
+
+    const filter = filterRes.status === 'fulfilled' ? filterRes.value.data?.data : null
+    const drift = (filter?.client?.by_rule ?? []).find(
+      (r: any) => r.rule_id === 'client_only.precheck_unknown_expr',
+    )
+    if (drift && drift.hits > 0) {
+      signals.push({
+        level: 'warn',
+        title: '客户端判据漂移告警',
+        detail: `precheck_unknown_expr 命中 ${drift.hits} 次——客户端上的判据形态与服务端清单对不上`,
+        tab: 'automation',
+      })
+    }
+
+    const rules = rulesRes.status === 'fulfilled' ? rulesRes.value.data?.data?.items : null
+    if (Array.isArray(rules) && !rules.some((r: any) => r.is_active)) {
+      signals.push({
+        level: 'danger',
+        title: '没有激活的通知规则',
+        detail: '客户端拉不到判据，会一直回退到本地兜底（拦截口径会与服务端不一致）',
+        tab: 'rules',
+      })
+    }
+
+    const updates = updatesRes.status === 'fulfilled' ? updatesRes.value.data?.data?.items : null
+    if (Array.isArray(updates) && updates.length === 0) {
+      signals.push({
+        level: 'info',
+        title: '服务端没有分发的 App 版本',
+        detail: 'Android 客户端会回落到 GitHub Release（不影响使用）',
+        tab: 'release',
+      })
+    }
+
+    opsSignals.value = signals
+  } catch {
+    opsSignals.value = []
+  } finally {
+    loadingOpsSignals.value = false
+  }
+}
+
+// === 自动化对照（客户端上报 vs 服务端入站预筛）===
+const automationDays = ref('30')
+const automationStats = ref<any>(null)
+const loadingAutomation = ref(false)
+
+async function fetchAutomationStats() {
+  markLoaded('automation') // 开始加载 = 清掉上一次的错误提示
+  loadingAutomation.value = true
+  try {
+    const { data } = await api.get(`/admin/filter-stats?days=${automationDays.value}`)
+    automationStats.value = data.code === 0 ? data.data : null
+  } catch {
+    markFailed('automation')
+  }
+  finally { loadingAutomation.value = false }
+}
+/** 可比 = 客户端报的 `precheck.*` 与服务端当前判据清单对得上；`client_only.*` 恒不可比 */
+function comparableRules(list: any[] | undefined): any[] { return (list ?? []).filter((r) => r.comparable) }
+function incomparableRules(list: any[] | undefined): any[] { return (list ?? []).filter((r) => !r.comparable) }
+/** 服务端返回的是 0~1 的比例，展示成百分比；null = 窗口内没有数据 */
+function rateText(v: number | null | undefined): string {
+  return v == null ? '—' : `${(v * 100).toFixed(1)}%`
+}
+
+// === App 更新（APK 自托管分发）===
+const appUpdates = ref<any[]>([])
+const appUpdatesTotal = ref(0)
+const appUpdatesPage = ref(1)
+const appUpdatesPageSize = 20
+const loadingUpdates = ref(false)
+const uploadingApk = ref(false)
+const apkFile = ref<File | null>(null)
+const apkForm = ref({ version_name: '', version_code: '', changelog: '', force_update: false })
+const activeUpdate = computed(() => appUpdates.value.find((u) => u.is_active) ?? null)
+
+async function fetchAppUpdates(page = 1) {
+  markLoaded('release') // 开始加载 = 清掉上一次的错误提示
+  loadingUpdates.value = true
+  try {
+    const { data } = await api.get(`/admin/updates?page=${page}&page_size=${appUpdatesPageSize}`)
+    if (data.code === 0) {
+      appUpdates.value = data.data.items
+      appUpdatesTotal.value = data.data.total
+      appUpdatesPage.value = data.data.page
+    }
+  } catch {
+    markFailed('release')
+  }
+  finally { loadingUpdates.value = false }
+}
+
+function pickApk(e: Event): void {
+  apkFile.value = (e.target as HTMLInputElement).files?.[0] ?? null
+}
+
+async function uploadApk(): Promise<void> {
+  if (!apkFile.value) { toast.error('请先选择 APK 文件'); return }
+  if (!apkForm.value.version_name.trim()) { toast.error('versionName 必填'); return }
+  const code = Number(apkForm.value.version_code)
+  if (!Number.isInteger(code) || code <= 0) { toast.error('versionCode 必须是正整数'); return }
+  /* 客户端侧先提醒 §3.8 的纪律（服务端也会拦）：versionCode 必须**严格递增且唯一**，
+     跳号正常。这里只做提示，不代替服务端校验。 */
+  if (activeUpdate.value && code <= activeUpdate.value.version_code) {
+    toast.error(`versionCode 必须大于当前激活版本（${activeUpdate.value.version_code}）`)
+    return
+  }
+  const ok = await confirm({
+    title: '上传并激活该版本？',
+    body:
+      `上传后会立即对所有客户端生效：低于 versionCode ${code} 的客户端会看到更新` +
+      (apkForm.value.force_update
+        ? '，且因为勾选了「强制更新」，它们会被要求升级。'
+        : '。'),
+    confirmText: '上传并激活',
+    danger: apkForm.value.force_update,
+  })
+  if (!ok) return
+  uploadingApk.value = true
+  try {
+    const fd = new FormData()
+    fd.append('apk_file', apkFile.value)
+    fd.append('version_name', apkForm.value.version_name.trim())
+    fd.append('version_code', String(code))
+    fd.append('changelog', apkForm.value.changelog)
+    fd.append('force_update', apkForm.value.force_update ? 'true' : 'false')
+    // APK 可能上百 MB → 覆盖默认 10s 超时
+    const { data } = await api.post('/admin/updates', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300000,
+    })
+    if (data.code === 0) {
+      toast.success('版本已上传并激活')
+      apkForm.value = { version_name: '', version_code: '', changelog: '', force_update: false }
+      apkFile.value = null
+      await fetchAppUpdates(1)
+    }
+  } catch { /* 提示见 api 拦截器 */ }
+  finally { uploadingApk.value = false }
+}
+
+function formatBytes(n: number | null | undefined): string {
+  if (!n) return '—'
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`
+  if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`
+  return `${n} B`
+}
+
 // === 通知规则 ===
 async function fetchNotifRules() {
+  markLoaded('rules') // 开始加载 = 清掉上一次的错误提示
   loadingRules.value = true
   try {
     const { data } = await api.get('/admin/notification-rules')
     if (data.code === 0) notifRules.value = data.data.items
-  } catch { /* ignore */ }
+  } catch {
+    markFailed('rules')
+  }
   finally { loadingRules.value = false }
 }
 
@@ -329,36 +604,10 @@ async function activateRule(id: number) {
   } catch { /* 提示见 api 拦截器 */ }
 }
 
-async function createRule() {
-  const version = Number(newRuleVersion.value)
-  if (!version || version <= 0) {
-    toast.error('版本号需为正整数')
-    return
-  }
-  let rules: any
-  try {
-    rules = JSON.parse(newRuleContent.value)
-  } catch {
-    toast.error('JSON 格式错误')
-    return
-  }
-  savingRule.value = true
-  try {
-    const { data } = await api.post('/admin/notification-rules', { version, rules })
-    if (data.code === 0) {
-      toast.success('规则版本已创建')
-      newRuleVersion.value = ''
-      newRuleContent.value = ''
-      await fetchNotifRules()
-    } else {
-      toast.error(data.message)
-    }
-  } catch { /* 提示见 api 拦截器 */ }
-  finally { savingRule.value = false }
-}
-
-function togglePreview(id: number) {
-  previewRuleId.value = previewRuleId.value === id ? null : id
+/* 详情统一走 BaseModal（上一版规则预览是内联展开，与解析详情/用户明细两种形态并存） */
+const showRulePreview = ref<any>(null)
+function openRulePreview(rule: any): void {
+  showRulePreview.value = rule
 }
 
 function formatRuleJson(rule: any): string {
@@ -408,18 +657,21 @@ function closeUserTransactions() {
         <div class="admin-nav">
           <h1 class="page-title mb-0.5">管理面板</h1>
           <p class="text-xs text-ink-3 mb-4">系统管理与监控</p>
-          <nav class="flex flex-col">
-            <button
-              v-for="item in navItems"
-              :key="item.key"
-              type="button"
-              class="admin-nav-item"
-              :class="activeTab === item.key ? 'admin-nav-item-active' : ''"
-              @click="switchTab(item.key)"
-            >
-              <AppIcon :name="item.icon" :size="16" />
-              <span>{{ item.label }}</span>
-            </button>
+          <nav class="flex flex-col gap-3">
+            <div v-for="group in navGroups" :key="group.key">
+              <div class="admin-nav-group">{{ group.label }}</div>
+              <button
+                v-for="item in group.items"
+                :key="item.key"
+                type="button"
+                class="admin-nav-item"
+                :class="activeTab === item.key ? 'admin-nav-item-active' : ''"
+                @click="switchTab(item.key)"
+              >
+                <AppIcon :name="item.icon" :size="16" />
+                <span>{{ item.label }}</span>
+              </button>
+            </div>
           </nav>
         </div>
       </aside>
@@ -442,8 +694,45 @@ function closeUserTransactions() {
       <!-- 右侧内容区 -->
       <div class="flex-1 min-w-0">
 
+        <!-- 读不到数据时的统一提示（替代上一版 11 处静默 catch：
+             读不到 ≠ 没有数据，不提示就等于谎报） -->
+        <Notice v-if="loadErrors[activeTab]" tone="warn" class="mb-4">
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-xs">读不到数据（接口失败或超时）—— 这不是「没有数据」。</span>
+            <button type="button" class="act shrink-0" @click="retryActiveTab()">重试</button>
+          </div>
+        </Notice>
+
         <!-- ───── 概览 ───── -->
         <div v-if="activeTab === 'overview'" class="space-y-6">
+          <!-- 需要处理（异常优先）：管理面板的价值是发现问题，不是看总数 -->
+          <section>
+            <div class="ledger-label mb-3">需要处理</div>
+            <div v-if="loadingOpsSignals" class="text-center py-4 text-xs text-ink-3">检查中…</div>
+            <EmptyState
+              v-else-if="opsSignals.length === 0"
+              icon="check"
+              title="没有需要处理的事项"
+              description="解析成功率、判据漂移、规则激活与版本分发都正常。"
+              compact
+            />
+            <div v-else class="space-y-2">
+              <Notice
+                v-for="(sig, i) in opsSignals"
+                :key="i"
+                :tone="sig.level === 'danger' ? 'danger' : sig.level === 'warn' ? 'warn' : 'info'"
+              >
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="text-sm text-ink-1">{{ sig.title }}</div>
+                    <div class="text-xs text-ink-3 mt-0.5">{{ sig.detail }}</div>
+                  </div>
+                  <button type="button" class="act shrink-0" @click="switchTab(sig.tab)">去看看</button>
+                </div>
+              </Notice>
+            </div>
+          </section>
+
           <div v-if="systemStats" class="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <div class="admin-stat" style="border-top-color: var(--color-info)">
               <div class="admin-stat-num">{{ systemStats.totalUsers }}</div>
@@ -575,11 +864,11 @@ function closeUserTransactions() {
               </div>
             </template>
           </div>
-        </div>
 
-        <!-- ───── 邀请码 ───── -->
-        <div v-if="activeTab === 'codes'">
-          <div class="ledger-label mb-3">邀请码</div>
+          <!-- 邀请码（并入本 tab：访问管理本来就是同一件事） -->
+          <section class="mt-6">
+            <div class="ledger-label mb-3">邀请码</div>
+
 
           <div class="surface p-3 mb-4 flex flex-wrap items-center gap-3">
             <div class="flex items-center gap-2">
@@ -633,6 +922,8 @@ function closeUserTransactions() {
               生成第一个
             </button>
           </EmptyState>
+        
+          </section>
         </div>
 
         <!-- ───── AI 设置 ───── -->
@@ -690,6 +981,39 @@ function closeUserTransactions() {
               <div class="admin-stat-label">修正率</div>
             </div>
           </div>
+
+          <!-- 服务端预筛（被规则挡下、根本没调模型）——查看本页“空结果率”时必须与它一起看 -->
+          <section v-if="parseStats && parseStats.prefilter" class="mt-5">
+            <div class="ledger-label mb-3">服务端预筛（挡下即不调模型）</div>
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div class="admin-stat" style="border-top-color: var(--color-action)">
+                <div class="admin-stat-num">{{ parseStats.prefilter.total }}</div>
+                <div class="admin-stat-label">挡下总数</div>
+              </div>
+              <div class="admin-stat" style="border-top-color: var(--color-income)">
+                <div class="admin-stat-num">{{ parseStats.prefilter.inbound }}</div>
+                <div class="admin-stat-label">入站（调模型前）</div>
+              </div>
+              <div class="admin-stat" style="border-top-color: var(--color-info)">
+                <div class="admin-stat-num">{{ parseStats.prefilter.outbound }}</div>
+                <div class="admin-stat-label">出站（模型结果后）</div>
+              </div>
+              <div class="admin-stat" style="border-top-color: var(--color-warn)">
+                <div class="admin-stat-num">{{ parseStats.prefilter.perDay }}</div>
+                <div class="admin-stat-label">日均挡下</div>
+              </div>
+            </div>
+            <div class="flex items-center justify-between mt-2 mb-3 text-xs text-ink-3">
+              <span>入站预筛是纯字符串匹配，判定耗时中位 {{ parseStats.prefilter.medianMs }}ms / 最大 {{ parseStats.prefilter.maxMs }}ms</span>
+              <span>覆盖 {{ parseStats.prefilter.days }} 天</span>
+            </div>
+            <div v-if="parseStats.prefilter.byReason?.length" class="sheet">
+              <div v-for="r in parseStats.prefilter.byReason" :key="r.reason" class="sheet-row">
+                <span class="flex-1 text-xs mono text-ink-1 truncate">{{ r.reason }}</span>
+                <span class="text-sm text-ink-1 amt">{{ r.count }}</span>
+              </div>
+            </div>
+          </section>
 
           <!-- 状态筛选 chip -->
           <div class="scroll-x flex gap-2 mb-3 pb-1">
@@ -833,27 +1157,14 @@ function closeUserTransactions() {
         <!-- ───── 通知规则 ───── -->
         <div v-if="activeTab === 'rules'" class="space-y-6">
           <section>
-            <div class="ledger-label mb-3">新建版本</div>
-            <div class="surface p-4 space-y-3">
-              <div>
-                <label class="field-label">版本号</label>
-                <input v-model="newRuleVersion" type="number" min="1" class="field" placeholder="例如：2" />
-              </div>
-              <div>
-                <label class="field-label">规则内容（JSON）</label>
-                <textarea
-                  v-model="newRuleContent"
-                  rows="6"
-                  class="field mono admin-json"
-                  placeholder='{ "nls": [...], "source_mapping": {...}, "processor": {...} }'
-                ></textarea>
-              </div>
-              <button
-                type="button"
-                class="btn btn-primary btn-block"
-                :disabled="savingRule || !newRuleVersion || !newRuleContent"
-                @click="createRule"
-              >{{ savingRule ? '保存中…' : '保存规则' }}</button>
+            <div class="ledger-label mb-3">真源与发布</div>
+            <div class="surface p-4">
+              <p class="text-xs text-ink-2 leading-relaxed">
+                规则内容真源是仓库文件 <code class="mono">server/config/rules.json</code>（改动走
+                commit → 重启/重建，服务端启动时会校验并发布）。<br />
+                本页只做<strong>查看历史版本</strong>与<strong>激活/回滚</strong>，<strong>不提供在线编辑</strong>——
+                避免与文件双写、也避免发布一份与仓库不同的内容。详见 ARCHITECTURE §3.7。
+              </p>
             </div>
           </section>
 
@@ -880,12 +1191,13 @@ function closeUserTransactions() {
                       版本 {{ rule.version }}
                       <span v-if="rule.is_active" class="badge badge-ink ml-1.5">当前激活</span>
                     </div>
-                    <div class="text-xs text-ink-3 mt-0.5">{{ formatLocalTime(rule.created_at) }}</div>
+                    <div class="text-xs text-ink-3 mt-0.5 amt">
+                      {{ formatLocalTime(rule.created_at) }}
+                      <span v-if="rule.content_hash" class="ml-2 mono">hash {{ String(rule.content_hash).slice(0, 12) }}</span>
+                    </div>
                   </div>
                   <div class="flex items-center gap-1.5">
-                    <button type="button" class="act" @click="togglePreview(rule.id)">
-                      {{ previewRuleId === rule.id ? '收起' : '预览' }}
-                    </button>
+                    <button type="button" class="act" @click="openRulePreview(rule)">预览</button>
                     <button
                       v-if="!rule.is_active"
                       type="button"
@@ -894,11 +1206,211 @@ function closeUserTransactions() {
                     >激活</button>
                   </div>
                 </div>
-                <pre v-if="previewRuleId === rule.id" class="admin-json-view scroll-thin mono">{{ formatRuleJson(rule) }}</pre>
               </div>
             </div>
           </section>
         </div>
+        <!-- ───── 自动化对照（客户端上报 vs 服务端入站预筛）───── -->
+        <div v-if="activeTab === 'automation'" class="space-y-6">
+          <div class="flex items-center justify-between gap-3">
+            <span class="ledger-label ledger-label-solid">自动化对照</span>
+            <select v-model="automationDays" class="field w-auto" @change="fetchAutomationStats()">
+              <option value="7">近 7 天</option>
+              <option value="30">近 30 天</option>
+              <option value="90">近 90 天</option>
+            </select>
+          </div>
+
+          <div v-if="loadingAutomation" class="text-center py-8 text-xs text-ink-3">加载中…</div>
+          <EmptyState
+            v-else-if="!automationStats"
+            icon="spark"
+            title="读不到对照数据"
+            description="服务端未返回数据，或窗口内还没有任何客户端上报。"
+            compact
+          />
+          <template v-else>
+            <section>
+              <div class="ledger-label mb-3">客户端拦截（客户端自己上报）</div>
+              <div class="grid grid-cols-3 gap-3">
+                <div class="admin-stat" style="border-top-color: var(--color-action)">
+                  <div class="admin-stat-num">{{ automationStats.client?.totals?.notifications ?? 0 }}</div>
+                  <div class="admin-stat-label">通知总数</div>
+                </div>
+                <div class="admin-stat" style="border-top-color: var(--color-warn)">
+                  <div class="admin-stat-num">{{ automationStats.client?.totals?.blocked ?? 0 }}</div>
+                  <div class="admin-stat-label">拦下</div>
+                </div>
+                <div class="admin-stat" style="border-top-color: var(--color-info)">
+                  <div class="admin-stat-num">{{ rateText(automationStats.client?.totals?.block_rate) }}</div>
+                  <div class="admin-stat-label">拦截率</div>
+                </div>
+              </div>
+              <div v-if="automationStats.client?.by_channel?.length" class="sheet mt-3">
+                <div v-for="c in automationStats.client.by_channel" :key="c.channel" class="sheet-row">
+                  <span class="text-sm text-ink-1 w-16">{{ c.channel }}</span>
+                  <span class="flex-1 text-xs text-ink-3 amt">{{ c.notifications }} 条 / 拦 {{ c.blocked }}</span>
+                  <span class="text-xs text-ink-2 amt">{{ rateText(c.block_rate) }}</span>
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <div class="ledger-label mb-3">可比（precheck.*，与服务端同一 rule_id）</div>
+              <EmptyState
+                v-if="comparableRules(automationStats.client?.by_rule).length === 0"
+                icon="check"
+                title="没有可比条目"
+                description="客户端还没用上服务端下发的判据，或窗口内没拦下任何东西。"
+                compact
+              />
+              <div v-else class="sheet">
+                <div v-for="r in comparableRules(automationStats.client?.by_rule)" :key="r.rule_id" class="sheet-row">
+                  <span class="flex-1 text-xs mono text-ink-1 truncate">{{ r.rule_id }}</span>
+                  <span class="text-sm text-ink-1 amt">{{ r.hits }}</span>
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <div class="ledger-label mb-3">不可比（client_only.*，服务端无对应判据）</div>
+              <EmptyState
+                v-if="incomparableRules(automationStats.client?.by_rule).length === 0"
+                icon="check"
+                title="没有不可比条目"
+                compact
+              />
+              <div v-else class="sheet">
+                <div v-for="r in incomparableRules(automationStats.client?.by_rule)" :key="r.rule_id" class="sheet-row">
+                  <span class="flex-1 text-xs mono text-ink-1 truncate">{{ r.rule_id }}</span>
+                  <span class="text-sm text-ink-1 amt">{{ r.hits }}</span>
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <div class="ledger-label mb-3">服务端入站预筛（同一窗口，只含入站 reason）</div>
+              <EmptyState
+                v-if="!(automationStats.server?.by_reason ?? []).length"
+                icon="filter"
+                title="窗口内服务端没拦下任何东西"
+                compact
+              />
+              <div v-else class="sheet">
+                <div v-for="r in automationStats.server.by_reason" :key="r.reason" class="sheet-row">
+                  <span class="flex-1 text-xs mono text-ink-1 truncate">{{ r.reason }}</span>
+                  <span class="text-sm text-ink-1 amt">{{ r.hits }}</span>
+                </div>
+              </div>
+            </section>
+
+            <p class="text-xs text-ink-3 leading-relaxed">{{ automationStats.note }}</p>
+          </template>
+        </div>
+
+        <!-- ───── App 更新（APK 自托管分发）───── -->
+        <div v-if="activeTab === 'release'" class="space-y-6">
+          <section>
+            <div class="ledger-label mb-3">当前激活版本</div>
+            <EmptyState
+              v-if="!activeUpdate"
+              icon="upload"
+              title="服务端没有激活版本"
+              description="客户端会回落到 GitHub Release；上传一个 APK 后即从服务端分发。"
+              compact
+            />
+            <div v-else class="surface p-4">
+              <div class="flex items-center justify-between gap-2">
+                <div class="text-sm font-medium text-ink-1">
+                  {{ activeUpdate.version_name }}
+                  <span class="badge badge-ink ml-1.5">versionCode {{ activeUpdate.version_code }}</span>
+                  <span v-if="activeUpdate.force_update" class="badge badge-warn ml-1.5">强制更新</span>
+                </div>
+                <span class="text-xs text-ink-3 amt">{{ formatBytes(activeUpdate.apk_size) }}</span>
+              </div>
+              <div v-if="activeUpdate.changelog" class="text-xs text-ink-2 mt-2 whitespace-pre-wrap">{{ activeUpdate.changelog }}</div>
+              <div class="text-xs text-ink-4 mt-2 amt">{{ formatLocalTime(activeUpdate.created_at) }}</div>
+            </div>
+          </section>
+
+          <section>
+            <div class="ledger-label mb-3">上传新版本</div>
+            <div class="surface p-4 space-y-3">
+              <div>
+                <label class="field-label">APK 文件</label>
+                <input type="file" accept=".apk" class="field" @change="pickApk" />
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="field-label">versionName</label>
+                  <input v-model="apkForm.version_name" class="field" placeholder="例如：1.7.0" />
+                </div>
+                <div>
+                  <label class="field-label">versionCode</label>
+                  <input v-model="apkForm.version_code" class="field" inputmode="numeric" placeholder="例如：25" />
+                </div>
+              </div>
+              <div>
+                <label class="field-label">更新说明</label>
+                <textarea v-model="apkForm.changelog" rows="2" class="field"></textarea>
+              </div>
+              <label class="flex items-center gap-2 text-sm text-ink-1">
+                <input v-model="apkForm.force_update" type="checkbox" />
+                强制更新（低于此 versionCode 的客户端会被要求升级）
+              </label>
+              <div class="text-xs text-ink-3">versionCode 必须**严格递增且唯一**（跳号正常）—— 见 ARCHITECTURE §3.8。</div>
+              <button
+                type="button"
+                class="btn btn-primary btn-block"
+                :disabled="uploadingApk || !apkFile || !apkForm.version_name || !apkForm.version_code"
+                @click="uploadApk"
+              >{{ uploadingApk ? '上传中…' : '上传并激活' }}</button>
+            </div>
+          </section>
+
+          <section>
+            <div class="ledger-label mb-3">版本历史（共 {{ appUpdatesTotal }} 个）</div>
+            <div v-if="loadingUpdates" class="text-center py-6 text-xs text-ink-3">加载中…</div>
+            <EmptyState
+              v-else-if="appUpdates.length === 0"
+              icon="upload"
+              title="还没有上传过版本"
+              description="上传后，已发布的 Android 客户端会发现更新。"
+              compact
+            />
+            <div v-else class="sheet">
+              <div v-for="u in appUpdates" :key="u.id" class="sheet-row">
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm text-ink-1">
+                    {{ u.version_name }}
+                    <span v-if="u.is_active" class="badge badge-ink ml-1.5">激活</span>
+                    <span v-if="u.force_update" class="badge badge-warn ml-1.5">强制</span>
+                  </div>
+                  <div class="text-xs text-ink-3 mt-0.5 amt">code {{ u.version_code }} · {{ formatBytes(u.apk_size) }} · {{ formatLocalTime(u.created_at) }}</div>
+                </div>
+              </div>
+            </div>
+            <div v-if="appUpdatesTotal > appUpdatesPageSize" class="flex items-center justify-between mt-4 pt-3 border-t border-rule">
+              <span class="text-xs text-ink-3 amt">共 {{ appUpdatesTotal }} 条</span>
+              <div class="flex items-center gap-1">
+                <button
+                  type="button"
+                  class="btn btn-outline btn-sm btn-icon"
+                  :disabled="appUpdatesPage <= 1"
+                  @click="fetchAppUpdates(appUpdatesPage - 1)"
+                ><AppIcon name="chevronLeft" :size="14" /></button>
+                <span class="px-2 text-xs text-ink-2 amt">{{ appUpdatesPage }} / {{ Math.ceil(appUpdatesTotal / appUpdatesPageSize) }}</span>
+                <button
+                  type="button"
+                  class="btn btn-outline btn-sm btn-icon"
+                  :disabled="appUpdatesPage >= Math.ceil(appUpdatesTotal / appUpdatesPageSize)"
+                  @click="fetchAppUpdates(appUpdatesPage + 1)"
+                ><AppIcon name="chevronRight" :size="14" /></button>
+              </div>
+            </div>
+          </section>
+        </div>
+
       </div>
     </div>
 
@@ -1002,11 +1514,37 @@ function closeUserTransactions() {
         >下一页</button>
       </div>
     </BaseModal>
+
+    <!-- 规则版本预览（与解析详情/用户明细同一种详情面） -->
+    <BaseModal
+      :show="!!showRulePreview"
+      :title="showRulePreview ? `规则版本 ${showRulePreview.version}` : '规则版本'"
+      size="lg"
+      @close="showRulePreview = null"
+    >
+      <div v-if="showRulePreview" class="space-y-3">
+        <div class="flex items-center gap-2 text-xs text-ink-3 amt">
+          <span v-if="showRulePreview.is_active" class="badge badge-ink">当前激活</span>
+          <span v-if="showRulePreview.content_hash" class="mono truncate">
+            content_hash {{ showRulePreview.content_hash }}
+          </span>
+          <span class="ml-auto shrink-0">{{ formatLocalTime(showRulePreview.created_at) }}</span>
+        </div>
+        <pre class="admin-json-view scroll-thin mono">{{ formatRuleJson(showRulePreview) }}</pre>
+      </div>
+    </BaseModal>
   </div>
 </template>
 
 <style scoped>
 .admin-nav { position: sticky; top: 1.5rem; }
+.admin-nav-group {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-4);
+  padding: 0 0 0.25rem 0.625rem;
+}
 .admin-nav-item {
   display: flex;
   align-items: center;

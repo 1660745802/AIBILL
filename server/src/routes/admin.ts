@@ -10,6 +10,7 @@ import { adminResetPassword } from '../services/auth.service.js'
 import { appLog } from '../services/logger.js'
 import { pageParam } from '../lib/pagination.js'
 import { loadFilterStats } from '../lib/filter-report.js'
+import { filterStats } from '../lib/parse-filter.js'
 import crypto from 'node:crypto'
 
 /**
@@ -425,6 +426,11 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           modified_count: modificationStats.modified_count,
           modification_rate: modificationRate,
         },
+        /* 服务端**预筛**统计（入站/出站分流）：`ai_parse_logs` 里看不到「被规则挡下、根本没调模型」
+           的那些（它们记在 `ai_parse_filters`）——线上实测 53% 的通知在这里就被丢了，所以
+           「空结果率」类指标必须与它一起看。⚠️ 这个函数此前**无任何消费者**（死代码），
+           「服务端挡了多少」只能手工 SQL 查。 */
+        prefilter: filterStats(db, null, rangeDays),
       },
       message: '',
     }
