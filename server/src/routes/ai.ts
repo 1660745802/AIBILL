@@ -446,38 +446,53 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           const original = JSON.parse(logRow.parsed_items)
           const final = body.final_items
 
-          // 自动从修正中学习：如果用户修改了分类，生成记忆
+          /* 自动从修正中学习：分类/账户被改就生成记忆。
+
+             原先按 index 配对 `original[i]`/`final[i]` 并用 `Math.min` 截断。
+             写入的记忆内容取自 final，所以错得不是「描述↔分类」配错，
+             而是**「这一项到底被改了没有」判错**：final_items 是用户确认后的
+             最终态（契约：删除 = 不在数组里、新增 = 多出来的项），条数与顺序
+             本来就是变的——一旦错位，没改的项会被当成改了（学出多余记忆）、
+             与相邻项的比较则被跳过。这些记忆会被注入 prompt，错一次就一直错。
+             现在按 `description` 配对：只在**两侧描述唯一且相同**时才比较；
+             描述重复（歧义）或找不到原始项（新增项）一律不学。 */
           if (Array.isArray(original) && Array.isArray(final)) {
-            for (let i = 0; i < Math.min(original.length, final.length); i++) {
-              const orig = original[i]
-              const fin = final[i]
-              if (!orig || !fin) continue
+            const descOf = (it: any): string =>
+              typeof it?.description === 'string' ? it.description.trim() : ''
+
+            const origByDesc = new Map<string, any>()
+            const ambiguous = new Set<string>()
+            for (const o of original) {
+              const desc = descOf(o)
+              if (!desc) continue
+              if (origByDesc.has(desc)) ambiguous.add(desc)
+              else origByDesc.set(desc, o)
+            }
+
+            const learn = (memContent: string): void => {
+              const existing = db
+                .prepare('SELECT id FROM ai_memories WHERE user_id = ? AND content = ?')
+                .get(userId, memContent)
+              if (existing) return
+              db.prepare(
+                `INSERT INTO ai_memories (user_id, content, category, source, source_detail) VALUES (?, ?, 'habit', 'ai_suggested', '解析修正自动学习')`,
+              ).run(userId, memContent)
+            }
+
+            for (const fin of final) {
+              const desc = descOf(fin)
+              if (!desc || ambiguous.has(desc)) continue
+              const orig = origByDesc.get(desc)
+              if (!orig) continue
 
               // 分类被修正
-              if (orig.category_name && fin.category_name && orig.category_name !== fin.category_name && fin.description) {
-                const memContent = `"${fin.description}"应该归类为"${fin.category_name}"`
-                // 避免重复记忆
-                const existing = db
-                  .prepare('SELECT id FROM ai_memories WHERE user_id = ? AND content = ?')
-                  .get(userId, memContent)
-                if (!existing) {
-                  db.prepare(
-                    `INSERT INTO ai_memories (user_id, content, category, source, source_detail) VALUES (?, ?, 'habit', 'ai_suggested', '解析修正自动学习')`,
-                  ).run(userId, memContent)
-                }
+              if (orig.category_name && fin.category_name && orig.category_name !== fin.category_name) {
+                learn(`"${desc}"应该归类为"${fin.category_name}"`)
               }
 
               // 账户被修正
-              if (orig.account_name && fin.account_name && orig.account_name !== fin.account_name && fin.description) {
-                const memContent = `"${fin.description}"一般用"${fin.account_name}"支付`
-                const existing = db
-                  .prepare('SELECT id FROM ai_memories WHERE user_id = ? AND content = ?')
-                  .get(userId, memContent)
-                if (!existing) {
-                  db.prepare(
-                    `INSERT INTO ai_memories (user_id, content, category, source, source_detail) VALUES (?, ?, 'habit', 'ai_suggested', '解析修正自动学习')`,
-                  ).run(userId, memContent)
-                }
+              if (orig.account_name && fin.account_name && orig.account_name !== fin.account_name) {
+                learn(`"${desc}"一般用"${fin.account_name}"支付`)
               }
             }
           }
