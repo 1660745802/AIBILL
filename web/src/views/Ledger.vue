@@ -272,7 +272,14 @@ async function generateAiSummary() {
   aiLoading.value = true
   aiGenerated.value = false
   try {
-    const { data } = await api.post('/stats/analysis', { type: 'spending', year: year.value, month: month.value })
+    /* ⚠️ 必须显式给足够长的 timeout：默认 10s，而服务端这条链要**现调一次 LLM**
+       （`chatCompletion(..., 30000)`）——用默认值意味着只要模型稍慢一点，
+       前端就先超时了，用户看到「请求超时」而分析其实快出来了。 */
+    const { data } = await api.post(
+      '/stats/analysis',
+      { type: 'spending', year: year.value, month: month.value },
+      { timeout: 60000 },
+    )
     if (data.code === 0) {
       const text = data.data.analysis || data.data.content || ''
       const lines = text.split('\n').filter((l: string) => l.trim())

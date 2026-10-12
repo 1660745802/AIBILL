@@ -1,5 +1,8 @@
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
+import { PERIOD_KEY } from '@/stores/period'
+import { LEDGER_STATE_KEY } from '@/stores/ledger'
+import { QUICK_DRAFT_KEY } from '@/composables/useQuickEntry'
 
 /**
  * 单次请求的逃生口：默认所有失败都会自动弹 toast；
@@ -75,8 +78,14 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      // 清理 token 并跳转（同步操作）
+      /* 与 stores/auth.logout() **同口径**：token 之外还有「上一次浏览留下的输入」
+         （正在看的月份、账本筛选、快速录入草稿）。
+         401 走的是整页跳转，Pinia 内存态会随刷新消失，但 localStorage /
+         sessionStorage 不会——不清就留给下一个登录这台设备的人。 */
       localStorage.removeItem('token')
+      localStorage.removeItem(PERIOD_KEY)
+      sessionStorage.removeItem(LEDGER_STATE_KEY)
+      sessionStorage.removeItem(QUICK_DRAFT_KEY)
       const currentPath = window.location.pathname
       if (currentPath !== '/login' && currentPath !== '/register') {
         window.location.replace('/login')

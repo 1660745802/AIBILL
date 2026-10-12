@@ -79,8 +79,15 @@ async function handleLogout() {
   router.push('/login')
 }
 
+/*
+ * 导出：必须显式给 timeout。
+ * 默认 10s 对「全量数据序列化 + 下载」太短（慢网/几千笔流水就常超时），
+ * 而超时的表现是「导出失败」——用户以为坏了。
+ */
+const EXPORT_TIMEOUT = 60000
+
 function exportJson() {
-  api.get('/export/json', { responseType: 'blob' }).then((res) => {
+  api.get('/export/json', { responseType: 'blob', timeout: EXPORT_TIMEOUT }).then((res) => {
     const url = URL.createObjectURL(new Blob([res.data]))
     const a = document.createElement('a')
     a.href = url
@@ -91,7 +98,7 @@ function exportJson() {
 }
 
 function exportCsv() {
-  api.get('/export/csv', { responseType: 'blob' }).then((res) => {
+  api.get('/export/csv', { responseType: 'blob', timeout: EXPORT_TIMEOUT }).then((res) => {
     const url = URL.createObjectURL(new Blob([res.data]))
     const a = document.createElement('a')
     a.href = url

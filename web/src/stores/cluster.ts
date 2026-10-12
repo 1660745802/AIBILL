@@ -28,6 +28,10 @@ export const useClusterStore = defineStore('cluster', () => {
         data.value = res.data.data
         updatedAt.value = Date.now()
         error.value = ''
+      } else {
+        /* HTTP 200 但 code != 0 也算失败。以前这里静默跳过：error 保持空串、
+           data 还是旧值，UI 根本看不出读数拉取失败过（“故障被伪装成正常”）。 */
+        error.value = res.data.message || '读数拉取失败'
       }
     } catch (e: any) {
       error.value = e.response?.data?.message || '读数拉取失败'
@@ -178,9 +182,21 @@ export const useClusterStore = defineStore('cluster', () => {
     return `${Math.floor(s / 86400)} 天前`
   })
 
+  /**
+   * 清空读数。登出时调用：store 是同一标签页内的单例，而登出走的是前端路由
+   * （不像 401 那样整页刷新），不清就会把上一个用户的净资产递给下一个登录的人。
+   */
+  function reset() {
+    data.value = null
+    portfolio.value = null
+    portfolioState.value = 'pending'
+    error.value = ''
+    updatedAt.value = null
+  }
+
   return {
     data, loading, error, updatedAt,
-    load,
+    load, reset,
     netWorth, netWorthUnknown, netNegative, assetSplit, compositionState, liability,
     portfolio, portfolioState, loadPortfolio,
     netWorthIncomplete, unpricedAccounts,

@@ -1,3 +1,5 @@
 node_modules
 dist
 .env
+# vue-tsc --build / tsc -b 的增量缓存，不该进仓库（会随环境漂移）
+*.tsbuildinfo

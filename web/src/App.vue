@@ -101,10 +101,14 @@ const pageTitle = computed(() => {
   return all.find(i => isActive(i.path))?.label ?? '财务工作台'
 })
 
-const today = new Date()
-const todayLabel = computed(() =>
-  `${today.getMonth() + 1}月${today.getDate()}日 周${'日一二三四五六'[today.getDay()]}`,
-)
+/** 顶部条日期：每次都按当时的日期算。
+ *  以前是 `const today = new Date()` 的快照 + 一个 computed，页面停在那里
+ *  跨过午夜后顶部条会一直显示「昨天」。这里挂一个 route.path 依赖，换页时重算。 */
+const todayLabel = computed(() => {
+  void route.path
+  const d = new Date()
+  return `${d.getMonth() + 1}月${d.getDate()}日 周${'日一二三四五六'[d.getDay()]}`
+})
 
 /** flush 路由（AI 助手）自己管理整屏高度，不加页面留白、不叠仪表 */
 const flush = computed(() => route.meta.flush === true)

@@ -9,12 +9,11 @@ import { ref, computed } from 'vue'
  * 仪表读数的一部分（右上角控件），所有页面跟着它走，刷新后还记得。
  */
 export const PERIOD_KEY = 'bill.period'
-const now = new Date()
 const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 
 function initial(): string {
   const saved = localStorage.getItem(PERIOD_KEY)
-  return saved && /^\d{4}-\d{2}$/.test(saved) ? saved : ym(now)
+  return saved && /^\d{4}-\d{2}$/.test(saved) ? saved : ym(new Date())
 }
 
 export const usePeriodStore = defineStore('period', () => {
@@ -24,12 +23,18 @@ export const usePeriodStore = defineStore('period', () => {
   const month = computed(() => Number(current.value.slice(5, 7)))
   const label = computed(() => `${year.value} 年 ${month.value} 月`)
   const shortLabel = computed(() => `${month.value} 月`)
-  const isCurrent = computed(() => current.value === ym(now))
+  /**
+   * 「今天」必须**当场取**，不能在模块加载时快照。
+   * 以前这里是模块级的 `const now = new Date()`：页面开着跨过午夜后，
+   * `toCurrent()`（「回到本月」按钮）会跳到**上个月**，`isCurrent`/`daysElapsed`
+   * 也一直是旧日期。
+   */
+  const isCurrent = computed(() => current.value === ym(new Date()))
 
   /** 该月天数：刻度带量程算「按日均外推」时要它 */
   const daysInMonth = computed(() => new Date(year.value, month.value, 0).getDate())
   const daysElapsed = computed(() =>
-    isCurrent.value ? now.getDate() : daysInMonth.value,
+    isCurrent.value ? new Date().getDate() : daysInMonth.value,
   )
 
   function set(v: string) {
@@ -41,7 +46,13 @@ export const usePeriodStore = defineStore('period', () => {
     const d = new Date(year.value, month.value - 1 + delta, 1)
     set(ym(d))
   }
-  function toCurrent() { set(ym(now)) }
+  function toCurrent() { set(ym(new Date())) }
+
+  /**
+   * 回到当月，**不写** localStorage（登出用：登出已把 key 清掉了）。
+   * 不清内存态的话，同一个标签页里 B 登录后会先看到 A 看的那个月。
+   */
+  function reset() { current.value = ym(new Date()) }
 
   /** 「2026-09」→ 该月首末日，接口入参直接用 */
   const range = computed(() => {
@@ -55,6 +66,6 @@ export const usePeriodStore = defineStore('period', () => {
   return {
     current, year, month, label, shortLabel, isCurrent,
     daysInMonth, daysElapsed, range,
-    set, shift, toCurrent,
+    set, shift, toCurrent, reset,
   }
 })

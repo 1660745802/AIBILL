@@ -31,8 +31,14 @@ self.addEventListener('fetch', (event) => {
   const e = event as FetchEvent
   const request = e.request
 
-  // API 请求不缓存
+  /* 只接管 GET：
+     - Cache API 的 `put` 对非 GET 请求会直接 reject，而这里没 await（也没有
+       waitUntil），抛出来就是 SW 里的未处理拒绝；
+     - 「离线兜底」对写请求也毫无意义（会回一个 503 文本体）。
+     /api/ 一律不缓存；/updates/ 是 APK（几十 MB），塞进 Cache Storage 只会白占配额。 */
+  if (request.method !== 'GET') return
   if (request.url.includes('/api/')) return
+  if (request.url.includes('/updates/')) return
 
   e.respondWith(
     fetch(request)

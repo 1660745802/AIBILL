@@ -176,7 +176,8 @@ const router = createRouter({
       path: '/admin',
       name: 'Admin',
       component: lazy(() => import('@/views/Admin.vue')),
-      meta: { auth: true, title: '管理面板' },
+      // admin：非管理员不可达（导航里也看不见，见 nav.ts 的 adminOnly）
+      meta: { auth: true, admin: true, title: '管理面板' },
     },
     {
       path: '/:pathMatch(.*)*',
@@ -187,17 +188,29 @@ const router = createRouter({
 })
 
 // 路由守卫
-router.beforeEach((to, _from, next) => {
+router.beforeEach(async (to, _from, next) => {
   const auth = useAuthStore()
   const token = auth.token || localStorage.getItem('token')
 
   if (to.meta.auth && !token) {
     next('/login')
-  } else if (to.meta.guest && token) {
-    next('/ledger')
-  } else {
-    next()
+    return
   }
+  /* /admin：角色在首屏还没拉到（App.vue 的 onMounted 才 fetchUser），
+     直接按 URL 进来时先补一次——否则非管理员照样能渲染出管理面板，
+     只是每个请求各弹一个 403。只对 admin 路由 await，不拖慢其余首屏。 */
+  if (to.meta.admin) {
+    if (!auth.user) await auth.fetchUser()
+    if (!auth.isAdmin) {
+      next('/me')
+      return
+    }
+  }
+  if (to.meta.guest && token) {
+    next('/ledger')
+    return
+  }
+  next()
 })
 
 // chunk 加载类错误的最终兜底：router 层面捕获动态 import 失败。

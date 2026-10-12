@@ -4,6 +4,7 @@ import { getAssetsOverview } from '@/api/assets'
 import type { AssetOverview } from '@/api/assets'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import Skeleton from '@/components/ui/Skeleton.vue'
+import Notice from '@/components/ui/Notice.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import { useClusterStore } from '@/stores/cluster'
 import AccountsPanel from '@/components/AccountsPanel.vue'
@@ -12,16 +13,20 @@ import { useInvestmentNav } from '@/composables/useInvestmentNav'
 const cluster = useClusterStore()
 const { refreshInvestmentNav } = useInvestmentNav()
 const loading = ref(true)
+const error = ref(false)
 const overview = ref<AssetOverview | null>(null)
 
 
 async function loadData() {
   loading.value = true
+  error.value = false
   try {
     // 账户设置只用到账户级元数据（额度/账单日），dashboard 不带，仍走 /assets/overview。
     const o = await getAssetsOverview()
-    overview.value = o.data.data
-  } catch { /* 提示见 api 拦截器 */ }
+    // code != 0 也是失败：data 为 null，页面只剩页头，不能静默当空
+    if (o.data.code === 0) overview.value = o.data.data
+    else error.value = true
+  } catch { error.value = true }
   finally { loading.value = false }
 }
 
@@ -61,6 +66,12 @@ onMounted(loadData)
       <Skeleton variant="block" height="5rem" />
       <Skeleton variant="block" height="9rem" />
       <Skeleton variant="block" height="11rem" />
+    </div>
+
+    <!-- 失败：没有 overview 也不能只剩页头（原实现只有 catch {}，页面一片空白） -->
+    <div v-else-if="error" class="stack">
+      <Notice tone="danger">资产数据加载失败，请检查网络后重试。</Notice>
+      <button type="button" class="btn btn-outline btn-sm self-start" @click="loadData">重试</button>
     </div>
 
     <template v-else-if="overview">

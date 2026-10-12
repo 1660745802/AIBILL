@@ -15,6 +15,7 @@ import { useRouter } from 'vue-router'
 import { useClusterStore } from '@/stores/cluster'
 import { usePeriodStore } from '@/stores/period'
 import type { CompositionState } from '@/api/types'
+import { formatReading as reading, formatReadingCompact as readingCompact } from '@/utils/money'
 import Gauge from './Gauge.vue'
 import AppIcon from './AppIcon.vue'
 
@@ -23,26 +24,6 @@ const cluster = useClusterStore()
 const period = usePeriodStore()
 
 onMounted(() => cluster.load())
-
-/** 读数格式：≥1 万不带小数（那两位在这个量级是噪声），以下保留分位 */
-function reading(cents: number): string {
-  const yuan = Math.abs(cents) / 100
-  const s = yuan >= 10000
-    ? Math.round(yuan).toLocaleString('zh-CN')
-    : yuan.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  return `${cents < 0 ? '−' : ''}¥${s}`
-}
-
-/** 窄屏读数：整串千分位放不下 1/4 屏宽度，会被截成「¥1,284…」。
-   截断比缩写更糟——看的人不知道被吃掉的是万还是十万。改用万/k 写法。 */
-function readingCompact(cents: number): string {
-  const yuan = Math.abs(cents) / 100
-  const sign = cents < 0 ? '−' : ''
-  if (yuan >= 100000000) return `${sign}¥${(yuan / 100000000).toFixed(2)}亿`
-  if (yuan >= 10000) return `${sign}¥${(yuan / 10000).toFixed(1)}万`
-  if (yuan >= 1000) return `${sign}¥${(yuan / 1000).toFixed(1)}k`
-  return `${sign}¥${yuan.toFixed(0)}`
-}
 
 const ASSET_LABEL: Record<string, string> = {
   liquid: '活期', savings: '定期', investment: '投资',
@@ -87,8 +68,25 @@ const savingsToneClass = computed(() => ({
   ok: 'readout-ok', amber: 'readout-amber', redline: 'readout-redline', neutral: '',
 }[cluster.savingsTone]))
 
-const expenseText = computed(() => reading(cluster.monthExpense))
+/**
+ * dashboard 那一半读数（本月支出 / 环比 / 结余）是不是**根本不可知**。
+ *
+ * `summary` 的兼底是 `{expense: 0, ...}`：一旦 `/stats/dashboard` 没成功过
+ * （传输失败，或 HTTP 200 但 `code != 0`），这些读数就是 0。直接显示
+ * 「本月支出 ¥0.00」「本月结余 ¥0.00」＝ 告诉用户「你这个月一分没花」，
+ * 而事实是读不到（UI-DESIGN §6.8：「error 时读数显示「—」，宁可空着也不编数字」）。
+ *
+ * 只看 `data == null`（一次都没成功过）而不看 `error`：
+ * store 的约定是「有旧值就继续用旧值」——那时旧值仍是同一口径的真读数，
+ * 新鲜度由右下角的「N 分钟前」自报。
+ */
+const dashboardMissing = computed(() => cluster.data == null)
+
+const expenseText = computed(() =>
+  dashboardMissing.value ? '—' : reading(cluster.monthExpense),
+)
 const changeText = computed(() => {
+  if (dashboardMissing.value) return '读数读不到，稍后重试'
   const c = cluster.expenseChange
   if (c == null) return '无上月对照'
   return `${c >= 0 ? '+' : '−'}${Math.abs(c)}% 较上月`
@@ -160,7 +158,7 @@ const goExpense = () => router.push('/ledger?type=expense')
         :target="30"
         target-label="目标 30%"
         min-label="0"
-        :max-label="`本月结余 ${reading(cluster.monthBalance)}`"
+        :max-label="dashboardMissing ? '本月结余 —' : `本月结余 ${reading(cluster.monthBalance)}`"
       />
     </div>
 
@@ -174,7 +172,7 @@ const goExpense = () => router.push('/ledger?type=expense')
       </p>
       <strong class="readout-value">
         <span class="val-full">{{ expenseText }}</span>
-        <span class="val-compact">{{ readingCompact(cluster.monthExpense) }}</span>
+        <span class="val-compact">{{ dashboardMissing ? '—' : readingCompact(cluster.monthExpense) }}</span>
       </strong>
       <!-- 目标线「与上月持平」只在**真的有上月数据**时画。
            没有对照却画一条「与上月持平」的线，下面又写「无上月对照」，
@@ -191,8 +189,7 @@ const goExpense = () => router.push('/ledger?type=expense')
       <p class="readout-sub" :class="{
         'readout-amber': cluster.expenseTone === 'amber',
         'readout-redline': cluster.expenseTone === 'redline',
-      }">{{ changeText }}</p>
-    </div>
+      }">{{ changeText }}</p>    </div>
 
     <!-- 周期 + 新鲜度：仪表自报数据年龄，不让人猜 -->
     <div class="bezel-cell cluster-c4">

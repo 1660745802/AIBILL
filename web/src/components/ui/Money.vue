@@ -4,7 +4,7 @@
  * 入参一律「分」（见 utils/money.ts）。
  */
 import { computed } from 'vue'
-import { centsToYuan } from '@/utils/money'
+import { centsToYuan, formatYuanParts } from '@/utils/money'
 
 const props = withDefaults(defineProps<{
   value: number
@@ -27,8 +27,7 @@ const props = withDefaults(defineProps<{
 
 const parts = computed(() => {
   const yuan = centsToYuan(props.value)
-  const magnitude = props.absolute ? Math.abs(yuan) : yuan
-  const [int, frac] = magnitude.toFixed(2).split('.')
+  const { int, frac } = formatYuanParts(props.value, props.absolute)
 
   let prefix = ''
   if (props.sign === 'plus') prefix = '+'
@@ -40,7 +39,7 @@ const parts = computed(() => {
     else if (yuan < 0) prefix = '−'
   }
 
-  return { prefix, int: Number(int).toLocaleString('zh-CN'), frac }
+  return { prefix, int, frac }
 })
 
 const sizeClass = computed(() => ({

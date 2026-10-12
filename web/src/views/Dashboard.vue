@@ -19,6 +19,7 @@ interface TrendItem { date: string; total: number }
 interface AlertItem { type: string; message: string }
 
 const loading = ref(true)
+const error = ref(false)
 const data = ref<any | null>(null)
 const dismissed = ref<Set<number>>(new Set())
 const cluster = useClusterStore()
@@ -28,8 +29,18 @@ onMounted(() => { fetchDashboard(); cluster.loadPortfolio() })
 async function fetchDashboard() {
   try {
     const res = await api.get('/stats/dashboard')
+    // code != 0 也必须进 error：否则 data 仍是 null，模板会落到
+    // 「这一周还没有支出」等空态，把「没读到」谎报成「你没花钱」。
     if (res.data.code === 0) data.value = res.data.data
-  } catch { /* ignore */ } finally { loading.value = false }
+    else error.value = true
+  } catch { error.value = true } finally { loading.value = false }
+}
+
+/** 页面级错误态的重试：清错误、回到骨架屏，再拉一次 */
+function reload() {
+  error.value = false
+  loading.value = true
+  fetchDashboard()
 }
 
 const ASSET_META: Record<string, { label: string; color: string }> = {
@@ -139,9 +150,11 @@ const alertTone = (t: string) =>
 
 /** 「这个月走到哪了」——仪表给钱，这里给时间进度，两件事不重复 */
 const monthProgress = computed(() => {
+  // 数据没读到时不报「已记 0 笔」——那会把失败说成事实
+  if (!data.value) return ''
   const now = new Date()
   const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
-  const count = data.value?.summary?.transaction_count ?? 0
+  const count = data.value.summary?.transaction_count ?? 0
   return `${now.getMonth() + 1} 月已过 ${now.getDate()} / ${days} 天 · 已记 ${count} 笔`
 })
 </script>
@@ -163,6 +176,12 @@ const monthProgress = computed(() => {
         <div class="skeleton h-44 rounded-lg" />
         <div class="skeleton h-44 rounded-lg" />
       </div>
+    </div>
+
+    <!-- 失败：不能再往下走空态分支（那会谎报「这一周还没有支出」） -->
+    <div v-else-if="error" class="space-y-3">
+      <Notice tone="danger">本月数据加载失败，请检查网络后重试。</Notice>
+      <button type="button" class="btn btn-outline btn-sm" @click="reload">重试</button>
     </div>
 
     <div v-else-if="data" class="grid lg:grid-cols-[minmax(0,1fr)_21rem] gap-6 items-start">

@@ -144,7 +144,13 @@ async function save(row: { accountId: number; name: string }) {
     return
   }
   const yuan = Number(text)
-  if (!Number.isFinite(yuan) || yuan < 0) {
+  /*
+   * 只挡「不是数」：**负数现金是合法值**（信用卡欠款 / 透支）。
+   * 以前这里写成 `yuan < 0` 也拒，还回一句「……现金不是数字」：
+   * 信用卡账单根本录不进去，而服务端 `PUT /api/assets/snapshots`
+   * 明确写「负数 = 负债（信用卡欠款），是合法值」，投资页的现金框也收负数。
+   */
+  if (!Number.isFinite(yuan)) {
     toast.warning(`${row.name} 的现金不是数字，已还原`)
     seedDraft()
     return
