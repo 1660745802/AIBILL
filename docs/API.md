@@ -8,7 +8,7 @@
 
 > ⚠️ **已废弃接口（deprecated，2026-10）**：`/api/budgets/*`、`/api/goals/*`、
 > `/api/subscriptions/*`、`/api/memories/*`（`/api/assets/snapshot`、`/api/assets/trend` 路由已删）。
-> **权威说明、判定依据与「表可否删」见 [PRODUCT.md §3.2](PRODUCT.md)**（唯一真源，此处不再重复）。
+> **权威说明、判定依据与「表可否删」见 README.md「功能现状」**（唯一真源，此处不再重复）。
 > 注意：`ai_memories` / `asset_snapshots` **两张表不可删**（被主流程活跃读写，删了是故障）；
 > `GET /api/stats/dashboard` 响应结构保持不变（`budget_progress` / `goals_top` /
 > `subscriptions_overview` 字段保留、值恒为空），保证已发布客户端解析不受影响。
@@ -585,7 +585,7 @@ If-None-Match: "ab12…"
 > 隐私口径：**用户之间完全隔离**。管理员默认只在管理面板做用户/系统管理；
 > 跨用户查看流水明细与解析原文属**排障用途**，服务端会写审计日志
 > （`app_logs`，`level=warn`，记录操作者 admin id 与目标 user_id / log id）。
-> 详见 [PRODUCT.md §1.2](PRODUCT.md)、[DEVELOPMENT.md §5.3](DEVELOPMENT.md)。
+> 详见 README.md「定位与原则」、[ARCHITECTURE.md §5.3](ARCHITECTURE.md)。
 
 ---
 
@@ -779,5 +779,5 @@ If-None-Match: "ab12…"
 
 - **规则内容真源 / 发布与回滚 / 启动 fail-fast** → [ARCHITECTURE.md §3.7](ARCHITECTURE.md)
 - **客户端支持基线（≥1.5.0）与 `versionCode` 纪律** → [ARCHITECTURE.md §3.8](ARCHITECTURE.md)
-- **护栏写法**（按分支枚举配「数据非空」构造、变异自检、清单按基线版本生成）→ [DEVELOPMENT.md §7.2](DEVELOPMENT.md)
+- **护栏写法**（按分支枚举配「数据非空」构造、变异自检、清单按基线版本生成）→ [ARCHITECTURE.md §7.2](ARCHITECTURE.md)
 - **语料形状**（`testcases` 的 `expect_tier`/`expect_txn`/`expect_reason`）由 `server/config/rules.json` 与 `lib/notification-rules.ts` 的 `validateRules` 定义。⚠️ 语料本体、本附录的共享导出件、对账 payload 都属**开发阶段产物**，专项结束后删除；**需要长期固化的语义只留在上面三处**。

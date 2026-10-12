@@ -199,7 +199,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const db = getDb()
     const userId = Number(id)
 
-    // 审计：跨用户查看明细是**有意保留的运维能力**（PRODUCT §1.2），不是漏洞，
+    // 审计：跨用户查看明细是**有意保留的运维能力**（README「定位与原则」），不是漏洞，
     // 但属敏感操作 → 一律按 warn 记一条（谁、看谁、什么动作）。appLog 只写库不抛错。
     appLog('warn', 'admin', `管理员查看用户流水明细: user_id=${userId}`, {
       action: 'view_user_transactions',

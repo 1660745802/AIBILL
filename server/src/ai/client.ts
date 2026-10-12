@@ -105,7 +105,7 @@ export async function chatCompletion(
         throw new AiError('AI_RATE_LIMIT', 'AI 请求频率超限，请稍后再试')
       }
       /* ⚠️ 只回状态码：上游正文可能含内部信息（甚至 Key 片段），
-         而 DEVELOPMENT §5.2 要求响应不暴露内部信息。
+         而 ARCHITECTURE §5.2 要求响应不暴露内部信息。
          `errorText` 已在上面 `console.error` 完整落服务端日志，排查不受影响。 */
       throw new AiError('AI_API_ERROR', `AI 接口错误 (${response.status})`)
     }

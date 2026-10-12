@@ -3,7 +3,7 @@
  *
  * 回归：`AI_API_ERROR` 曾把上游响应体前 200 字拼进 message，而 routes/ai.ts
  * 把这个 message 原样回给客户端 —— 上游的 400/500 正文里可能带内部信息
- * （provider 的 trace、甚至 Key 片段），违反 DEVELOPMENT §5.2「响应不暴露内部信息」。
+ * （provider 的 trace、甚至 Key 片段），违反 ARCHITECTURE §5.2「响应不暴露内部信息」。
  * 现在只回状态码；完整正文只进服务端日志（client.ts 里的 console.error）。
  *
  * 全部离线：`fetch` 被 stub，不出网。

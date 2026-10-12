@@ -23,7 +23,7 @@
 - 所有业务表带 `user_id`
 - 每次查询/写入自动附加 `WHERE user_id = ?`
 - **用户之间完全隔离**；管理员默认不跨用户查询，排障时可经管理面板查看他人明细/
-  解析原文，且**必写审计日志**（见 [DEVELOPMENT.md §5.3](DEVELOPMENT.md)）
+  解析原文，且**必写审计日志**（见 [ARCHITECTURE.md §5.3](ARCHITECTURE.md)）
 
 ### 1.2 「今天」= 北京时间（D2 决策）
 
@@ -162,7 +162,7 @@ status: active | completed | paused | abandoned
 | `cashflow_forecasts` | Phase 2 现金流预测 | 📋 |
 | `financial_health_scores` | Phase 3 财务健康度 | 📋 |
 
-这些表尚未实现，规划详见 [PRODUCT.md §3 功能现状](PRODUCT.md)。
+这些表尚未实现，规划详见 [README.md「功能现状」](../README.md)。
 
 ---
 

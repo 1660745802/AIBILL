@@ -850,7 +850,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       const dataContext = contextLines.join('\n')
 
       // 查询用户偏好记忆
-      // ⚠️ **只取 source='manual'**（与 /ai/parse 同口径；DATA §3.2 / API.md §3 / DEVELOPMENT §5.4）：
+      // ⚠️ **只取 source='manual'**（与 /ai/parse 同口径；DATA §3.2 / API.md §3 / ARCHITECTURE §5.4）：
       // ai_suggested 是 AI 自己从修正里学出来的结论，自动注入就是自我污染。
       // 这条以前只加在 parse 路径上，chat 把全部记忆（含 ai_suggested）都塞进了 system prompt。
       const memories = db
@@ -870,7 +870,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       // 构建消息列表
       //
-      // ⚠️ 注入面在**两处**（DEVELOPMENT §5.4 是 P0 底线）：
+      // ⚠️ 注入面在**两处**（ARCHITECTURE §5.4 是 P0 底线）：
       // 1. `body.message` 是用户输入 → 必须用 `<user_input>` 包裹；
       // 2. `dataContext` 里的**交易描述**来自导入的第三方账单/通知文本（商户名/备注），
       //    它们以「数据」身份拼进 system prompt，却和指令同处一个文本块 →

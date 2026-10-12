@@ -5,19 +5,10 @@
 
 ---
 
-## 0. 为什么要再改一次
+## 0. 设计来源（一句话）
 
-上一版「账本纸」做得很干净：纸白 `#f3f5f6` + 发丝线 + 近乎零圆角 + 会计双线 + 等宽数字，
-是「一本账」的忠实翻译。但它落在一个问题上——**发丝线网格 + 零圆角 + 中性灰白 + 单一克制主色**，
-正是生成式界面最常见的那一档外观。它专业、克制、不难看，却不专属于
-「一个人用 AI 记自己的账」这件事。
-
-真正的区分不在皮肤，在**隐喻**。所以这一版换的不是配色，是隐喻：
-
-> 上一版说「这是一本账」——账本是文档。
-> 这一版说「**钱是读数，不是文档**」——你不是在读账本，是在看仪表。
-
----
+上一版是「账本纸」（纸白+发丝线+零圆角，见 git 历史 `fea809b`）；本版换成**仪表读数**：
+「钱是读数，不是文档」——你不是在读账本，是在看仪表。区分不在皮肤，在**隐喻**。
 
 ## 1. 设计主张
 
@@ -62,74 +53,33 @@
 
 ---
 
-## 2. 色彩
+## 2. 色彩（真源在 CSS）
 
-```
-墨 ink        #171b1f  标题与主操作     ink-2 #454e56 正文   ink-3 #7b848c 次要   ink-4 #a3abb2 占位
-石 action     #2b333a  按钮/FAB/选中条  hover #1e252b       soft #e3e7ea
-纸 paper      #eceff1  页面            raised #ffffff 浮层   sunk #e4e8eb 输入槽   hover #f1f4f5
-线 rule       #d6dce0  主分隔           strong #b9c1c7 输入框边框   faint #e7ebed 行间
+**色值与可访问性对全部集中在 `web/src/assets/main.css` 的 `@theme`**（浅色/深色两套），本文不复制色表
+——复制就是第二份真源。组件**不得硬编码色值**（复核项见 §9）。必须守住的语义约束：
 
-语义（页面内，颜色只表达含义）
-支出 #c0392f / 底 #fbeceb / 线 #f0c7c3
-收入 #1c7a52 / 底 #e6f3ec / 线 #b6dbc9
-警示 #a86312 / 底 #fbf2e1 / 线 #ead4a8
-信息 #2a5d8c / 底 #e8eff6 / 线 #c1d5e6
+- 语义分工明确：支出红 / 收入绿 / 警示琥珀 / 信息蓝；页面内颜色**只表达含义**，不做装饰。
+- **仪表面恒为深色**：浅色系统下是深色面板嵌浅色页面，深色系统下整体再降一档。个性来自这个对比，
+  不来自「把整个 App 变暗」。
+- **主操作单独用一组会翻转的 token**（`--color-inverse`/`--color-inverse-fg`）：黑按钮在浅色下对比最强，
+  深色下会「深底压深底」退到背景里，所以必须随系统翻转。
+- 深色模式**跟随系统**，不做手动三档切换（自托管场景，手机端不折腾）。
 
-仪表面（恒定深色，系统切换时只降一档）
-bezel   #171b1f      浅色系统下的仪表面 / 深色系统下 #0f1216
-panel   #1e242a      / #171b20
-readout #e9eef2      读数白
-readout-2 #8b98a3    读数次要
-readout-3 #5d6975    刻度标签 / 最弱
-notch   #2b333a      刻度
-amber   #e0a34a      警戒（80%+ / 目标未达）
-redline #e0574b      红区（超支 / 负净资产）
-ok      #46b08c      达标
-```
+## 3. 字体与金额（只锁约束，不列阶梯）
 
-深色系统下页面 token 整体降明度（`paper #121518` / `ink-1 #e6ebef` …），
-语义色提亮到 `#ff7d70` / `#4fd3a0` / `#efb257` / `#79b3ea`。
-**深色模式跟随系统，不做手动三档切换**（本项目部署在自托管环境，手机端不折腾）。
+自托管 IBM Plex（latin 子集，OFL，文件在 `web/public/fonts/`）；中文落系统栈
+（PingFang SC → HarmonyOS Sans SC → Noto Sans SC）。字号/字重阶梯见 `assets/main.css`。必须守住的：
 
-## 3. 字体
-
-自托管 IBM Plex（latin 子集，OFL），中文落系统栈。
-
-| 角色 | 字体 | 说明 |
-|------|------|------|
-| 读数 / 金额 / 表格 / 邀请码 / 日志 / JSON | `IBM Plex Mono` | 灵魂字体。Plex Mono 是为机器设计的等宽体，读数用它才对味 |
-| 拉丁 UI 文字 | `IBM Plex Sans` | 400/500/600 |
-| 中文 | 系统栈 | PingFang SC → HarmonyOS Sans SC → Noto Sans SC |
-
-自托管文件在 `web/public/fonts/`，6 个 woff2 共 348KB，`unicode-range` 只声明
-latin 区段（中文永远不落到 Plex，避免双字体抖动）。
-
-> **为什么不自托管中文字体**：每个字重 300–700KB，个性也不靠中文字形承载。
-> 这一版的个性来自刻度结构和读数，不来自中文字重。
-> `public/fonts/IBM-Plex-License.txt` 是 OFL 授权，必须随包分发。
-
-| 层级 | 规格 |
-|------|------|
-| 主读数 | `1.5rem / 500 / -0.03em / tabular-nums / Plex Mono` |
-| 读数标签 | `0.625rem / 600 / +0.10em / readout-3` |
-| 栏头 | `0.6875rem / 600 / +0.08em` + 延伸发丝线 |
-| 正文 | `0.875rem / 400 / 1.5` |
-| 元信息 | `0.75rem / ink-3` |
-
-**金额必须对齐**：全站 `tabular-nums`（`.amt` / `.readout-value` 用 Plex Mono）。
-读数 ≥1 万不带小数（那两位在这个量级是噪声）；窄屏改用万/k 写法
-（`¥128.4万`），**不截断**——`¥1,284…` 让人猜被吃掉的是万还是十万。
+- **读数与金额用 IBM Plex Mono**（机器设计的等宽体）；拉丁 UI 文字用 Plex Sans。
+- **金额必须对齐**：全站 `tabular-nums`；`.amt`/`.readout-value` 用 Plex Mono。
+- **读数 ≥1 万不带小数**（那两位在这个量级是噪声）；窄屏用万/k（`¥128.4万`），**不截断**——
+  `¥1,284…` 让人猜被吃掉的是万还是十万。⚠️ 这条**只适用于仪表读数**，流水/表单等普通金额仍精确到分
+  （由 `web/src/utils/money.ts` 的显式函数区分，不做全局切换）。
 
 ## 4. 圆角与阴影
 
-圆角 `2 / 3 / 5 / 8px`，仪表没有圆角；圆只留给指针帽、开关、头像。
-
-阴影只给浮层，且比上一版更收敛：
-`0 2px 6px -1px rgb(0 0 0/.1), 0 18px 44px -18px rgb(0 0 0/.32)`。
-仪表面用**内高光**（`inset 0 1px 0 rgb(255 255 255/.05)`）而不是投影，模拟面板。
-
----
+圆角只留给指针帽/开关/头像（仪表没有圆角）；阴影只给浮层且很收敛；仪表面用**内高光**而非投影模拟面板。
+具体数值见 `web/src/assets/main.css`。
 
 ## 5. 仪表读数（`InstrumentCluster.vue`）
 
@@ -154,14 +104,9 @@ latin 区段（中文永远不落到 Plex，避免双字体抖动）。
 
 ### 5.1 刻度带（`Gauge.vue`）
 
-- 刻度由 `repeating-linear-gradient` 生成，不写死 DOM：每 6.25% 一根小刻度，每 25% 一根长刻度
-- **刻度不随指针变色**：整条刻度是量程，指针是唯一在动的东西
-  （试过「已过区间点亮」，结果整条读起来像条形码，反而看不清指针——已废弃）
-- 指针 = 2px 竖条 + 顶部方帽，`left` 过渡 0.7s `cubic-bezier(.22,1,.36,1)`
-- 红区 = 斜纹带 + 底边实线，一眼看出「到这里就危险了」
-- 目标刻度 = 虚线到轴 + 轴上方标签
-
----
+约束（实现细节在组件里）：刻度由 CSS 渐变生成；**刻度不随指针变色**（整条刻度是量程，指针是唯一在动的东西
+——试过「已过区间点亮」，整条读起来像条形码）；红区用斜纹带 + 底边实线；目标刻度用虚线 + 轴上方标签。
+⚠️ 回到 §1.1：**量程说不清的数字不要配刻度带**。
 
 ## 6. 布局与导航
 
@@ -469,26 +414,11 @@ sh518880                                          [增][减][删]
 
 ---
 
-## 8. 组件清单
+## 8. 组件位置
 
-仪表：`Gauge.vue`、`InstrumentCluster.vue`、`QuickEntry.vue`、
-`composables/useQuickEntry.ts`、`stores/cluster.ts`、`stores/period.ts`、
-`stores/ledger.ts`。
-
-资产工作台：`web/src/nav.ts`（导航单一真源）、`components/AccountsPanel.vue`、
-`components/HoldingsEditor.vue`。
-服务端对应物：`lib/portfolio.ts`（净资产读模型）、`lib/quotes.ts`（行情抓取）、
-`lib/holdings.ts`（持仓估值）、`routes/investments.ts`。
-
-沿用上一版并重新配色的原子件：`AppIcon` `Money` `PageHeader` `LedgerLabel`
-`StatTile` `Meter` `SegmentedControl` `BaseModal` `EmptyState`
-`Skeleton` `Notice` `ToastHost` `ConfirmHost` `SheetRow`。
-
-新增语义类：`.bezel` `.bezel-cell` `.readout-label` `.readout-value` `.readout-sub`
-`.gauge` `.gauge-needle` `.gauge-redline` `.gauge-target` `.gauge-scale`
-`.notice-on-bezel` `.skeleton-on-bezel`
-
----
+仪表读数：`components/ui/{InstrumentCluster,Gauge,Money}.vue` + `composables/useQuickEntry.ts` +
+`stores/{cluster,period,ledger}.ts`；导航单一真源 `web/src/nav.ts`。原子件与语义类清单见
+`web/src/components/ui/` 与 `assets/main.css`（不在此重复枚举）。
 
 ## 9. 验收清单
 

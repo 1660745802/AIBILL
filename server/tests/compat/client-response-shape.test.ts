@@ -18,7 +18,7 @@
  * 漏断言＝漏掉崩溃路径；多断言＝把客户端已放宽的字段又锁死。
  * **基线变更时必须重新扒一遍该版本的 DTO**，并同步改本文件。当前基线：**≥1.5.0（versionCode ≥ 7）**。
  *
- * 约定（DEVELOPMENT §7.2）：分支枚举类断言必须配「数据非空」的构造；
+ * 约定（ARCHITECTURE §7.2）：分支枚举类断言必须配「数据非空」的构造；
  * 本文件做过变异自检（把 `date` 改成 null → 立刻红）。
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
