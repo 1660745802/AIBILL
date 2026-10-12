@@ -11,7 +11,7 @@
 #   CONTAINER=my-app scripts/feature-triage.sh
 #   DB=/path/to.db scripts/feature-triage.sh  # 直接读本地库（需装了 better-sqlite3）
 #
-# 第 4 类证据「客户端是否可达」需要跨仓库 grep，见 docs/FEATURE-TRIAGE.md §2.4。
+# 第 4 类证据「客户端是否可达」需要跨仓库 grep，见 docs/PRODUCT.md §4.1。
 
 set -euo pipefail
 
@@ -140,7 +140,7 @@ for (const a of act) {
 "
 
 echo "══════════════════════════════════════════════════════════════"
-echo " 判定标准见 docs/FEATURE-TRIAGE.md"
+echo " 判定标准见 docs/PRODUCT.md §4.2"
 echo " 记住：表行数=0 只能说明「服务端没数据」，"
 echo "       必须叠加「客户端是否可达」才能下结论。"
 echo "══════════════════════════════════════════════════════════════"

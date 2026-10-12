@@ -231,7 +231,7 @@ latin 区段（中文永远不落到 Plex，避免双字体抖动）。
 周期控件长在仪表面上，是**唯一**的修改入口（`stores/period.ts`，落 `localStorage`）。
 
 - 从「账本 3 月」切到「本月」不会再突然跳回当月——这是整个产品最容易记错账的地方
-- 账本页不再自带 `PeriodNav`（曾经页头和仪表各显示一个月份，能不一致）
+- 账本页不再自带周期控件（曾经页头和仪表各显示一个月份，能不一致）
 - 读数（仪表）随周期走，刷新页面后还记得在看哪个月
 
 ### 6.4 断点与间距
@@ -475,15 +475,14 @@ sh518880                                          [增][减][删]
 `composables/useQuickEntry.ts`、`stores/cluster.ts`、`stores/period.ts`、
 `stores/ledger.ts`。
 
-资产工作台：`web/src/nav.ts`（导航单一真源）、`components/SnapshotEditor.vue`。
+资产工作台：`web/src/nav.ts`（导航单一真源）、`components/AccountsPanel.vue`、
+`components/HoldingsEditor.vue`。
 服务端对应物：`lib/portfolio.ts`（净资产读模型）、`lib/quotes.ts`（行情抓取）、
 `lib/holdings.ts`（持仓估值）、`routes/investments.ts`。
 
 沿用上一版并重新配色的原子件：`AppIcon` `Money` `PageHeader` `LedgerLabel`
-`StatTile` `Meter` `SegmentedControl` `PeriodNav` `BaseModal` `EmptyState`
+`StatTile` `Meter` `SegmentedControl` `BaseModal` `EmptyState`
 `Skeleton` `Notice` `ToastHost` `ConfirmHost` `SheetRow`。
-
-> `PeriodNav.vue` 目前只剩 `Assets.vue` 在用，账本页已改读全局 store。
 
 新增语义类：`.bezel` `.bezel-cell` `.readout-label` `.readout-value` `.readout-sub`
 `.gauge` `.gauge-needle` `.gauge-redline` `.gauge-target` `.gauge-scale`

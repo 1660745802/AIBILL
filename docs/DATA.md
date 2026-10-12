@@ -22,7 +22,8 @@
 ### 1.1 数据隔离原则
 - 所有业务表带 `user_id`
 - 每次查询/写入自动附加 `WHERE user_id = ?`
-- **管理员不可跨用户查询任何业务数据**
+- **用户之间完全隔离**；管理员默认不跨用户查询，排障时可经管理面板查看他人明细/
+  解析原文，且**必写审计日志**（见 [DEVELOPMENT.md §5.3](DEVELOPMENT.md)）
 
 ### 1.2 「今天」= 北京时间（D2 决策）
 
@@ -161,7 +162,7 @@ status: active | completed | paused | abandoned
 | `cashflow_forecasts` | Phase 2 现金流预测 | 📋 |
 | `financial_health_scores` | Phase 3 财务健康度 | 📋 |
 
-这些表尚未实现，规划详见 [ARCHITECTURE.md §6 功能清单](ARCHITECTURE.md)。
+这些表尚未实现，规划详见 [PRODUCT.md §3 功能现状](PRODUCT.md)。
 
 ---
 
@@ -315,6 +316,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES (...);
 | **015** | **ai_parse_filters_backfill** | 幂等补建 `ai_parse_filters`（修生产库缺表，见下 §10） |
 | **016** | **drop_holding_cost_basis** | 删三列冗余/误导性字段 + 加 `accounts.invested_total`（见下 §10.5） |
 | **017** | **account_balance_single_source** | 账户余额归一：加 `accounts.balance` / `balance_as_of_txn_id`（见下 §12） |
+| **018** | **app_updates_version_code_unique** | `app_updates.version_code` 唯一索引：先去重（优先留 `is_active=1` / 最大 id）再建 `UNIQUE INDEX`（幂等） |
 
 > ⚠️ migration 012 曾被原地改写：早期版本重建过 `ai_parse_logs`（放宽 `status` CHECK 加 `filtered`），
 > 并被误应用到**生产库**（记录名 `parse_landing_tracking`）。当前代码里 012 是「新建 `ai_parse_filters`」版，

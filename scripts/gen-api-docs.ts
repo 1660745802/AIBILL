@@ -5,7 +5,7 @@
  * 生成 docs/API.md 的端点表格草稿。
  *
  * 使用：
- *   cd server && npx tsx ../scripts/gen-api-docs.ts
+ *   npx tsx scripts/gen-api-docs.ts   （在仓库根目录运行）
  *
  * 输出：stdout 打印 Markdown 表格，可粘贴到 docs/API.md。
  * 复杂响应示例仍需手动维护。

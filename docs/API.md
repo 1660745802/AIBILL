@@ -1,44 +1,17 @@
 # API 接口文档
 
 > **Base URL**: `http(s)://<host>:3000/api`
-> **认证**: 除 `/health`、`/api/auth/*`、`/api/config/notification-rules` 外均需 `Authorization: Bearer <jwt>`
+> **认证**: 除 `/health`、`/api/auth/*`、`/api/config/notification-rules`、`/api/app/update` 外均需 `Authorization: Bearer <jwt>`
 > **响应格式**: 统一 `{ code: 0, data: <T>, message: "" }`
-> **路由**: 见 `server/src/routes/*.ts`（本文档列出主要端点，非逐一枚举）
+> **路由**: 见 `server/src/routes/*.ts`。本文档逐条枚举全部 88 个端点；
+> 若与 `scripts/gen-api-docs.ts` 输出不一致，**以脚本为准**（它直接读 `routes/*.ts`）。
 
-> ⚠️ **已废弃接口（deprecated，2026-10）**
-> 以下接口在 Web 前端已下线（页面与导航入口移除）。**接口与数据表暂时保留**，供两端对齐排期后一并移除，
-> 期间行为完全不变。依据：3 个月真实数据中 `budgets` / `financial_goals` / `subscriptions` /
-> `ai_memories` / `asset_snapshots` 五张表均为 0 行，且两个客户端均无可达入口
-> （Android 侧 `BudgetApi` / `BudgetRepository` / `BudgetResponse` / Hilt 绑定四层齐备，
-> 但 `presentation/` 层零引用——即“数据层写全了，UI 入口从未存在”）。
->
-> | 废弃接口 | Web | Android |
-> |---------|-----|---------|
-> | `/api/budgets/*` | 已下线 | 数据层存在但 UI 零入口 |
-> | `/api/goals/*` | 已下线 | 无引用 |
-> | `/api/subscriptions/*` | 已下线 | 无引用 |
-> | `/api/memories/*` | 已下线 | 无引用 |
-> | `/api/assets/snapshot`、`/api/assets/trend` | 已删除 | 无引用 |
->
-> ⚠️ **`/api/memories/*` 废弃 ≠ `ai_memories` 表可删**：该表被 AI 解析主流程活跃读写
-> （`ai.ts:150` 读记忆注入 prompt、`ai.ts:380-397` 解析修正后自动学习写入、`ai.ts:530` AI 问答读取）。
-> **只下线路由，表必须保留**，否则 AI 记账解析会报错。
->
-> ✅ **`/api/assets/snapshot`、`/api/assets/trend` 已于 2026-10 删除路由**（本次）。
-> 删除依据（实测，非推测）：`web/src` 零引用；Android `billapp` **全 git history 从未出现过**
-> 这两个路径——源码里那句「为已发布的 Android 客户端保留」的注释是**错的**，已一并移除。
-> 连带删除 `lib/account-balance.ts` 的 `recordBalanceSamples()`：它唯一的调用点就是这个
-> deprecated 端点，端点没了它就是死代码。
->
-> ⚠️ **`asset_snapshots` 表必须保留**：它被 `GET /api/assets/portfolio`（曲线 / 覆盖率 / 构成）、
-> `GET /api/stats/dashboard` 与 `POST /api/stats/analysis`（净资产）、
-> `PUT /api/assets/snapshots` 与 `setManualBalance()`（手填凭证）**四方活跃读写**。
-> 删表不是「显示不对」而是**故障**：上述端点会集体 500（`no such table` 直接冒泡）。
-> （这与 `ai_memories` 恰好相反——那张表能删是因为无人读，这张不能删。）
->
-> 同理，`GET /api/stats/dashboard` 的响应仍包含 `budget_progress` / `goals_top` /
-> `subscriptions_overview` 字段（值恒为空数组），**响应结构刻意保持不变**，
-> 以保证已发布客户端的解析逻辑不受影响。
+> ⚠️ **已废弃接口（deprecated，2026-10）**：`/api/budgets/*`、`/api/goals/*`、
+> `/api/subscriptions/*`、`/api/memories/*`（`/api/assets/snapshot`、`/api/assets/trend` 路由已删）。
+> **权威说明、判定依据与「表可否删」见 [PRODUCT.md §3.2](PRODUCT.md)**（唯一真源，此处不再重复）。
+> 注意：`ai_memories` / `asset_snapshots` **两张表不可删**（被主流程活跃读写，删了是故障）；
+> `GET /api/stats/dashboard` 响应结构保持不变（`budget_progress` / `goals_top` /
+> `subscriptions_overview` 字段保留、值恒为空），保证已发布客户端解析不受影响。
 
 ---
 
@@ -96,6 +69,14 @@
 | 5002 | AI 响应格式异常 |
 | 5003 | AI 问答失败 |
 
+**框架级错误出口**（`server/src/app.ts`，不在路由里手工返回）：
+
+- 全局 `setErrorHandler` 统一回 `{ code: <HTTP 状态码>, data: null, message }`——
+  即 **`code` 等于 HTTP 状态码**。例：body JSON 解析失败 / 超限 / CORS 拒绝回 `400 / code:400`，
+  未捕获异常回 `500 / code:500`（message 固定为「服务器内部错误」，不泄漏堆栈）。
+- `setNotFoundHandler`：`/api/*` 路径不存在 → `404 / code:4004`（前端静态资源走 SPA fallback，不适用）。
+- APK 下载路由特例：文件名/路径非法 → `400 / code:4000`；文件不存在 → `404 / code:4004`。
+
 ### 0.4 字段约定
 
 | 项 | 约定 |
@@ -150,7 +131,7 @@
 ## 2. 交易 `/api/transactions/*`
 
 ### POST `/api/transactions`
-**批量 + 幂等**。items 单条通用契约见 [ARCHITECTURE.md §3.4](ARCHITECTURE.md)。
+**批量 + 幂等**。items 单条通用契约见 [ARCHITECTURE.md §2.4](ARCHITECTURE.md)。
 ```json
 { "items": [
   { "client_id": "uuid", "client_type": "web", "source": "ai",
@@ -542,26 +523,45 @@ If-None-Match: "15"
 | GET | `/api/admin/users` | 用户列表（**不返回**交易金额） |
 | PUT | `/api/admin/users/:id` | 启用/禁用 `{ is_active: 0 }` |
 | GET | `/api/admin/users/:id/stats` | 单用户统计（笔数/总额） |
-| GET | `/api/admin/users/:id/transactions` | 单用户交易明细（**仅管理员可查明细**，不在前端 UI 暴露） |
+| GET | `/api/admin/users/:id/transactions` | 单用户交易明细（管理员可在管理面板查看，运维排障用途，**访问写审计日志**） |
 | PUT | `/api/admin/users/:id/reset-password` | 重置密码（同时撤销该用户所有 token） |
 | DELETE | `/api/admin/users/:id` | 删除用户（**硬删 + 撤销该用户所有 token**） |
 | GET | `/api/admin/settings` | 全局设置（Key 脱敏） |
 | PUT | `/api/admin/settings` | 更新白名单全局设置 |
 | GET | `/api/admin/ai-parse-stats` | AI 解析总览（成功率/修正率/P95） |
-| GET | `/api/admin/ai-parse-logs` | 解析日志分页 |
-| GET | `/api/admin/ai-parse-logs/:id` | 单条日志 |
+| GET | `/api/admin/ai-parse-logs` | 解析日志分页（**返回用户原始输入 `raw_input`**，访问写审计日志） |
+| GET | `/api/admin/ai-parse-logs/:id` | 单条日志（含 `raw_input` 原文，访问写审计日志） |
 | GET | `/api/admin/logs` | 应用日志分页 |
+
+> 隐私口径：**用户之间完全隔离**。管理员默认只在管理面板做用户/系统管理；
+> 跨用户查看流水明细与解析原文属**排障用途**，服务端会写审计日志
+> （`app_logs`，`level=warn`，记录操作者 admin id 与目标 user_id / log id）。
+> 详见 [PRODUCT.md §1.2](PRODUCT.md)、[DEVELOPMENT.md §5.3](DEVELOPMENT.md)。
 
 ---
 
-## 13. 健康检查
+## 13. 应用更新 `/api/app/update` `/api/admin/updates`（Android APK 自托管分发）
+
+### GET `/api/app/update`
+**无需认证**（Android 启动时检查更新）。查询参数 `versionCode`（当前版本）。
+返回是否有新版本、下载地址、是否强制更新。服务端无激活版本时返回 `has_update=false`，
+客户端回落到 GitHub Release。
+
+### POST `/api/admin/updates`
+**需要 admin**。multipart 上传 APK（`apk_file`）+ 版本信息，上传后即激活（旧版本自动失活）。
+
+### GET `/api/admin/updates`
+**需要 admin**。历史版本列表（分页，`page` / `page_size`，每页默认 20 最大 100）。
+
+---
+
+## 14. 健康检查
 
 ### GET `/health`
-无需认证。
+无需认证。仅探活，不检查 DB / AI 可达性。
 ```json
-{ "status": "ok", "db": "ok", "ai": "ok" }
+{ "status": "ok" }
 ```
-（增强版同时检查 DB 连接 + AI 配置可达性）
 
 ---
 
@@ -594,4 +594,5 @@ If-None-Match: "15"
 
 ## 附录 B：自动生成脚本
 
-`scripts/gen-api-docs.ts` 可从 `routes/*.ts` 解析 `app.get/post/put/delete` + zod schema 自动生成端点表。CI 可选运行。
+`scripts/gen-api-docs.ts` 从 `routes/*.ts` 解析 `app.get/post/put/delete` 调用生成端点表。
+在**仓库根目录**运行：`npx tsx scripts/gen-api-docs.ts`。CI 可选运行。
