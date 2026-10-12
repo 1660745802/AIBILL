@@ -14,7 +14,7 @@ import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 import { getDb } from '../db/index.js'
 import { classifyNotification } from '../ai/verify.js'
-import { derivePrecheck } from './precheck.js'
+import { derivePrecheck, type Precheck } from './precheck.js'
 
 type Db = ReturnType<typeof getDb>
 
@@ -271,6 +271,8 @@ function regexSafetyError(pattern: string): string | null {
   // 先剥掉可移植的「任意字符」惯用法 [\s\S]（它两端语义一致；注意这里是字面量 `[`+反斜杠+s，
   // 写成 /\[\s\S\]/ 会变成「方括号里一个空白一个非空白」——那匹配不到实际 pattern 文本）
   const withoutAnyChar = pattern.replace(/\[\\s\\S\]/g, '').replace(/\[\\S\\s\]/g, '')
+  /* 已知的**保守误拒**（复核 N9，可承受）：正则里写 `\\s`（字面量反斜杠 + s，两端语义一致）也会被判成
+     裸 `\s`；未闭合的 `[\s\S` 报的是本错而非「无法编译」。当前真源不含这两种写法，故只记录不改。 */
   if (/\\[sS]/.test(withoutAnyChar)) {
     return '不允许 \\s/\\S（JS 与 Java 语义不同：JS 含 U+3000/U+00A0，Java 只有 ASCII）；整字符用 [\\s\\S]，空白请显式写字符类'
   }
@@ -425,7 +427,36 @@ export function corpusHash(testcases: RuleTestcase[] | undefined): string {
  * **必须进载荷**（它是客户端要跑的那套判据，改了它就必须让客户端重拉）。
  */
 export function buildPublishPayload(rules: RulesFile): RulesFile {
-  return { ...stripTestcases(rules), precheck: derivePrecheck() }
+  const payload = { ...stripTestcases(rules), precheck: derivePrecheck() } as Record<string, unknown> & {
+    precheck?: Precheck
+  }
+
+  /* ⚠️ **这里必须自己校验一遍**（复核 N8）：`regexSafetyError` 只在 `validateRules`（**文件级**）里跑，
+     而 `precheck` 是**代码派生、注入到载荷**的——它的 pattern 从不经过文件校验。
+     此前只有一条单测（`tests/lib/precheck.test.ts` 的「自己先过安全子集」）在守它：
+     测试一旦被删/跳过，裸 `\s` 这类跨语言分歧（JS 含 U+3000/U+00A0、Java 只有 ASCII）
+     会**无声回到下发判据** —— 那正是本轮修掉的 bug。所以把校验放到两条发布路径都必经的地方。 */
+  const pre = payload.precheck
+  if (pre) {
+    const bad: string[] = []
+    const check = (label: string, pattern: unknown, flags: unknown): void => {
+      if (typeof pattern !== 'string' || pattern.length === 0) return
+      const err = regexSafetyError(pattern)
+      if (err) bad.push(`${label}（flags=${String(flags ?? '')}）：${err}`)
+    }
+    for (const r of pre.rules) check(r.id, r.pattern, r.flags)
+    for (const [name, sig] of Object.entries(pre.signals)) {
+      if (sig && typeof sig === 'object') {
+        const s = sig as { pattern?: unknown; flags?: unknown }
+        check(`signals.${name}`, s.pattern, s.flags)
+      }
+    }
+    if (bad.length > 0) {
+      throw new Error(`precheck 判据未通过安全子集（不得下发）：\n- ${bad.join('\n- ')}`)
+    }
+  }
+
+  return payload
 }
 
 /** 发布载荷的 hash（ETag 与 `notification_rules.content_hash` 都用它） */

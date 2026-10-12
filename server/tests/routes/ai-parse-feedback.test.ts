@@ -49,14 +49,43 @@ describe('parse-feedback 自动学习', () => {
     return rows.map((r) => r.content)
   }
 
-  async function feedback(token: string, logId: number, finalItems: unknown[], modified = true) {
+  async function feedback(token: string, logId: number, finalItems: unknown[], modified = true, channel?: string) {
     return app.inject({
       method: 'POST',
       url: '/api/ai/parse-feedback',
       headers: authHeaders(token),
-      payload: { parse_log_id: logId, final_items: finalItems, modified },
+      payload: { parse_log_id: logId, final_items: finalItems, modified, ...(channel ? { channel } : {}) },
     })
   }
+
+  /* 客户端一直在发 `channel`（契约 §2），早期版本被 zod **静默剥掉** → 归因数据白丢。
+     现在收下并写进 `modification_detail`（零 migration）；非法值峰逢枚举校验 → 400。 */
+  it('channel 被接收并落进 modification_detail；非法值 400（不再静默剥离）', async () => {
+    const { token, userId } = await newUser('fbchannel')
+    const logId = seedParseLog(userId, [{ description: '午饭', category_name: '餐饮', account_name: '微信' }])
+
+    const res = await feedback(
+      token,
+      logId,
+      [{ description: '午饭', category_name: '出行', account_name: '微信' }],
+      true,
+      'nls',
+    )
+    expect(res.statusCode).toBe(200)
+    const row = getDb()
+      .prepare('SELECT modification_detail AS d FROM ai_parse_logs WHERE id = ?')
+      .get(logId) as { d: string }
+    expect(JSON.parse(row.d).channel).toBe('nls')
+
+    const bad = await feedback(
+      token,
+      logId,
+      [{ description: '午饭', category_name: '餐饮', account_name: '微信' }],
+      true,
+      'telepathy',
+    )
+    expect(bad.statusCode).toBe(400)
+  })
 
   it('删掉首条后仍只学真实改动（不产生未改项的记忆）', async () => {
     const { token, userId } = await newUser('fbdelete')

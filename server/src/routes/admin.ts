@@ -173,17 +173,21 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/admin/users/:id/stats', async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string }
     const db = getDb()
-    /* 跨用户读「他人收支总额」也是跨用户读取——与明细/原文同口径写审计（ARCHITECTURE §5.3）。 */
-    appLog('warn', 'admin', `查看用户 #${id} 的账单统计`, {
-      admin_user_id: request.user?.userId ?? 0,
-      target_user_id: Number(id),
-    })
 
     const user = db.prepare('SELECT id, username, nickname, role, is_active, created_at FROM users WHERE id = ?').get(Number(id)) as any
     if (!user) {
       reply.code(404)
       return { code: 3002, data: null, message: '用户不存在' }
     }
+
+    /* 审计：跨用户读「他人收支总额」与明细/原文同口径（ARCHITECTURE §5.3）。
+       ⚠️ 放在 404 判定**之后**：否则管理员拿垃圾 id 探测也会留 warn，且 `Number('abc')` 会得到 NaN。
+       字段名用 `admin_id`，与同模块既有三条（删除/重置密码/…）保持一致。 */
+    appLog('warn', 'admin', `查看用户 #${user.id} 的账单统计`, {
+      admin_id: request.user!.userId,
+      target_user_id: user.id,
+      username: user.username,
+    })
 
     const stats = db.prepare(`
       SELECT

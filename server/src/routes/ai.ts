@@ -86,7 +86,9 @@ const parseFeedbackSchema = z.object({
   final_items: z.array(z.any()),
   modified: z.boolean(),
   /* 入口归因：客户端一直在发（契约 §2），此前被 zod 静默剥掉。收下并写进 modification_detail
-     （无需 migration），供「哪个渠道的解析更容易被修正」这类分析用。 */
+     （无需 migration），供「哪个渠道的解析更容易被修正」这类分析用。
+     ⚠️ 只在 `modified && parsed_items` 分支落地（modification_detail 本身就是「修正详情」字段，
+     没有修正时它本来就为 null）；非法值**故意** 400（fail-loud），客户端固定发合法值。 */
   channel: z.enum(['nls', 'sms', 'a11y', 'manual']).optional(),
 })
 

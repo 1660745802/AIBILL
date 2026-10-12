@@ -11,7 +11,7 @@
 > **权威说明、判定依据与「表可否删」见 README.md「功能现状」**（唯一真源，此处不再重复）。
 > 注意：`ai_memories` / `asset_snapshots` **两张表不可删**（被主流程活跃读写，删了是故障）；
 > `GET /api/stats/dashboard` 响应结构保持不变（`budget_progress` / `goals_top` /
-> `subscriptions_overview` 字段保留、结构不变；它们按表实时计算，因表为空而恒为空数组），保证已发布客户端解析不受影响。
+> `subscriptions_overview` 字段保留、结构不变；它们按表实时计算，因表为空而当前为空（`budget_progress`/`goals_top` 是数组，`subscriptions_overview` 是对象）），保证已发布客户端解析不受影响。
 
 ---
 
@@ -722,11 +722,11 @@ If-None-Match: "ab12…"
 
 <details><summary>待实现 / 待决策（两侧对齐用，勿当成已生效契约）</summary>
 
-- **v2 待实现**：`hints`（入参）与 `hints_conflict`（出参）**两端都未实现** → 本契约保留字段定义，但双方都别依赖。
+- **`hints`：只有服务端已实现**——收+校验+落 `ai_parse_logs.hints`+机械算 `hints_conflict` 并在成功响应返回；**客户端未实现**（DTO 无该字段）→ 客户端落地前别依赖，落地后删本条。
 - **客户端未消费**：`data.source`（`quick`/`ai`/`prefilter`/`postfilter`）与失败形态的 `fallback` 字段 Android DTO 未声明 → 目前分支只能按 `code` + `items` 判。
 - **待产品决策 R-24**：`received_at` 的锚定日期在**自动入账**那步被丢掉（入账 `date` 取设备时钟）→ 跨午夜迟发仍可能差一天。
-- **待决策 R-03**：Android 的 Tasker 入口发 `source:"external_intent"`，服务端 zod 与 **DB `CHECK` 约束**都不认 → 恒定 400（只改 zod 会变 500）；要么客户端改用 `app_notification`，要么服务端配一次**重建表**的 migration。
-- **待决策 S-07**：`POST /api/admin/notification-rules` 是第二条发布路径（不经文件校验），陈旧/手改的规则也能被激活；考虑要求携带 `expected content_hash`。
+- **R-03 已闭环（客户端侧）**：Android 已在 `7aac3e1` 把该入口的 `source` 改成 `app_notification`，区分语义由 `source_detail='tasker_quick_record'` 承载。**服务端残留**：其他调用方/老 APK 送 `external_intent` 仍 400，且**只改 zod 会变 500**（`transactions.source` 有 DB `CHECK` 约束）→ 真要在 `source` 上支持新取值必须配一次**重建表** migration；已评估**不做**（代价：逐字重建 9 个索引/22 列，漏一项就静默错账，收益仅语义纯度）。
+- **待决策 S-07**：`POST /api/admin/notification-rules` **走同一套校验链**（`validateRules` + `selfTestTestcases` + `precheck` 注入 + `content_hash` 去重），它缺的是**与仓库文件绑定**——可发布与 `config/rules.json` 不同的内容；建议要求携带 `expected content_hash`。
 
 </details>
 - **只覆盖入站**：`precheck` 是「调模型之前」的判据；出站佐证（`verifyParsed` 的 drop 理由）在模型调用后才产生，客户端算不出来，故不在清单、也不参与 ⑤ 对比。

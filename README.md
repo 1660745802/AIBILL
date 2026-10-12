@@ -49,7 +49,7 @@
 | 退款/报销（收入分类） | — | ✅ | ❌ |
 
 **去重**：幂等重试按同一 `client_id`；导入重复按「同 user + type + amount + date + description」提示确认；
-App 通知重复按同一 `source_detail` 哈希自动跳过（**客户端实现**：服务端只保存 `source_detail`，不做这条去重）。
+App 通知去重**完全由客户端负责**（服务端不做）：包名+正文 hash、金额+渠道+包名 60s 窗口、DB 1s 去重；服务端只保存 `source_detail` 供追溯（**不是**拿它去重）。
 **交易状态**：`confirmed`（默认，入账）/ `pending`（App 自动识别候选，**不计入统计**）。
 金额单位（分）、日期格式（北京时间）等存储约定见 [DATA.md §1](docs/DATA.md)。
 
