@@ -1,5 +1,5 @@
 /**
- * `precheck` 下发载荷（契约 docs/recognition-flow.md §3）
+ * `precheck` 下发载荷（契约 docs/API.md 附录 C §3）
  *
  * 把服务端预筛判据（`ai/verify.ts` 的 tier 档位链）原样交给客户端，让它在**发请求前**
  * 就能拦掉同一批噪声、并用**同一条 `rule_id`** 计数 —— 这样 ⑤ 上报的

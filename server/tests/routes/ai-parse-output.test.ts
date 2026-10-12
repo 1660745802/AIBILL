@@ -1,5 +1,5 @@
 /**
- * `POST /api/ai/parse` 出参扩展（契约 docs/recognition-flow.md §6）
+ * `POST /api/ai/parse` 出参扩展（契约 docs/API.md 附录 C §6）
  *
  * 锁住：
  *   1. quick(#2) 与 ai(#4) 两条成功路径的 items 都挂齐机械字段；

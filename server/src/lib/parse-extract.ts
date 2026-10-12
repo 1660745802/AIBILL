@@ -1,5 +1,5 @@
 /**
- * 解析出参的机械抽取（契约 docs/recognition-flow.md §6）
+ * 解析出参的机械抽取（契约 docs/API.md 附录 C §6）
  *
  * 原则：**全部机械推导/抽取，绝不进 prompt**——模型只输出
  * `type/amount/category/description/date/account/target_account`。

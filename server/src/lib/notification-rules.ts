@@ -1,5 +1,5 @@
 /**
- * 通知规则真源（契约 docs/recognition-flow.md §9/§10）
+ * 通知规则真源（发布/真源规则见 docs/ARCHITECTURE.md §3.7）
  *
  * 内容真源 = 仓库文件 `server/config/rules.json`（进 git）；
  * DB `notification_rules` = 发布载体（历史 + 审计 + 拉取）。

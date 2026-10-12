@@ -1,5 +1,5 @@
 /**
- * 通知规则真源的纯逻辑回归（契约 docs/recognition-flow.md §9/§10）。
+ * 通知规则真源的纯逻辑回归（发布/真源规则见 docs/ARCHITECTURE.md §3.7）。
  *
  * 覆盖：validator 每条拒绝规则 + 接受路径；content hash 稳定性（testcases 不参与）；
  * publish 幂等 / 改文件后新版本；坏文件 fail-fast。

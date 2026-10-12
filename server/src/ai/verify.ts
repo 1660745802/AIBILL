@@ -48,21 +48,34 @@ export interface ClassifyResult {
  *    做法：数字左侧不许紧邻数字/小数点/逗号（千分位剥完剩下的逗号就是畸形分组），
  *    单位右侧不许紧邻数字。
  */
-const MONEY_RE = /[¥￥]\s*(\d+(?:\.\d{1,2})?)(?!\d)|(?:人民币|RMB|CNY)\s*(\d+(?:\.\d{1,2})?)(?!\d)|(?<![\d.,])(\d+(?:\.\d{1,2})?)\s*(?:元|圆|块钱|块|人民币|RMB|CNY)(?!\d)/gi
+/**
+ * 金额数字：**自己吞千分位**，不依赖任何外部预处理。
+ *
+ * ⚠️ 这里曾经是「先把文本里的千分位逗号剥掉（`stripThousands`）再匹配」——
+ * 而那一步**没写进下发给客户端的 precheck 契约**，于是同一段
+ * `…支出(跨行汇款)1,000元，余额24,210.99元。` 服务端算 `money` 命中（tier1），
+ * 客户端按 pattern 原文匹配不到（tier3）：**两端计数不可比**，且同类分歧换条文本
+ * 就可能变成 P0 误杀（客户端 tier4 直接拦）。
+ *
+ * 修法选「让 pattern 自足」而不是「把预处理写进契约」：跨端契约里**少一个隐式步骤**
+ * 就少一处漂移面——pattern 即完整规格（`\d{1,3}(?:,\d{3})+` 支路覆盖千分位）。
+ */
+const MONEY_NUM = String.raw`(?:\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)`
 
-/** 剥掉千分位逗号：`1,173.20` → `1173.20` */
-function stripThousands(s: string): string {
-  return s.replace(/(?<=\d),(?=\d{3}(?!\d))/g, '')
-}
+const MONEY_RE = new RegExp(
+  String.raw`[¥￥]\s*(${MONEY_NUM})(?!\d)` +
+    String.raw`|(?:人民币|RMB|CNY)\s*(${MONEY_NUM})(?!\d)` +
+    String.raw`|(?<![\d.,])(${MONEY_NUM})\s*(?:元|圆|块钱|块|人民币|RMB|CNY)(?!\d)`,
+  'gi',
+)
 
 /** 原文里所有「带货币单位」的金额（元） */
 export function extractMoneyAmounts(rawInput: string): Set<number> {
-  const text = stripThousands(rawInput || '')
   const out = new Set<number>()
-  for (const m of text.matchAll(MONEY_RE)) {
+  for (const m of (rawInput || '').matchAll(MONEY_RE)) {
     const g = m[1] ?? m[2] ?? m[3]
     if (g == null) continue
-    const n = Number(g)
+    const n = Number(g.replace(/,/g, '')) // 千分位只用于对齐，取值前必须去掉
     if (Number.isFinite(n)) out.add(Math.round(n * 100) / 100)
   }
   return out

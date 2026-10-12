@@ -119,7 +119,6 @@ bill/
 | [docs/API.md](docs/API.md) | 全部 90 个端点契约（17 个路由模块，`scripts/gen-api-docs.ts` 生成对账） |
 | [docs/UI-DESIGN.md](docs/UI-DESIGN.md) | 前端规格：设计 token、信息架构、口径硬规则 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 开发规范、安全底线、测试地图、文档纪律 |
-| [docs/recognition-flow.md](docs/recognition-flow.md) | AI 解析/预筛的**跨端契约**（与 Android 客户端共享） |
 
 > 新接手阅读顺序：`PRODUCT`（做什么）→ `ARCHITECTURE`（怎么搭的）→
 > `DATA`（数据口径）→ `UI-DESIGN`（前端规格）。**改动任何口径前先读对应章节**——

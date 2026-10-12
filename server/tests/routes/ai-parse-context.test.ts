@@ -1,5 +1,5 @@
 /**
- * `POST /api/ai/parse` 入参上下文扩展（契约 docs/recognition-flow.md §5）
+ * `POST /api/ai/parse` 入参上下文扩展（契约 docs/API.md 附录 C §5）
  *
  * 本轮客户端多送 `channel` / `source` / `title` / `body` / `received_at` / `hints`。
  * 这里锁住四件事：

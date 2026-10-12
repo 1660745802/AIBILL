@@ -1,7 +1,7 @@
 /**
  * migration 019 的兼容性回归。
  *
- * 019 给两张已有表加可空的入参上下文列（契约 docs/recognition-flow.md §5）。
+ * 019 给两张已有表加可空的入参上下文列（契约 docs/API.md 附录 C §5）。
  * 关键不变量只有两条，正是纯 `ALTER TABLE ADD COLUMN` 想保证的：
  *   1. 新库/已存在的库应用后，新列真的在（PRAGMA table_info 可见）；
  *   2. **老行可读**且新列为 NULL——不加 NOT NULL / DEFAULT，所以旧行不会被

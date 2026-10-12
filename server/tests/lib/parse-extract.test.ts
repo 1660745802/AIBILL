@@ -1,5 +1,5 @@
 /**
- * `lib/parse-extract.ts` 纯函数单测（契约 docs/recognition-flow.md §6）
+ * `lib/parse-extract.ts` 纯函数单测（契约 docs/API.md 附录 C §6）
  *
  * 重点锁「保守边界」：命中不了一个明确、可判定的形态就返回 null，
  * 绝不拿整句/整段当结果（本项目「宁可空着也不编数」原则）。

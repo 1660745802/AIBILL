@@ -1,5 +1,5 @@
 /**
- * 客户端拦截计数上报（契约 docs/recognition-flow.md §4）
+ * 客户端拦截计数上报（契约 docs/API.md 附录 C §4）
  *
  * 客户端在**发请求前**用自己的判据链拦掉通知，并把它拦了什么按窗口聚合上报。
  * 服务端只做三件事：**收下、按命名空间分类、把它与服务端那套口径并排展示**。
@@ -262,7 +262,7 @@ export function loadFilterStats(db: Db, userId: number | null, days: number): Fi
     },
     note:
       '误杀率不能由计数相减得出（要看语料 expect_txn 的 P0 断言）；client_only.* 服务端无对应判据，' +
-      '不参与比较——它含「客户端独有判据 + 诊断计数」，id 语义由客户端维护（名单见 docs/recognition-flow.md §4）；' +
+      '不参与比较——它含「客户端独有判据 + 诊断计数」，id 语义由客户端维护（名单见 docs/API.md 附录 C §4）；' +
       '其中 client_only.precheck_unknown_expr 是**契约漂移告警**（说明客户端的 precheck 形态与当前清单对不上），不是拦截计数。',
   }
 }

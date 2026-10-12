@@ -1,5 +1,5 @@
 /**
- * `precheck` 下发载荷（契约 docs/recognition-flow.md §3）
+ * `precheck` 下发载荷（契约 docs/API.md 附录 C §3）
  *
  * 这是 ④ 的核心：把服务端预筛判据原样交给客户端，让两边用**同一条 rule_id** 计数。
  * 所以本文件锁死的不只是形状，还有三条「不许漂移」的性质：

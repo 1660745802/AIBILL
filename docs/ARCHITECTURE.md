@@ -206,7 +206,7 @@ docker-compose up -d --build
 | 发布载体 | 表 `notification_rules`（历史 + 激活态 + `content_hash`） |
 | 下发接口 | `GET /api/config/notification-rules`（无认证；`ETag = "<content_hash>"`，支持 304） |
 | 管理面板 | **只看/激活历史/回滚，不做在线编辑**（避免与文件双写） |
-| 契约细节 | [recognition-flow.md §9/§10](recognition-flow.md) |
+| 契约细节 | [API.md 附录 C](API.md) |
 
 **启动流程（幂等 + fail-fast）**：读文件 → 严格校验（顶层键白名单 / 必需形状清单 / 正则交集子集 /
 `testcases` 自检）→ 算内容 hash（剔除 `testcases`，**含代码派生的 `precheck`**）→ 与激活版本 hash
@@ -228,7 +228,7 @@ Android 客户端用 `GET /api/app/update?versionCode=` 检查更新；`app_upda
 | 事实 | 值 |
 |------|-----|
 | **最低安全版本**（含「转账 `category_id` 可空」修复 `9e318a2`） | **`versionCode = 2`（v1.0.0）** |
-| **客户端支持基线** | **Android ≥ 1.5.0 = `versionCode ≥ 7`**；更老的包不做专门兼容（v0.4 垫片已撤除，见 [recognition-flow.md §11](recognition-flow.md)） |
+| **客户端支持基线** | **Android ≥ 1.5.0 = `versionCode ≥ 7`**；更老的包不做专门兼容（原 v0.4 垫片已撤除） |
 | 记录本文时的 HEAD | `versionCode = 24` / `1.6.0` |
 
 **发布检查单（发版前跑一遍）：`versionCode` 必须唯一且严格递增。**

@@ -37,7 +37,7 @@ import {
 import { appLog } from '../services/logger.js'
 
 /**
- * `POST /api/ai/parse` 入参（契约 docs/recognition-flow.md §5）。
+ * `POST /api/ai/parse` 入参（契约 docs/API.md 附录 C §5）。
  *
  * 兼容底线：**`input` 仍是唯一必填**。新增键全部可选，zod 默认会静默剥离未知键
  * （本轮**不做 `.strict()`**）——已发布客户端发来的多余字段不该变成 400。

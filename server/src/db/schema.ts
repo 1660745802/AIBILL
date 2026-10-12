@@ -768,7 +768,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_app_updates_version_code
 `
 
 /**
- * 019 — 解析入参上下文落库（契约 docs/recognition-flow.md §5）。
+ * 019 — 解析入参上下文落库（契约 docs/API.md 附录 C §5）。
  *
  * 客户端在 `POST /api/ai/parse` 里多送 `channel` / `source` / `received_at` / `hints`，
  * 服务端这些字段**只做归因与留档**（`hints` 明确不喂 prompt），所以要给两张表加列：
@@ -797,7 +797,7 @@ ALTER TABLE ai_parse_filters ADD COLUMN source_package TEXT;
 `
 
 /**
- * 020 — 通知规则内容 hash + version 唯一（契约 docs/recognition-flow.md §9）。
+ * 020 — 通知规则内容 hash + version 唯一（发布与真源规则见 docs/ARCHITECTURE.md §3.7）。
  *
  * ETag 从「手填 version」改为「内容 hash」后需要把 hash 落库：
  *   - `content_hash TEXT`：激活版本的内容指纹（旧行为 NULL）；

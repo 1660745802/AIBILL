@@ -1,7 +1,7 @@
 /**
  * parse-feedback 自动学习（`ai_memories` 写入）回归
  *
- * 契约（docs/recognition-flow.md §2）：`final_items` 是**用户确认后的最终态**——
+ * 契约（docs/API.md 附录 C §2）：`final_items` 是**用户确认后的最终态**——
  * 删除 = 该项不在数组里，新增 = 数组里多出的项。所以两侧条数/顺序本来就会变。
  *
  * 旧实现按 index 配对 `original[i]`/`final[i]` 并 `Math.min` 截断。记忆内容取自 final，

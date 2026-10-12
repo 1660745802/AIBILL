@@ -327,7 +327,6 @@ cd web && npm run dev
 | `docs/DATA.md` | 数据模型与口径 | 表结构意图、**余额/行情/日期口径** |
 | `docs/API.md` | API 契约 | 88 端点、错误码、字段约定 |
 | `docs/UI-DESIGN.md` | 前端规格 | 设计 token、信息架构、口径硬规则 |
-| `docs/recognition-flow.md` | **与服务端 ⇄ Android 客户端的解析/预筛契约** | 8 种响应形态、反馈闭环、`precheck` 下发、上报、语料 `testcases` |
 | `docs/DEVELOPMENT.md` | 开发规范与测试 | 规范、安全底线、测试地图（本文） |
 
 **纪律**：
