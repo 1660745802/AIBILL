@@ -85,6 +85,9 @@ const parseFeedbackSchema = z.object({
   parse_log_id: z.number().int().positive(),
   final_items: z.array(z.any()),
   modified: z.boolean(),
+  /* 入口归因：客户端一直在发（契约 §2），此前被 zod 静默剥掉。收下并写进 modification_detail
+     （无需 migration），供「哪个渠道的解析更容易被修正」这类分析用。 */
+  channel: z.enum(['nls', 'sms', 'a11y', 'manual']).optional(),
 })
 
 /**
@@ -659,6 +662,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
             original_count: Array.isArray(original) ? original.length : 0,
             final_count: body.final_items.length,
             changed: true,
+            ...(body.channel ? { channel: body.channel } : {}),
           })
         } catch {
           modificationDetail = JSON.stringify({ changed: true })

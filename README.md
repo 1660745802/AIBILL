@@ -49,7 +49,7 @@
 | 退款/报销（收入分类） | — | ✅ | ❌ |
 
 **去重**：幂等重试按同一 `client_id`；导入重复按「同 user + type + amount + date + description」提示确认；
-App 通知重复按同一 `source_detail` 哈希自动跳过。
+App 通知重复按同一 `source_detail` 哈希自动跳过（**客户端实现**：服务端只保存 `source_detail`，不做这条去重）。
 **交易状态**：`confirmed`（默认，入账）/ `pending`（App 自动识别候选，**不计入统计**）。
 金额单位（分）、日期格式（北京时间）等存储约定见 [DATA.md §1](docs/DATA.md)。
 
@@ -87,7 +87,7 @@ Web 端页面与导航入口已移除；**接口与数据表暂时保留，统�
 - ⚠️ **`asset_snapshots` 表被四方活跃读写**（portfolio 曲线、dashboard/analysis 净资产、手填余额凭证）。删表会让这些端点集体 500。
 
 **兼容承诺**：`GET /api/stats/dashboard` 响应结构保持不变（仍含 `budget_progress` / `goals_top` /
-`subscriptions_overview`，值恒为空），以免已发布客户端解析失败。旧 Web 路由 `/budget` `/goals` `/subscriptions` 302 到 `/me`，不 404。
+`subscriptions_overview`，表为空故为空），以免已发布客户端解析失败。旧 Web 路由 `/budget` `/goals` `/subscriptions` 302 到 `/me`，不 404。
 
 ## ⚖️ 功能取舍流程（数据驱动，不靠直觉）
 
@@ -190,7 +190,7 @@ bill/
 │   │   ├── services/          # auth / logger / scheduler
 │   │   └── lib/               # 纯领域逻辑：portfolio / account-balance / precheck /
 │   │                          # quotes·fx·holdings·quote-acquisition / date
-│   └── tests/                 # 53 个测试文件（684 用例）
+│   └── tests/                 # 53 个测试文件（686 用例）
 ├── web/                       # 前端（Vue 3 + TailwindCSS）
 │   ├── src/
 │   │   ├── App.vue            # PC 侧边栏 + 移动端 Tab + Toast

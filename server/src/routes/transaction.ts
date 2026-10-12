@@ -13,6 +13,10 @@ import { pageParam } from '../lib/pagination.js'
 const transactionItemSchema = z.object({
   client_id: z.string().uuid().optional(),
   client_type: z.enum(['web', 'app_android', 'app_ios', 'import_script']).optional().default('web'),
+  /* ⚠️ 加值前必须先看 DB 约束：`transactions.source` 在 schema.ts 里有
+     `CHECK(source IN ('manual','ai','import_csv','app_notification','ocr','subscription'))`。
+     只改这里会 400 变 500（INSERT 撞 CHECK）——要新增来源值必须配一个**重建表**的 migration。
+     真实案例：Android 的 Tasker 入口发 `external_intent`，一直 400（该入口 100% 静默失败）。 */
   source: z
     .enum(['manual', 'ai', 'import_csv', 'app_notification', 'ocr', 'subscription'])
     .optional()
@@ -552,7 +556,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       }
       if (err instanceof ValidationError) {
         reply.code(400)
-        return { code: 2001, data: null, message: err.message }
+        return { code: 2003, data: null, message: err.message }
       }
       throw err
     }

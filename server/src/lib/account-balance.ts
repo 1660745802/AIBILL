@@ -77,6 +77,7 @@ export function deltasFor(tx: any): Array<[accountId: number, delta: number]> {
  * （import 位置在文件中段是因为紧跟它的就是这个函数；ESM 会提升，不影响可用性。）
  */
 import { today } from './date.js'
+import { appLog } from '../services/logger.js'
 
 function toId(v: unknown): number | null {
   if (v == null) return null
@@ -113,6 +114,14 @@ export function applyTxn(
     const asOfId = row.balance_as_of_txn_id == null ? 0 : Number(row.balance_as_of_txn_id)
     if (Number.isFinite(txnId) && txnId <= asOfId) {
       out.push({ accountId, applied: false })
+      /* `applied=false` = 这笔增量被余额基准线挡掉了（`txnId <= balance_as_of_txn_id`）。
+         此前全仓无消费者 → 记账变更是**静默**的（DATA §12 的已知点）。这里留一条 warn，
+         便于排障时在 app_logs 里看到「这次改动没生效」。 */
+      appLog('warn', 'account-balance', `流水 #${txnId} 的余额增量被基准线挡下（未生效）`, {
+        account_id: accountId,
+        txn_id: txnId,
+        balance_as_of_txn_id: asOfId,
+      })
       continue
     }
     db.prepare('UPDATE accounts SET balance = balance + ? WHERE id = ?').run(delta * sign, accountId)

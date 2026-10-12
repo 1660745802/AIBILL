@@ -173,6 +173,11 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/admin/users/:id/stats', async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string }
     const db = getDb()
+    /* 跨用户读「他人收支总额」也是跨用户读取——与明细/原文同口径写审计（ARCHITECTURE §5.3）。 */
+    appLog('warn', 'admin', `查看用户 #${id} 的账单统计`, {
+      admin_user_id: request.user?.userId ?? 0,
+      target_user_id: Number(id),
+    })
 
     const user = db.prepare('SELECT id, username, nickname, role, is_active, created_at FROM users WHERE id = ?').get(Number(id)) as any
     if (!user) {

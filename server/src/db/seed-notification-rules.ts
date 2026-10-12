@@ -1,7 +1,7 @@
 /**
  * 通知规则启动发布（薄封装）
  *
- * 真源已改为仓库文件 `server/config/rules.json`（契约 §9），本文件不再内置规则内容，
+ * 真源已改为仓库文件 `server/config/rules.json`（发布/回滚见 docs/ARCHITECTURE.md §3.7），本文件不再内置规则内容，
  * 只把「启动时发布」这件事委托给 `publishRulesFromFile`：
  *   load → validate → testcases 自检 → content hash → 与激活版本比对（幂等）。
  *

@@ -60,12 +60,25 @@ export interface ClassifyResult {
  * 修法选「让 pattern 自足」而不是「把预处理写进契约」：跨端契约里**少一个隐式步骤**
  * 就少一处漂移面——pattern 即完整规格（`\d{1,3}(?:,\d{3})+` 支路覆盖千分位）。
  */
+/**
+ * **空白字符类**：JS `\s` 的完整等价集合，显式写出来。
+ *
+ * ⚠️ 为什么不能直接用 `\s`：JS 的 `\s` 是 **Unicode 空白**（含 U+3000 全角空格、U+00A0 NBSP、
+ * U+FEFF 等），而 **Java/Kotlin 的 `\s` 默认只有 ASCII** `[ \t\n\x0B\f\r]`。
+ * 这些 pattern 会**原样下发**给客户端编译，于是 `RMB　100`（全角空格）在服务端算金额、
+ * 在客户端不算 → tier 分叉、⑤ 计数不可比；极端情况（长文本且无动词）客户端落 `no_signal` → **误杀**。
+ * 这是同类事故的第三例（前两例：`gi` 丢标志、千分位剥逗号）。
+ * 显式列出后：**服务端行为不变，两端语义一致**（Java 同样支持 `\uXXXX` 与区间）。
+ */
+const WS = String.raw`[ \t\n\x0B\f\r\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]`
+const WS_STAR = `${WS}*`
+
 const MONEY_NUM = String.raw`(?:\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)`
 
 const MONEY_RE = new RegExp(
-  String.raw`[¥￥]\s*(${MONEY_NUM})(?!\d)` +
-    String.raw`|(?:人民币|RMB|CNY)\s*(${MONEY_NUM})(?!\d)` +
-    String.raw`|(?<![\d.,])(${MONEY_NUM})\s*(?:元|圆|块钱|块|人民币|RMB|CNY)(?!\d)`,
+  String.raw`[¥￥]${WS_STAR}(${MONEY_NUM})(?!\d)` +
+    String.raw`|(?:人民币|RMB|CNY)${WS_STAR}(${MONEY_NUM})(?!\d)` +
+    String.raw`|(?<![\d.,])(${MONEY_NUM})${WS_STAR}(?:元|圆|块钱|块|人民币|RMB|CNY)(?!\d)`,
   'gi',
 )
 
@@ -149,7 +162,7 @@ const BARE_AMOUNT_MAX_LEN = 30
  */
 const STRONG_NOISE: { name: string; re: RegExp }[] = [
   // 社交红包：金额数字来自群名/昵称（线上真实案例：`209[嗨] [QQ红包]...` → 记成 ¥209）
-  { name: 'social_redpacket', re: /\[(?:QQ|微信|支付宝)红包\]|群发红包|口令红包|红包\s*[:：]/ },
+  { name: 'social_redpacket', re: new RegExp(String.raw`\[(?:QQ|微信|支付宝)红包\]|群发红包|口令红包|红包${WS_STAR}[:：]`) },
   /**
    * 券面额被当成到账金额。
    *
@@ -202,7 +215,7 @@ const STRONG_NOISE: { name: string; re: RegExp }[] = [
 const WEAK_NOISE: { name: string; re: RegExp }[] = [
   { name: 'marketing', re: keyword('双11', '双十一', '开抢', '预售', '加赠', '赠品', '优惠券', '神券', '秒杀', '闪购', '拼团', '满减', '立减', '直降', '到手', '价保', '返现', '一分钱', '一分钱领', '待领取', '即将失效', '余额即将不足', '余额有变动', '还款日', '京东卡', '礼品卡', '购物卡', '现金奖励', '任务') },
   // 0 元诱导：`0元领` `0元兑` `0元购`；`0元` 必须带前后边界，否则命中 `3.90元`
-  { name: 'zero_yuan', re: /(?<![\d.])0\s*元(?:兑|领|购|买|花|起|下单|抽奖)(?![\d.])/ },
+  { name: 'zero_yuan', re: new RegExp(String.raw`(?<![\d.])0${WS_STAR}元(?:兑|领|购|买|花|起|下单|抽奖)(?![\d.])`) },
   { name: 'unrelated', re: keyword('点赞', '关注', '转发', '群发', '朋友圈', '聊天', '视频通话', '直播', '首页', '空间') },
 ]
 

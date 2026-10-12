@@ -1,5 +1,5 @@
 /**
- * 通知规则下发路由回归（契约 §9/§10）。
+ * 通知规则下发路由回归（发布/真源见 docs/ARCHITECTURE.md §3.7；语料形状见同文件 `validateRules`）。
  *
  * 锁住：ETag 绑 content_hash（不是手填 version）、304、响应剔除 testcases、
  * activate 刷新缓存、admin POST 严格校验 + 服务端算 hash + version 可省略。

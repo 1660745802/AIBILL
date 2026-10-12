@@ -18,7 +18,7 @@ import { derivePrecheck } from './precheck.js'
 
 type Db = ReturnType<typeof getDb>
 
-/** testcases 形状（契约 §10）：真护栏语料，不进下发 payload、不进 content hash */
+/** testcases 形状（见本文件 `validateRules` 里 `RuleTestcase` 的校验）：真护栏语料，不进下发 payload、不进 content hash */
 export interface RuleTestcase {
   id: string
   note?: string
@@ -45,7 +45,7 @@ export interface RulesFile {
   [k: string]: unknown
 }
 
-/** 顶层键白名单：未知键必须报错，不静默剥离（契约 §9） */
+/** 顶层键白名单：未知键必须报错，不静默剥离（发布/回滚见 docs/ARCHITECTURE.md §3.7） */
 const ALLOWED_TOP_LEVEL_KEYS: readonly string[] = [
   'nls',
   'a11y',
@@ -265,6 +265,15 @@ function regexSafetyError(pattern: string): string | null {
   if (/\(\?<[A-Za-z_]/.test(pattern)) return '不允许命名捕获组'
   if (pattern.includes('\\p{') || pattern.includes('\\P{')) return '不允许 Unicode 属性转义'
   if (POSSESSIVE.test(pattern)) return '不允许 possessive 量词'
+  /* 禁裸 `\s`/`\S`：JS 的 `\s` 是 Unicode 空白（含 U+3000/U+00A0），Java/Kotlin 默认只有 ASCII
+     → 同一 pattern 两端判决分叉（真实事故：`RMB　100`、`100　元` 服务端算金额、客户端不算）。
+     整字符用 `[\s\S]`（两语言下都等于「任意字符」）；要空白请显式列出字符类。 */
+  // 先剥掉可移植的「任意字符」惯用法 [\s\S]（它两端语义一致；注意这里是字面量 `[`+反斜杠+s，
+  // 写成 /\[\s\S\]/ 会变成「方括号里一个空白一个非空白」——那匹配不到实际 pattern 文本）
+  const withoutAnyChar = pattern.replace(/\[\\s\\S\]/g, '').replace(/\[\\S\\s\]/g, '')
+  if (/\\[sS]/.test(withoutAnyChar)) {
+    return '不允许 \\s/\\S（JS 与 Java 语义不同：JS 含 U+3000/U+00A0，Java 只有 ASCII）；整字符用 [\\s\\S]，空白请显式写字符类'
+  }
   if (INLINE_FLAGS.test(pattern)) return '不允许内联 flags'
   for (const body of lookaroundBodies(pattern)) {
     if (!isBoundedLookaroundBody(body)) {
@@ -371,7 +380,7 @@ export function validateRules(rules: unknown): string[] {
   return errors
 }
 
-/** 剔除 `testcases`：下发 payload 与 content hash 都不含语料（契约 §10） */
+/** 剔除 `testcases`：下发 payload 与 content hash 都不含语料（其形状由 `validateRules` 约束） */
 export function stripTestcases(rules: RulesFile): RulesFile {
   if (rules === null || typeof rules !== 'object') return {}
   const { testcases: _drop, ...rest } = rules

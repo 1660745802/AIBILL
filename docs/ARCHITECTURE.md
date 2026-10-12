@@ -372,7 +372,7 @@ initDb()   // 会建表 / 跑 migration / 写库
 | 集成 | API 路由 + DB（内存 SQLite） | Vitest + Fastify `app.inject` |
 | E2E | 核心用户流程 | 手动清单（§7.3） |
 
-测试在 `server/tests/`（**53 个文件 / 684 用例**，以 `vitest run` 为准）。用例即文档，不重复枚举；
+测试在 `server/tests/`（**53 个文件 / 686 用例**，以 `vitest run` 为准）。用例即文档，不重复枚举；
 下面是**关注点 → 回归测试**的索引，改对应代码前先找它：
 
 | 关注点 | 先看这些测试 |

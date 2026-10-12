@@ -96,6 +96,22 @@ describe('validateRules · 拒绝规则', () => {
     }
   })
 
+  /* 禁裸 \s/\S（JS 与 Java 语义不同），但 [\s\S] 这个「整字符」惯用法必须放行 */
+  it('裸 \s/\S 拒绝；[\s\S] 放行', () => {
+    const rej = loadReal()
+    ;(rej.nls as Record<string, unknown>).payment_signal_regex = '元\\s*\\d+'
+    expect(validateRules(rej).join('|')).toMatch(/不允许 \\s\/\\S/)
+
+    const rej2 = loadReal()
+    ;(rej2.nls as Record<string, unknown>).payment_signal_regex = '\\S+元'
+    expect(validateRules(rej2).join('|')).toMatch(/不允许 \\s\/\\S/)
+
+    const ok = loadReal()
+    ;(ok.nls as Record<string, unknown>).payment_signal_regex = '[\\s\\S]{0,20}元'
+    expect(validateRules(ok).join('|')).not.toMatch(/不允许 \\s\/\\S/)
+  })
+
+
   it('命名组 / \\p{} / possessive / 内联 flags 仍全部拒绝', () => {
     const cases: Array<[string, RegExp]> = [
       ['(?<name>a)', /命名捕获组/],

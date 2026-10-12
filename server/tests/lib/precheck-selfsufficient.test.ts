@@ -77,6 +77,11 @@ describe('precheck 载荷自足性（只吃载荷的参考求值器 vs 服务端
       ['1,234,567元', 1234567],
       ['1000元', 1000],
       ['0.01元', 0.01],
+      /* ⚠️ 空白类必须显式（JS 的 \s 含 U+3000/U+00A0，Java 默认只有 ASCII）。
+         这三条在旧的 `\s*` 写法下，**Java 侧匹配不到** → 两端判决分叉（第三方复核发现）。 */
+      ['RMB　100', 100],
+      ['100　元', 100],
+      ['¥ 100元', 100],
     ]
     for (const [text, want] of cases) {
       expect(extractMoneyAmounts(text).has(want), `实现未抽出 ${want}：${text}`).toBe(true)

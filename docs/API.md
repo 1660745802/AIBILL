@@ -11,7 +11,7 @@
 > **权威说明、判定依据与「表可否删」见 README.md「功能现状」**（唯一真源，此处不再重复）。
 > 注意：`ai_memories` / `asset_snapshots` **两张表不可删**（被主流程活跃读写，删了是故障）；
 > `GET /api/stats/dashboard` 响应结构保持不变（`budget_progress` / `goals_top` /
-> `subscriptions_overview` 字段保留、值恒为空），保证已发布客户端解析不受影响。
+> `subscriptions_overview` 字段保留、结构不变；它们按表实时计算，因表为空而恒为空数组），保证已发布客户端解析不受影响。
 
 ---
 
@@ -638,7 +638,7 @@ If-None-Match: "ab12…"
 | app-update | 3 | update, updates |
 | notification-rules | 4 | config + admin |
 
-> `/health` 不在 `routes/` 里注册，故不计入上表的 90 个端点。
+> `/health` 直接注册在 `routes/index.ts`（不在某个路由模块文件里），故不计入上表的 90 个端点。
 > 上表若与 `gen-api-docs.ts` 输出不一致，**以脚本为准**（它直接读 `routes/*.ts`）。
 
 ## 附录 B：自动生成脚本
@@ -715,7 +715,20 @@ If-None-Match: "ab12…"
 - **已实现**（本地）：payload = `precheck{schema:1, derived_from, channel_agnostic, signals{money{pattern,flags},verb{pattern,flags},bare_amount{pattern,flags},bare_amount_max_len:30}, rules[14 条], should_call_ai:"tier in (1,2,3)", corroboration_required:"tier in (2,3)"}`；`schema` 不认识 → 整体忽略并降级用本地词表。**`rule_id = 'precheck.' + 服务端 reason`（逐字拼接，`+` 也不改名）**→ ⑤ 对账是机械前缀剥离，不是映射表。
 - **拦不拦怎么判（客户端勿猜）**：按 `rules[]` **顺序取第一条命中**，只看它的 `tier`：`tier ∈ {1,2,3}` = 放行去调模型（即 `should_call_ai`），`tier ∈ {0,4}` = 拦。⚠️ **没有 `tier:null` 的条目**（早期草案里的 `precheck.payment_verb` 已删除）；`type:'predicate'` 用 `expr` 引用 `signals`，`type:'fallback'` 是兜底（排最后）。`pattern` 是**不含分隔符的正则源码**，必须与同条 `flags` 一起编译（仅允许 `g`/`i`/`m`；**`money` 是 `gi`**——丢了会让 `rmb 100` 两端不一致）。
 - **`bare_amount_max_len` 精确定义**：取客户端发来的 `input` **原串**（不是 title/body），`input.trim().length <= 30`；长度按 **UTF-16 code unit** 计（中文=1、emoji=2）——**Kotlin `String.length` 同口径**，直接可比。
-- **`expr` 语法边界（客户端按封闭小语法实现，不要写表达式解析器）**：只允许三种形态——`signal`、`signal && signal`、`len<=<int> && signal`（`signal` 必须是 `signals` 的键；分隔符统一为**前后各一个空格**的 ` && `）。**其余形态客户端必须忽略该条规则 + 记日志 + 计入 `precheck_unknown_expr`**（fail-safe：绝不当成「命中」或「不命中」来猜）。服务端用回归用例保证只产出上述三种（并校验引用的 signal 存在）；将来要扩形态必须**先改本契约并播报**。
+- **`expr` 语法边界（客户端按封闭小语法实现，不要写表达式解析器）**：只允许三种形态——`signal`、`signal && signal`、`len<=<int> && signal`（`signal` 必须是 `signals` 的键；分隔符统一为**前后各一个空格**的 ` && `）。服务端用回归用例保证只产出上述三种（并校验引用的 signal 存在）；将来要扩形态必须**先改本契约并播报**。
+- **判据不可用时怎么处置（按客户端实现定）**：任一 `signal` / 规则**编译失败**、或 `expr` 形态不认识 → **整链判据不可用 → 降级放行（fail-open）**；不可用的 `rule_id` 列表（`unusableRuleIds`）只用于**诊断与上报**。
+  ⚠️ **不做「逐条丢弃」**：半链混合会制造更坏的结果——正向规则被丢掉、`no_signal` 兜底幸存时，真交易会被判成噪声（**误杀**）；而降级放行最多多调一次模型。
+  ⚠️ 漂移期间客户端的 `precheck.*` 计数**不可比**（那时它根本不跑 precheck）——排障时先对 `content_hash`，再看 `client_only.precheck_unknown_expr`。
+
+<details><summary>待实现 / 待决策（两侧对齐用，勿当成已生效契约）</summary>
+
+- **v2 待实现**：`hints`（入参）与 `hints_conflict`（出参）**两端都未实现** → 本契约保留字段定义，但双方都别依赖。
+- **客户端未消费**：`data.source`（`quick`/`ai`/`prefilter`/`postfilter`）与失败形态的 `fallback` 字段 Android DTO 未声明 → 目前分支只能按 `code` + `items` 判。
+- **待产品决策 R-24**：`received_at` 的锚定日期在**自动入账**那步被丢掉（入账 `date` 取设备时钟）→ 跨午夜迟发仍可能差一天。
+- **待决策 R-03**：Android 的 Tasker 入口发 `source:"external_intent"`，服务端 zod 与 **DB `CHECK` 约束**都不认 → 恒定 400（只改 zod 会变 500）；要么客户端改用 `app_notification`，要么服务端配一次**重建表**的 migration。
+- **待决策 S-07**：`POST /api/admin/notification-rules` 是第二条发布路径（不经文件校验），陈旧/手改的规则也能被激活；考虑要求携带 `expected content_hash`。
+
+</details>
 - **只覆盖入站**：`precheck` 是「调模型之前」的判据；出站佐证（`verifyParsed` 的 drop 理由）在模型调用后才产生，客户端算不出来，故不在清单、也不参与 ⑤ 对比。
 - ⚠️ 正则交集子集（**本轮修正**）：**允许有界 lookaround**（单字符类，如 `(?<![\d.])`、`(?!\d)`——服务端自己的判据就在用，且 Java 的定长 lookbehind 能表达）；**禁变长 lookbehind**（`(?<=a+)`，JVM 编译不过）/ 命名组 / `\p{}` / possessive / 内联 flags。服务端**启动时校验**，且**派生出的正则自己先过一遍**（有回归用例自证）。文件与 admin POST **两条发布路径都注入 precheck**（否则激活 admin 版本会让客户端丢掉整个判据）；文件里手写 `precheck` 直接 400。
 - ⚠️ **判据必须自足**：`signals.*.pattern` / `rules[].pattern` **不得依赖任何未写进本契约的文本预处理**——客户端拿到的 pattern 就是完整规格，不需要自己加任何归一化步骤。
