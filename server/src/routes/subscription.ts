@@ -6,14 +6,45 @@ import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { today as todayStrFn, dateOffset, monthOffsetFrom } from '../lib/date.js'
+import { subscriptionCosts } from '../lib/subscription-cost.js'
+
+/**
+ * `YYYY-MM-DD` **且真实存在**的日期。
+ *
+ * 只校验格式是不够的：`2026-13-01` 与 `2026-02-30` 都能过 `^\d{4}-\d{2}-\d{2}$`，
+ * 而它们一旦写进 `next_payment_date`：
+ *   - 客户端上显示一个不存在的日期；
+ *   - 字典序追上下一年之后（`'2026-13-01' <= '2027-01-01'`），scheduler 会把它
+ *     当成到期，自动记出一笔 `date='2026-13-01'` 的账单 → 账本里多出一个幽灵账期
+ *     `2026-13`，月度统计与 AI 分析跟着脏；
+ *   - 已经过去的非法日期则被 `monthOffsetFrom` 静默换成「今天 + 1 个周期」，
+ *     与用户填的日期毫无关系。
+ */
+function isValidDateStr(s: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (!m) return false
+  const y = Number(m[1])
+  const mo = Number(m[2])
+  const d = Number(m[3])
+  if (mo < 1 || mo > 12 || d < 1) return false
+  return d <= new Date(Date.UTC(y, mo, 0)).getUTCDate()
+}
+
+/** 日期字段：格式 + 真实存在（两个 schema 共用，避免只改一处） */
+const dateStrSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式必须为 YYYY-MM-DD')
+  .refine(isValidDateStr, '日期必须是真实存在的日期（如 2026-13-01 / 2026-02-30 不合法）')
 
 const createSubscriptionSchema = z.object({
   name: z.string().min(1).max(100),
-  amount: z.number().int().positive('金额必须大于0'),
+  // `.safe()`：非安全整数会被 SQLite 的 INTEGER 列存成 REAL，
+  // 而 scheduler 会把 `sub.amount` **直接写进 transactions**——浮点就这样进了账本
+  amount: z.number().int().positive('金额必须大于0').safe(),
   cycle: z.enum(['monthly', 'quarterly', 'yearly']),
   category_id: z.number().int().positive().optional(),
   account_id: z.number().int().positive().optional(),
-  start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式必须为 YYYY-MM-DD'),
+  start_date: dateStrSchema,
   reminder_days: z.number().int().min(0).max(30).default(3),
   auto_record: z.boolean().default(false),
   note: z.string().max(500).optional(),
@@ -21,11 +52,11 @@ const createSubscriptionSchema = z.object({
 
 const updateSubscriptionSchema = z.object({
   name: z.string().min(1).max(100).optional(),
-  amount: z.number().int().positive('金额必须大于0').optional(),
+  amount: z.number().int().positive('金额必须大于0').safe().optional(),
   cycle: z.enum(['monthly', 'quarterly', 'yearly']).optional(),
   category_id: z.number().int().positive().nullable().optional(),
   account_id: z.number().int().positive().nullable().optional(),
-  start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式必须为 YYYY-MM-DD').optional(),
+  start_date: dateStrSchema.optional(),
   reminder_days: z.number().int().min(0).max(30).optional(),
   auto_record: z.boolean().optional(),
   note: z.string().max(500).nullable().optional(),
@@ -82,7 +113,8 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
       )
       .all(...params) as any[]
 
-    // 计算月度/年度总额（仅 active 订阅）
+    // 计算月度/年度总额（仅 active 订阅）——折算口径在 lib/subscription-cost.ts，
+    // 不要再在这里或 stats 里写第二份（逐条取整 vs 先求和取整会差出 1 分）
     const activeItems = db
       .prepare(
         `SELECT amount, cycle FROM subscriptions
@@ -90,20 +122,7 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
       )
       .all(userId) as Array<{ amount: number; cycle: string }>
 
-    let monthlyTotal = 0
-    let yearlyTotal = 0
-    for (const item of activeItems) {
-      if (item.cycle === 'monthly') {
-        monthlyTotal += item.amount
-        yearlyTotal += item.amount * 12
-      } else if (item.cycle === 'quarterly') {
-        monthlyTotal += Math.round(item.amount / 3)
-        yearlyTotal += item.amount * 4
-      } else if (item.cycle === 'yearly') {
-        monthlyTotal += Math.round(item.amount / 12)
-        yearlyTotal += item.amount
-      }
-    }
+    const { monthlyTotal, yearlyTotal } = subscriptionCosts(activeItems)
 
     // 即将到期的订阅（7天内）。用 `dateOffset(7)` 算窗口（北京时间口径），
     // 不要用本地 Date + setDate 再 toDateStr 的错位组合。

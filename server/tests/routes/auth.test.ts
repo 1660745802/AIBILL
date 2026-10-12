@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApp, teardownApp, loginAdmin, createUser, authHeaders } from '../helpers.js'
+import { getDb } from '../../src/db/index.js'
 
 describe('Auth Routes', () => {
   let app: FastifyInstance
@@ -87,6 +88,46 @@ describe('Auth Routes', () => {
       const body = JSON.parse(res.payload)
       expect(res.statusCode).toBe(400)
       expect(body.code).toBe(2001)
+    })
+
+    it('邀请码边界：恰好用完 / 恰好过期（昨日）/ 无过期时间', async () => {
+      const adminToken = await loginAdmin(app)
+      const mk = async (payload: Record<string, unknown>) => {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/admin/invite-codes',
+          headers: authHeaders(adminToken),
+          payload,
+        })
+        return JSON.parse(res.payload).data.code as string
+      }
+      const register = (username: string, code: string) =>
+        app.inject({
+          method: 'POST',
+          url: '/api/auth/register',
+          payload: { username, password: 'test123456', invite_code: code },
+        })
+
+      // max_uses=1：第一个人成功，第二个被拒（“恰好用完”就是失效点）
+      const single = await mk({ max_uses: 1 })
+      expect((await register('invite_once', single)).statusCode).toBe(200)
+      const second = await register('invite_twice', single)
+      expect(second.statusCode).toBe(400)
+      expect(JSON.parse(second.payload).code).toBe(2001)
+      // 而且第二个用户一行都没建（整个事务回滚）
+      const users = getDb().prepare('SELECT COUNT(*) c FROM users WHERE username = ?').get('invite_twice') as { c: number }
+      expect(users.c).toBe(0)
+
+      // 无过期时间：可用
+      const never = await mk({ max_uses: 1, expires_at: null })
+      expect((await register('invite_no_expiry', never)).statusCode).toBe(200)
+
+      // 过期日期（昨天）：失效
+      const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
+      const expired = await mk({ max_uses: 5, expires_at: yesterday })
+      const expiredRes = await register('invite_expired', expired)
+      expect(expiredRes.statusCode).toBe(400)
+      expect(JSON.parse(expiredRes.payload).code).toBe(2001)
     })
 
     it('should reject short username', async () => {

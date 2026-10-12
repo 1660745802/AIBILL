@@ -11,12 +11,14 @@ import { today as todayStr, monthOffset } from '../lib/date.js'
 const createGoalSchema = z.object({
   name: z.string().min(1, '目标名称不能为空').max(100),
   type: z.enum(['saving', 'debt_payoff', 'investment', 'custom']),
-  target_amount: z.number().int().positive('目标金额必须大于0'),
-  current_amount: z.number().int().min(0).default(0),
+  // `.safe()`：与交易/账户/预算同一口径——非安全整数会被 SQLite 的 INTEGER 列
+  // 存成 REAL，而这三个值要算 percent / remaining / estimated_completion
+  target_amount: z.number().int().positive('目标金额必须大于0').safe(),
+  current_amount: z.number().int().min(0).safe().default(0),
   deadline: z.string().optional(),
   priority: z.number().int().min(1).max(10).default(5),
   linked_account_id: z.number().int().optional(),
-  monthly_contribution: z.number().int().min(0).default(0),
+  monthly_contribution: z.number().int().min(0).safe().default(0),
   icon: z.string().max(10).default('🎯'),
   note: z.string().max(500).optional(),
 })
@@ -24,19 +26,19 @@ const createGoalSchema = z.object({
 const updateGoalSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   type: z.enum(['saving', 'debt_payoff', 'investment', 'custom']).optional(),
-  target_amount: z.number().int().positive().optional(),
-  current_amount: z.number().int().min(0).optional(),
+  target_amount: z.number().int().positive().safe().optional(),
+  current_amount: z.number().int().min(0).safe().optional(),
   deadline: z.string().nullable().optional(),
   priority: z.number().int().min(1).max(10).optional(),
   linked_account_id: z.number().int().nullable().optional(),
-  monthly_contribution: z.number().int().min(0).optional(),
+  monthly_contribution: z.number().int().min(0).safe().optional(),
   status: z.enum(['active', 'completed', 'paused', 'abandoned']).optional(),
   icon: z.string().max(10).optional(),
   note: z.string().max(500).nullable().optional(),
 })
 
 const progressSchema = z.object({
-  amount: z.number().int().min(0, '进度金额不能为负'),
+  amount: z.number().int().min(0, '进度金额不能为负').safe(),
 })
 
 export async function goalsRoutes(app: FastifyInstance): Promise<void> {
@@ -210,25 +212,31 @@ export async function goalsRoutes(app: FastifyInstance): Promise<void> {
         return { code: 3002, data: null, message: '目标不存在' }
       }
 
-      // 插入或更新今日进度快照
-      db.prepare(
-        `INSERT INTO goal_progress (goal_id, amount, snapshot_date)
-         VALUES (?, ?, ?)
-         ON CONFLICT(goal_id, snapshot_date)
-         DO UPDATE SET amount = excluded.amount`
-      ).run(goal.id, body.amount, today)
-
-      // 同步更新目标的 current_amount
-      db.prepare(
-        'UPDATE financial_goals SET current_amount = ?, updated_at = ? WHERE id = ? AND user_id = ?'
-      ).run(body.amount, new Date().toISOString(), goal.id, userId)
-
-      // 自动完成检测
-      if (body.amount >= goal.target_amount) {
+      const now = new Date().toISOString()
+      /* 三写**同生共死**：今日进度快照、`current_amount`、达标后的 `status`。
+         以前三句各跑各的，中间任何一句失败就留下「快照已记、金额没动」的半状态——
+         与账户余额那条「余额 / 基线 / 快照同生共死」是同一个道理。 */
+      db.transaction(() => {
+        // 插入或更新今日进度快照
         db.prepare(
-          'UPDATE financial_goals SET status = ?, updated_at = ? WHERE id = ? AND user_id = ?'
-        ).run('completed', new Date().toISOString(), goal.id, userId)
-      }
+          `INSERT INTO goal_progress (goal_id, amount, snapshot_date)
+           VALUES (?, ?, ?)
+           ON CONFLICT(goal_id, snapshot_date)
+           DO UPDATE SET amount = excluded.amount`
+        ).run(goal.id, body.amount, today)
+
+        // 同步更新目标的 current_amount
+        db.prepare(
+          'UPDATE financial_goals SET current_amount = ?, updated_at = ? WHERE id = ? AND user_id = ?'
+        ).run(body.amount, now, goal.id, userId)
+
+        // 自动完成检测
+        if (body.amount >= goal.target_amount) {
+          db.prepare(
+            'UPDATE financial_goals SET status = ?, updated_at = ? WHERE id = ? AND user_id = ?'
+          ).run('completed', now, goal.id, userId)
+        }
+      })()
 
       return { code: 0, data: null, message: '进度已更新' }
     } catch (err) {

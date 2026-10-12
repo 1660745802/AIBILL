@@ -11,6 +11,7 @@ import {
   insertDefaultAccounts,
 } from '../db/schema.js'
 import type { JwtPayload } from '../middleware/auth.js'
+import { today } from '../lib/date.js'
 
 export interface RegisterInput {
   username: string
@@ -89,14 +90,19 @@ export function issueToken(userId: number, role: string): string {
 export function register(input: RegisterInput): { token: string; user: UserInfo } {
   const db = getDb()
 
+  // 「今天」用**北京时间**（lib/date.ts，见 DATA.md §1.2），不是 SQLite 的
+  // `datetime('now')`（UTC）。原实现到北京 08:00 就判过期，早/晚 8 小时。
+  // 过期日当天按北京整日有效：expires_at（YYYY-MM-DD）>= 今天。
+  const todayStr = today()
+
   // 1. 校验邀请码
   const inviteCode = db
     .prepare(
       `SELECT id, code, max_uses, used_count, expires_at FROM invite_codes
        WHERE code = ? AND used_count < max_uses
-       AND (expires_at IS NULL OR expires_at > datetime('now'))`,
+       AND (expires_at IS NULL OR expires_at >= ?)`,
     )
-    .get(input.invite_code) as InviteCodeRow | undefined
+    .get(input.invite_code, todayStr) as InviteCodeRow | undefined
 
   if (!inviteCode) {
     throw new AppError(2001, '邀请码无效、已用完或已过期')
@@ -111,33 +117,55 @@ export function register(input: RegisterInput): { token: string; user: UserInfo 
   // 3. 在事务内完成：创建用户 + 默认分类 + 默认账户 + 邀请码计数+1
   const passwordHash = bcrypt.hashSync(input.password, 12)
 
-  const result = db.transaction(() => {
-    // 创建用户
-    const insertUser = db.prepare(
-      `INSERT INTO users (username, password_hash, nickname, role) VALUES (?, ?, ?, 'user')`,
-    )
-    const userResult = insertUser.run(input.username, passwordHash, input.nickname || null)
-    const userId = Number(userResult.lastInsertRowid)
+  let result: UserInfo
+  try {
+    result = db.transaction(() => {
+      // 创建用户
+      const insertUser = db.prepare(
+        `INSERT INTO users (username, password_hash, nickname, role) VALUES (?, ?, ?, 'user')`,
+      )
+      const userResult = insertUser.run(input.username, passwordHash, input.nickname || null)
+      const userId = Number(userResult.lastInsertRowid)
 
-    // 生成默认分类
-    insertDefaultExpenseCategories(db, userId)
-    insertDefaultIncomeCategories(db, userId)
+      // 生成默认分类
+      insertDefaultExpenseCategories(db, userId)
+      insertDefaultIncomeCategories(db, userId)
 
-    // 生成默认账户
-    insertDefaultAccounts(db, userId)
+      // 生成默认账户
+      insertDefaultAccounts(db, userId)
 
-    // 邀请码计数 +1
-    db.prepare('UPDATE invite_codes SET used_count = used_count + 1 WHERE id = ?').run(
-      inviteCode.id,
-    )
+      // 邀请码计数 +1：**条件更新**，把「还有名额」的判定与扣减合成一个原子操作。
+      // 原先在外面 SELECT 判 `used_count < max_uses`、这里无条件 +1：单进程下靠
+      // better-sqlite3 同步执行侥幸安全，多实例（两个进程共用一个 sqlite 文件）
+      // 会双双通过检查 → 超发。changes === 0 说明刚好被另一请求用完或过期了 → 回滚整单。
+      const consumed = db
+        .prepare(
+          `UPDATE invite_codes SET used_count = used_count + 1
+            WHERE id = ? AND used_count < max_uses
+              AND (expires_at IS NULL OR expires_at >= ?)`,
+        )
+        .run(inviteCode.id, todayStr)
+      if (consumed.changes === 0) {
+        throw new AppError(2001, '邀请码无效、已用完或已过期')
+      }
 
-    return {
-      id: userId,
-      username: input.username,
-      nickname: input.nickname || null,
-      role: 'user' as const,
+      return {
+        id: userId,
+        username: input.username,
+        nickname: input.nickname || null,
+        role: 'user' as const,
+      }
+    })()
+  } catch (err) {
+    // 事务外的 SELECT 检查挡不住多实例并发：两个进程几乎同时判「用户名不存在」，
+    // 随后一个 INSERT 撞上 `users.username UNIQUE` → 原本会漏成 500。
+    // 兜底转成与前置检查同一个码 2002（响应结构不变）。
+    if (err instanceof AppError) throw err
+    if ((err as { code?: string })?.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      throw new AppError(2002, '用户名已被注册')
     }
-  })()
+    throw err
+  }
 
   const token = signToken(result.id, result.role, 0)
 

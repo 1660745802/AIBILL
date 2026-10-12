@@ -105,7 +105,30 @@ const PAYMENT_VERB = verb(
   '支付成功', '付款成功', '已支付', '扣款', '扣费', '消费', '到账', '入账', '收款',
   '转账', '退款', '缴费', '还款', '充值', '代扣', '已付', '支出', '付款', '免密',
   '快捷支付', '动账', '入账工资',
+  // 报销/退货：同样是「资金真的动了」，且 category-matcher 已把它们映射到「退款」。
+  // 漏了它们时「报销500」既无货币单位又无动词 → tier 4 → 在调模型前就被丢，
+  // 用户看到「AI 没听出账目」而模型根本没见过这句话。
+  '报销', '退货',
 )
+
+/**
+ * 手打短句里「光秃秃的数字」也是金额信号（≥2 位，避免「1 个」「第 3 天」误伤）。
+ *
+ * 为什么必须有这条：quick-parser 的注释里明确写着「低置信 → 交给 AI」的例子——
+ * `肯德基45`、`小米商城299`、`房租5000`、`报销500`——它们既无货币单位也无交易动词，
+ * 在分流里落 tier 4，于是**模型从来没被问过**。而用户看到的是一句
+ * 「AI 没听出账目」：明明说了「房租5000」，却被告知没听出来。
+ *
+ * 长度门关是必要的：通知/广告动辄上百字，把它们全部放去调模型就等于
+ * 取消预筛（线上 53% 的收益）。而手打输入都在 30 字以内——
+ * 这个阈值直接沿用 quick-parser 自己的分界（`> 30 字 → 交给 AI`）。
+ *
+ * 代价诚实说明：短而带数字的通知（如「您的话费余额为12.5」）也会多调一次模型，
+ * 但那只是**多一次调用**（模型按 prompt 里的「余额不是支出」例子回 []），
+ * 而漏挡的代价是用户以为记上了。tier 2 出站还要过佐证，不会自动入账。
+ */
+const BARE_AMOUNT_RE = /(?<![\d.])\d{2,}(?:\.\d{1,2})?(?![\d.])/
+const BARE_AMOUNT_MAX_LEN = 30
 
 /**
  * 强噪声：命中即丢，不看有没有金额。
@@ -178,12 +201,13 @@ const WEAK_NOISE: { name: string; re: RegExp }[] = [
  * 把一条通知分到 5 个档之一。
  *
  *   档 1  有带单位金额 + 交易动词  → 正常调 AI
- *   档 2  仅金额                  → 调 AI，但出结果后要过佐证
+ *   档 2  仅金额（带单位，或短句里的光杆数字） → 调 AI，但出结果后要过佐证
  *   档 3  仅交易动词（无金额）     → 调 AI，但出结果后要过佐证
  *   档 0  命中强噪声              → 不调 AI
  *   档 4  无任何信号              → 不调 AI
  *
  * 顺序很重要：**正向信号优先于弱噪声**。理由见 WEAK_NOISE 注释。
+ * 光杆数字那条排在弱噪声**之后**：短广告（`双11 5折`）仍先被营销词挡下。
  */
 export function classifyNotification(rawInput: string): ClassifyResult {
   const text = rawInput || ''
@@ -200,6 +224,10 @@ export function classifyNotification(rawInput: string): ClassifyResult {
   if (weak) return { tier: 0, reasons: [weak.name] }
 
   if (hasMoney) return { tier: 2, reasons: ['money_only'] }
+  // 短句里的光杆数字：也当金额信号（tier 2 = 调模型，但出结果要过佐证）
+  if (text.trim().length <= BARE_AMOUNT_MAX_LEN && BARE_AMOUNT_RE.test(text)) {
+    return { tier: 2, reasons: ['bare_amount'] }
+  }
   if (hasVerb) return { tier: 3, reasons: ['verb_only'] }
   return { tier: 4, reasons: ['no_signal'] }
 }
@@ -232,7 +260,7 @@ export function hasCorroboration(rawInput: string, amountCents: number): boolean
  * 客户端 v1.5.14 修过同类问题（`209[嗨] [QQ红包]`），服务端一直没补。
  */
 const NON_AMOUNT_NUMBER = new RegExp(
-  '(?:尾号|卡号|尾数|单号|订单号|流水号|验证码|校验码|群名|QQ号?|工号)'
+  '(?:尾号|卡号|尾数|单号|订单号|流水号|验证码|校验码|群名|QQ号?|工号|票号)'
   + '\\s*[:：]?\\s*(\\d+(?:\\.\\d{1,2})?)',
   'g',
 )

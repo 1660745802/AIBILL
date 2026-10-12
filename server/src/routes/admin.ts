@@ -8,6 +8,7 @@ import { authMiddleware, adminMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { adminResetPassword } from '../services/auth.service.js'
 import { appLog } from '../services/logger.js'
+import { pageParam } from '../lib/pagination.js'
 import crypto from 'node:crypto'
 
 /**
@@ -24,9 +25,11 @@ const USER_SCOPED_TABLES: string[] = [
   'recurring_patterns',   // → categories / accounts
   'subscriptions',        // → categories / accounts
   'financial_goals',      // → accounts（goal_progress 由 ON DELETE CASCADE 连带清除）
+  'investments',          // → accounts（漏了会 DELETE accounts 抛外键约束 → 有持仓的用户删不掉）
   'transactions',         // → categories / accounts
   'ai_conversations',
   'ai_parse_logs',
+  'ai_parse_filters',     // 无外键，但同样是 user 维度数据（漏了会留下永久孤儿行）
   'ai_memories',
   'budgets',              // → categories
   'user_settings',
@@ -195,14 +198,23 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const db = getDb()
     const userId = Number(id)
 
+    // 审计：跨用户查看明细是**有意保留的运维能力**（PRODUCT §1.2），不是漏洞，
+    // 但属敏感操作 → 一律按 warn 记一条（谁、看谁、什么动作）。appLog 只写库不抛错。
+    appLog('warn', 'admin', `管理员查看用户流水明细: user_id=${userId}`, {
+      action: 'view_user_transactions',
+      admin_id: request.user!.userId,
+      target_user_id: userId,
+    })
+
     const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId)
     if (!user) {
       reply.code(404)
       return { code: 3002, data: null, message: '用户不存在' }
     }
 
-    const page = Math.max(1, parseInt(query.page || '1', 10))
-    const pageSize = Math.min(100, Math.max(1, parseInt(query.page_size || '20', 10)))
+    // 分页：非法值（`?page=abc` / `1e999`）不能变成 NaN/Infinity 绑进 LIMIT/OFFSET（否则 500）
+    const page = pageParam(query.page, 1, Number.MAX_SAFE_INTEGER)
+    const pageSize = pageParam(query.page_size, 20, 100)
     const offset = (page - 1) * pageSize
 
     const countRow = db
@@ -407,8 +419,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       days?: string
     }
 
-    const pageNum = Math.max(Number(page) || 1, 1)
-    const size = Math.min(Math.max(Number(page_size) || 20, 1), 100)
+    const pageNum = pageParam(page, 1, Number.MAX_SAFE_INTEGER)
+    const size = pageParam(page_size, 20, 100)
     const offset = (pageNum - 1) * size
 
     // 构建过滤条件
@@ -431,6 +443,13 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       conditions.push('l.user_id = ?')
       params.push(Number(user_id))
     }
+
+    // 审计：解析日志含用户原始输入（raw_input），跨用户读取按 warn 记一条
+    appLog('warn', 'admin', '管理员查看 AI 解析日志列表', {
+      action: 'view_ai_parse_logs',
+      admin_id: request.user!.userId,
+      target_user_id: user_id ? Number(user_id) : null,
+    })
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
 
@@ -485,6 +504,14 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       return { code: 3002, data: null, message: '记录不存在' }
     }
 
+    // 审计：单条详情直接返回 raw_input 原文，跨用户读取按 warn 记一条
+    appLog('warn', 'admin', `管理员查看 AI 解析原文: log_id=${id}`, {
+      action: 'view_ai_parse_log_raw',
+      admin_id: request.user!.userId,
+      log_id: Number(id),
+      target_user_id: (log as { user_id?: number }).user_id ?? null,
+    })
+
     return { code: 0, data: log, message: '' }
   })
 
@@ -499,8 +526,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       days?: string
     }
 
-    const pageNum = Math.max(Number(page) || 1, 1)
-    const size = Math.min(Math.max(Number(page_size) || 50, 1), 200)
+    const pageNum = pageParam(page, 1, Number.MAX_SAFE_INTEGER)
+    const size = pageParam(page_size, 50, 200)
     const offset = (pageNum - 1) * size
 
     const conditions: string[] = []

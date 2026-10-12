@@ -89,8 +89,14 @@ export function matchParse(
   const byKey = index.get(userId)
   if (!byKey) return null
   const arr = byKey.get(fpKey(item))
-  if (!arr || arr.length !== 1) return null
-  return { logId: arr[0]!.logId, rawInput: arr[0]!.rawInput }
+  if (!arr) return null
+  /* TTL 必须在查询侧也判：只在 rememberParse 里清理的话，只要下一条解析迟迟
+     不来，过期条目就一直能被关联——32 分钟前（甚至几天前最后一条解析之后）
+     的解析会被贴到刚记的账上，回填的 ai_raw_input / final_items 是错的。 */
+  const now = Date.now()
+  const alive = arr.filter((e) => e.expiresAt > now)
+  if (alive.length !== 1) return null
+  return { logId: alive[0]!.logId, rawInput: alive[0]!.rawInput }
 }
 
 /** 测试用：清空缓存 */

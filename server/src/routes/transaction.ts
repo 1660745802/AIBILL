@@ -8,6 +8,7 @@ import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { matchParse, backfillLanding } from '../lib/parse-landing.js'
 import { applyTxn } from '../lib/account-balance.js'
+import { pageParam } from '../lib/pagination.js'
 
 const transactionItemSchema = z.object({
   client_id: z.string().uuid().optional(),
@@ -18,7 +19,10 @@ const transactionItemSchema = z.object({
     .default('manual'),
   source_detail: z.string().optional(),
   type: z.enum(['expense', 'income', 'transfer']),
-  amount: z.number().int().positive('金额必须大于0'),
+  // `.safe()`：`int().positive()` 放过 1e20 这种非安全整数，而 SQLite 列虽然声明
+  // INTEGER 也照样把它存成 REAL（实测 typeof='real'）——金额是「一律整数分」的口径，
+  // 这里挡掉比事后从统计里发现浮点误差便宜。
+  amount: z.number().int().positive('金额必须大于0').safe(),
   category_id: z.number().int().positive().nullable().optional(),
   account_id: z.number().int().positive().optional(),
   target_account_id: z.number().int().positive().nullable().optional(),
@@ -41,7 +45,7 @@ const createTransactionsSchema = z.object({
 
 const updateTransactionSchema = z.object({
   type: z.enum(['expense', 'income', 'transfer']).optional(),
-  amount: z.number().int().positive().optional(),
+  amount: z.number().int().positive().safe().optional(),
   category_id: z.number().int().positive().nullable().optional(),
   account_id: z.number().int().positive().optional(),
   target_account_id: z.number().int().positive().nullable().optional(),
@@ -227,8 +231,8 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       tag?: string
     }
 
-    const page = Math.max(1, parseInt(query.page || '1', 10))
-    const pageSize = Math.min(100, Math.max(1, parseInt(query.page_size || '20', 10)))
+    const page = pageParam(query.page, 1, Number.MAX_SAFE_INTEGER)
+    const pageSize = pageParam(query.page_size, 20, 100)
     const offset = (page - 1) * pageSize
 
     let whereClauses = ['t.user_id = ?', "t.status = 'confirmed'", 't.deleted_at IS NULL']
@@ -328,8 +332,8 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     const userId = request.user!.userId
     const query = request.query as { page?: string; page_size?: string }
 
-    const page = Math.max(1, parseInt(query.page || '1', 10))
-    const pageSize = Math.min(100, Math.max(1, parseInt(query.page_size || '20', 10)))
+    const page = pageParam(query.page, 1, Number.MAX_SAFE_INTEGER)
+    const pageSize = pageParam(query.page_size, 20, 100)
     const offset = (page - 1) * pageSize
 
     const countResult = db
@@ -469,6 +473,39 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
         if (!acc) {
           throw new ValidationError(`${label} ID ${val} 不存在或不属于当前用户`)
         }
+      }
+
+      /* 分类归属校验：POST 有、PUT 也漏了。列表与分类排行都是
+         `JOIN categories c ON t.category_id = c.id`（不带 user_id 过滤），
+         所以一旦能写入别人的 category_id，对方的分类名就会出现在自己的流水
+         与统计里（串数据）。
+         `!== existing.category_id` 这个短路是为了不改坏合法编辑：分类被停用后，
+         客户端每次编辑该笔账单都会把原值原样回传，那种“没改”不该报错
+         （与 POST 的 is_active 口径仍然一致）。 */
+      if (
+        body.category_id != null &&
+        body.category_id !== (existing as { category_id: number | null }).category_id
+      ) {
+        const cat = db
+          .prepare('SELECT id FROM categories WHERE id = ? AND user_id = ? AND is_active = 1')
+          .get(body.category_id, userId)
+        if (!cat) {
+          throw new ValidationError(`分类 ID ${body.category_id} 不存在或不属于当前用户`)
+        }
+      }
+
+      /* 类型与目标账户的一致性。
+         PUT 是部分更新，客户端只改金额时不会重传 target_account_id，所以必须按
+         **合并后的状态**判。POST 强制「transfer 必须有目标账户」，这里漏了的话
+         就能把一笔支出改成 transfer 而不给目标账户：`applyTxn` 只扣源账户、
+         目标不增，净资产凭空少一笔（Web 编辑弹窗也确实能这样提交）。 */
+      const nextType = body.type ?? (existing as { type: string }).type
+      const nextTarget =
+        body.target_account_id !== undefined
+          ? body.target_account_id
+          : (existing as { target_account_id: number | null }).target_account_id
+      if (nextType === 'transfer' && !nextTarget) {
+        throw new ValidationError('转账类型必须指定目标账户')
       }
 
       const updates: string[] = []

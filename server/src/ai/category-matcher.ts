@@ -100,18 +100,18 @@ const SYNONYMS: Record<string, string> = {
  * @param aiCategoryName AI 返回的分类名
  * @param categories 用户的分类列表
  * @param type 交易类型（用于确定匹配哪种分类）
- * @returns 匹配到的分类信息，或"其他"分类
+ * @returns 匹配到的分类信息，或"其他"分类；**用户该类型下一个分类都没有时返回 null**
  */
 export function matchCategory(
   aiCategoryName: string,
   categories: CategoryInfo[],
   type: 'expense' | 'income',
-): CategoryInfo {
+): CategoryInfo | null {
   const filtered = categories.filter((c) => c.type === type)
   const name = aiCategoryName.trim()
 
   if (!name) {
-    return findOther(filtered, type)
+    return findOther(filtered)
   }
 
   // 1. 精确匹配
@@ -140,12 +140,20 @@ export function matchCategory(
   }
 
   // 4. 归入"其他"
-  return findOther(filtered, type)
+  return findOther(filtered)
 }
 
-function findOther(categories: CategoryInfo[], type: 'expense' | 'income'): CategoryInfo {
+/**
+ * 兜底分类：优先「其他」，否则第一个该类型的分类。
+ *
+ * ⚠️ 一个都没有时返回 **null**，绝不返回 `{ id: 0 }`：
+ * 0 是**不存在的 id**，客户端拿它去 `POST /transactions` 会被归属校验
+ * 400 拒掉（“分类 ID 0 不存在”），用户点确认却存不进去；
+ * 而 `null` 是契约内合法值（转账路径本来就是 null，所以前端早已处理）。
+ */
+function findOther(categories: CategoryInfo[]): CategoryInfo | null {
   const other = categories.find((c) => c.name === '其他')
   if (other) return other
   // 兜底：返回第一个分类
-  return categories[0] || { id: 0, name: '其他', type }
+  return categories[0] ?? null
 }

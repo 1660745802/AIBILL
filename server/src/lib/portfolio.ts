@@ -481,9 +481,22 @@ export function buildPortfolio(
     : inv.reduce((s, a) => s + (a.hasHoldings ? (a.holdingsValue ?? 0) : 0), 0)
   const cash = inv.reduce((s, a) => s + a.cash, 0)
   const totalInvested = inv.reduce((s, a) => s + (a.totalInvested ?? 0), 0)
-  // 投资账户里有任何一个「有净投入却没配持仓」时，聚合级浮盈同样是编的 → 给 null
-  const pendingAccounts = inv.filter((a) => a.holdingsPending)
-  const unrealized = pendingAccounts.length > 0 || marketValue == null
+  /* 聚合浮盈与**账户级逐条同口径**：只要有一个账户算不出自己的浮盈，
+     聚合就不能拿它的现金/市值去凑一个数。
+
+     之前只看 `holdingsPending`（无持仓 + 有总投入），漏了两个同样算不出的情况：
+       1. **没填总投入**（`invested_total` 为 null）：账户级给 null（“不算浮盈，也不编 0”），
+          聚合却把 null 当 0 → 861,700 持仓 + 5,000 现金凭空变成「盈利 91,170」；
+       2. **无持仓但有现金**且总投入为 0/null：账户级算不出盈亏，聚合却把现金当收益。
+     都是「账户行显示 —、头条显示一个大盈利」——UI-DESIGN §6.8 明文禁止的那类编数。
+
+     判据：账户级 unrealized 为 null，且它在聚合里**有东西参与计算**
+     （现金 ≠ 0 / 挂了持仓 / 总投入 ≠ 0）。一个什么都没有的空理财账户不会把
+     整个聚合拉成 null。 */
+  const anyUncomputable = inv.some(
+    (a) => a.unrealized == null && (a.cash !== 0 || a.hasHoldings || (a.totalInvested ?? 0) !== 0),
+  )
+  const unrealized = anyUncomputable || marketValue == null
     ? null
     : marketValue + cash - totalInvested
 

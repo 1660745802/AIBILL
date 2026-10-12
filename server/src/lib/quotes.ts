@@ -240,14 +240,21 @@ function parseFx(code: string, body: string): Quote | null {
   const price = Number(f[3])
   if (!Number.isFinite(price) || price <= 0) return null
   const prev = Number(f[6])
+  /* ⚠️ 时间戳解析不出来就返回 null，不能带一个空日期上去：
+     `investment_quotes.quote_date` 是空串，而 `fx.ts` 那边会 `q.quoteDate || today()`
+     把「今天」盖上去——非交易日就造出了「汇率很新鲜」的假象（quote-acquisition
+     自己写着「都不盖今天」）。返回 null 后这个币种会落进 `missing`，
+     于是走 ECB 兜底源拿真实日期（主源→兜底链本来就该这么用）。 */
+  const quoteDate = toIsoDate(String(f[5] ?? ''))
+  if (!quoteDate) return null
   return {
     code,
     name: f[1] ?? code,
     price,
     prevClose: Number.isFinite(prev) && prev > 0 ? prev : null,
     changeRate: null, // 汇率的涨跌幅对估值没用，不编
-    quoteDate: toIsoDate(String(f[5] ?? '')) ?? '',
-    quoteAt: toIsoDateTime(String(f[5] ?? '')) ?? `${toIsoDate(String(f[5] ?? '')) ?? ''} 00:00:00`,
+    quoteDate,
+    quoteAt: toIsoDateTime(String(f[5] ?? '')) ?? `${quoteDate} 00:00:00`,
   }
 }
 

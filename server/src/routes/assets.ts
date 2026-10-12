@@ -23,8 +23,12 @@ const updateAccountSchema = z.object({
   /**
    * 账户级总投入（分）——理财账户专用，只在存钱/取钱时改。
    * 加减仓**不改它**（买卖不改变"一共投进去多少"）。允许负数（取出的比投的多）。
+   *
+   * `.safe()`：`int()` 放过 1e20 这种非安全整数，而 SQLite 的 INTEGER 列
+   * 照样会把它存成 REAL（实测 typeof='real'）——总投入是「整数分」口径，
+   * 变成浮点后浮盈跟着带误差。
    */
-  invested_total: z.number().int().nullish(),
+  invested_total: z.number().int().safe().nullish(),
   credit_limit: z.number().int().min(0).optional(),
   billing_day: z.number().int().min(0).max(31).optional(),
   due_day: z.number().int().min(0).max(31).optional(),
@@ -161,8 +165,11 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     items: z.array(z.object({
       account_id: z.number().int().positive(),
-      /** 现金/余额，单位分。负数 = 负债（信用卡欠款），是合法值 */
-      balance: z.number().int(),
+      /**
+       * 现金/余额，单位分。负数 = 负债（信用卡欠款），是合法值。
+       * `.safe()`：非安全整数（1e20）会被 SQLite 存成 REAL，净资产从此带浮点误差。
+       */
+      balance: z.number().int().safe(),
     })).min(1).max(50),
   })
 

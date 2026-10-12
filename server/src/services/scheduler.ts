@@ -89,6 +89,9 @@ function processSubscriptionAutoRecord(): void {
 
   const processAll = db.transaction(() => {
     for (const sub of due) {
+      // 下一个付款日 = 本付款日 + N 月（钳位到月末）。原先用 `Date.setMonth`
+      // 会溢出（2026-01-31 +1 月 = 3-03），逐月漂移且永不收敛（审查 MAJOR-C）。
+      const months = sub.cycle === 'monthly' ? 1 : sub.cycle === 'quarterly' ? 3 : 12
       const clientId = crypto.randomUUID()
 
       // 幂等检查：避免重复记账（同一订阅同一天）
@@ -102,6 +105,12 @@ function processSubscriptionAutoRecord(): void {
 
       if (existing) {
         log('warn', 'scheduler', `订阅 #${sub.id}(${sub.name}) 已有 ${sub.next_payment_date} 记录，跳过`)
+        /* ⚠️ 与上面「账户停用」那条跳过**性质不同**，所以这里要推进日期：
+           那种情况账单根本没建，不推进才能在还原后补记；而这里账单**已经在**
+           （这一期已结算）。不推进的话 next_payment_date 永远停在过去：
+           每 15 分钟重扫一遍、每跳一条 warn，而该订阅**往后的每一期都不会再记账**
+           （用户在订阅页改了周期/起始日，把付款日改回一个有账单的日期就会落到这里）。 */
+        updateNextDate.run(monthOffsetFrom(sub.next_payment_date, months), sub.id)
         continue
       }
 
@@ -131,9 +140,6 @@ function processSubscriptionAutoRecord(): void {
       }, 1, sub.user_id)
 
       // 计算下一个付款日：按「本付款日 + N 月」钳位到月末（monthOffsetFrom）。
-      // 原先用 `Date.setMonth` 会溢出（2026-01-31 +1 月 = 3-03），逐月漂移且
-      // 永不收敛（审查 MAJOR-C）；monthOffsetFrom 不会。
-      const months = sub.cycle === 'monthly' ? 1 : sub.cycle === 'quarterly' ? 3 : 12
       const nextPaymentStr = monthOffsetFrom(sub.next_payment_date, months)
 
       updateNextDate.run(nextPaymentStr, sub.id)
@@ -176,6 +182,7 @@ function processTrashCleanup(): void {
  * - app_logs: 保留 30 天
  * - ai_parse_logs: 保留 90 天
  * - ai_conversations: 保留 90 天
+ * - ai_parse_filters: 保留 90 天（写入量最大，53% 的解析请求会落一条）
  */
 function processLogCleanup(): void {
   const db = getDb()
@@ -204,6 +211,15 @@ function processLogCleanup(): void {
     .run(parseCutoff)
   if (convResult.changes > 0) {
     log('info', 'scheduler', `AI对话记录清理: 删除 ${convResult.changes} 条（>90天）`)
+  }
+
+  // ai_parse_filters 保留 90 天（与 ai_parse_logs / ai_conversations 同口径）：
+  // 这是解析链路上写入量最大的一张表（线上 53% 的解析请求会落一条），不清理会无限增长。
+  const filterResult = db
+    .prepare('DELETE FROM ai_parse_filters WHERE created_at < ?')
+    .run(parseCutoff)
+  if (filterResult.changes > 0) {
+    log('info', 'scheduler', `AI预筛记录清理: 删除 ${filterResult.changes} 条（>90天）`)
   }
 }
 
@@ -285,6 +301,23 @@ const SESSIONS: Record<Market, Array<[number, number]>> = {
 }
 
 /**
+ * 某个市场「此刻这一跳」对应的**交易日**（YYYY-MM-DD，北京时间口径）。
+ *
+ * ⚠️ 美股跨午夜：北京凌晨这一段属于**前一个自然日**的美股交易日
+ * （北京周二 02:00 = 美东周一 14:00）。休市缓存与周末判断都必须按这个交易日算，
+ * 否则拿北京日期去比行情日期，会把凌晨拿到的「美东周一」行情读成
+ * 「北京周二休市」——于是**整个周二晚上（美东周二盘中）被跳过**，
+ * 美股收盘价永远抓不到，页面上的价格停在半夜那一瞬间。
+ *
+ * A股/港股都在北京当天内收盘，返回的就是北京日期（行为不变）。
+ */
+function tradingDateFor(market: Market, now: Date): string {
+  const { mins } = beijingNow(now)
+  if (market === 'us' && mins < 12 * 60) return toDateStr(new Date(now.getTime() - 86_400_000))
+  return toDateStr(now)
+}
+
+/**
  * 什么时候该抓。
  *
  * **必须传市场**：只判断「现在是不是 A 股的盘中」会让港股收盘价（16:00）
@@ -293,15 +326,25 @@ const SESSIONS: Record<Market, Array<[number, number]>> = {
  * 这里只管「时间窗口」，不管「今天是不是交易日」——节假日靠
  * `processQuoteFetch` 里的数据推断（拿回来的行情日期不是今天 ⇒ 今天休市），
  * 这样春节/国庆/台风临时休市都不用维护日历。
+ *
+ * ⚠️ 周末判断也按**该市场自己的交易日**：北京周六凌晨是美东周五盘中，
+ * 而美股收盘价就在那一段（北京 04:00）。按北京星期一刀切会让
+ * 美股周五的收盘价永远抓不到。
  */
 export function shouldFetchQuotes(
   now = new Date(),
   markets: Market[] = ['cn'],
 ): { fetch: boolean; reason: string; market?: Market } {
   const { day, mins } = beijingNow(now)
-  if (day === 0 || day === 6) return { fetch: false, reason: '周末休市' }
+  /** 该市场此刻是不是周末（美股凌晨段算前一天的星期） */
+  const isWeekend = (m: Market): boolean => {
+    const d = m === 'us' && mins < 12 * 60 ? (day + 6) % 7 : day
+    return d === 0 || d === 6
+  }
+  if (markets.every(isWeekend)) return { fetch: false, reason: '周末休市' }
 
   for (const m of markets) {
+    if (isWeekend(m)) continue
     for (const [from, to] of SESSIONS[m]) {
       if (mins >= from && mins <= to) {
         return { fetch: true, reason: `${MARKET_LABEL[m]}盘中`, market: m }
@@ -394,10 +437,10 @@ export async function processQuoteFetch(now = new Date()): Promise<void> {
     byMarket.set(m, [...(byMarket.get(m) ?? []), r.code])
   }
 
-  const today = beijingDate(now)
-  // 只抓「此刻在交易时段内」且「今天还没被判定休市」的市场
+  // 只抓「此刻在交易时段内」且「该市场的交易日还没被判定休市」的市场。
+  // ⚠️ 休市缓存按**该市场自己的交易日**查（美股跨午夜时它 != 北京日期）。
   const targets = [...byMarket.keys()].filter((m) => {
-    if (marketClosedOn[m] === today) return false
+    if (marketClosedOn[m] === tradingDateFor(m, now)) return false
     return shouldFetchQuotes(now, [m]).fetch
   })
   if (targets.length === 0) return
@@ -418,14 +461,17 @@ export async function processQuoteFetch(now = new Date()): Promise<void> {
     log('info', 'quotes', `${acq.unknown.length} 个代码上游未返回：${acq.unknown.join(',')}`)
   }
 
-  /* 逐市场识别节假日 / 临时休市：拿回来的行情日期不是今天 ⇒ 该市场今天没开市。
+  /* 逐市场识别节假日 / 临时休市：拿回来的行情日期不是**该市场的交易日** ⇒ 没开市。
      只在**盘中较深处**才下结论——刚开盘时拿到上一交易日的日期可能只是还没切过来，
-     误判会让一整天都不再抓。 */
+     误判会让一整天都不再抓。
+     ⚠️ 标记的键也用交易日：用北京日期当键时，北京凌晨那跳（美东前一天的盘中）
+     会把当天后面真正该抓的那一段一起封掉。 */
   for (const m of targets) {
     const mine = acq.quotes.filter((q) => marketOfCode(q.code) === m)
-    if (mine.length > 0 && !mine.some((q) => q.quoteDate === today) && deepEnoughBeijng(now, m)) {
-      marketClosedOn[m] = today
-      log('info', 'quotes', `${MARKET_LABEL[m]} ${today} 非交易日（行情停在 ${mine[0]!.quoteDate}），今日不再抓`)
+    const tradingDate = tradingDateFor(m, now)
+    if (mine.length > 0 && !mine.some((q) => q.quoteDate === tradingDate) && deepEnoughBeijng(now, m)) {
+      marketClosedOn[m] = tradingDate
+      log('info', 'quotes', `${MARKET_LABEL[m]} ${tradingDate} 非交易日（行情停在 ${mine[0]!.quoteDate}），不再抓`)
     }
   }
 }

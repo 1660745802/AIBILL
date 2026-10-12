@@ -134,6 +134,26 @@ describe('资产工作台 · 手动快照', () => {
     expect(curve[0].date).toBe('2026-10-01')
   })
 
+  it('非安全整数的余额应被拒（否则 SQLite 把 INTEGER 列存成 REAL，净资产带浮点误差）', async () => {
+    const bank = accs.find((a) => a.name === '银行卡')!
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/assets/snapshots',
+      headers: authHeaders(token),
+      payload: { items: [{ account_id: bank.id, balance: 1e20 }] },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(JSON.parse(res.payload).code).toBe(2000)
+
+    const res2 = await app.inject({
+      method: 'PUT',
+      url: `/api/assets/accounts/${bank.id}`,
+      headers: authHeaders(token),
+      payload: { invested_total: 1e20 },
+    })
+    expect(res2.statusCode).toBe(400)
+  })
+
   it('快照按用户隔离：A 看不到 B 的', async () => {
     const res = JSON.parse(
       (await app.inject({ method: 'GET', url: '/api/assets/portfolio', headers: authHeaders(otherToken) })).payload,

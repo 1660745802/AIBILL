@@ -171,6 +171,49 @@ describe('classifyNotification · 真交易不得被误杀', () => {
   })
 })
 
+/* ══════════════════════════════════════════════════════════
+   手打短句：没有货币单位 + 没有交易动词，但确实是真账。
+
+   这些正是 quick-parser 注释里写明「低置信 → 交给 AI」的例子；
+   而分流曾经把它们判成 tier 4（无信号）⇒ **模型从来没被问过**，
+   用户看到的是「AI 没听出账目」——他说的是「房租5000」。
+   漏挡真账比误挡严重得多（用户会以为记上了）。
+   ══════════════════════════════════════════════════════════ */
+describe('classifyNotification · 手打短句（无货币单位）不得在预筛被丢', () => {
+  it.each(['肯德基45', '小米商城299', '房租5000', '报销500', '房款600000'])(
+    '「%s」应放行给 AI（tier2，出站还要过佐证）',
+    (text) => {
+      const c = classifyNotification(text)
+      expect(shouldCallAi(c), `tier=${c.tier} reasons=${c.reasons}`).toBe(true)
+      expect(c.tier).toBe(2)
+      expect(c.reasons).toContain('bare_amount')
+      expect(requiresCorroboration(c)).toBe(true)
+    },
+  )
+
+  it('报销/退货是真金白银的动词，不再是「无信号」', () => {
+    expect(classifyNotification('报销').tier).toBe(3)
+    expect(classifyNotification('退货到账').tier).not.toBe(4)
+  })
+
+  it('长文本不因里面有数字而被放行（预筛的收益必须保住）', () => {
+    const long = '亲爱的用户您好，感谢您一直以来对我们的支持与厚爱，为了回馈广大用户，我们特别推出了一系列精彩活动，详情请见活动页面，祝您生活愉快，万事如意'
+    expect(long.length).toBeGreaterThan(30)
+    expect(classifyNotification(long).tier).toBe(4)
+    expect(classifyNotification(`${long}（活动编号 20260101）`).tier).toBe(4)
+  })
+
+  it('短广告仍先被营销词挡下（光杆数字排在弱噪声之后）', () => {
+    for (const t of ['双11 5折', '满减 300', '神券 200']) {
+      expect(shouldCallAi(classifyNotification(t)), t).toBe(false)
+    }
+  })
+
+  it('1 位数字不算金额信号（「买了1个」）', () => {
+    expect(classifyNotification('买了1个').tier).toBe(4)
+  })
+})
+
 describe('classifyNotification · 噪声应被拦下', () => {
   it.each(NOISE)('「%s…」应判为不调 AI', (text) => {
     const c = classifyNotification(text)
@@ -223,6 +266,14 @@ describe('金额硬规则', () => {
     const text = '招商银行 信用卡通知：您尾号1678的招行信用卡消费1.00人民币。'
     expect(amountIsNonAmountDigit(text, 167800)).toBe(true)
     expect(amountIsNonAmountDigit(text, 100)).toBe(false)
+  })
+
+  it('机票票号不能当金额（prompt 里举的就是这个例子，机械层也要有兜底）', () => {
+    // 现在「金额 >1000万元 就静默丢」那道闸门已经拆了（它会误杀购车/房款），
+    // 挡数字串的职责落在这里，所以词表要把票号补上。
+    const text = '南方航空 您的机票已于2026-08-11支付成功，乘机人李某某，票号7842305955315，北京大兴机场→重庆江北机场。'
+    expect(amountIsNonAmountDigit(text, 784230595531500)).toBe(true)
+    expect(amountIsNonAmountDigit(text, 2026)).toBe(false)
   })
 
   it('尾号恰好等于消费额时不得丢真交易（kiro 审查发现的丢数据路径）', () => {
@@ -309,11 +360,17 @@ describe('verifyParsed（方案 B 的边界）', () => {
   })
 
   it('review：档 2/3（无佐证但像交易）不丢，只标待审', () => {
-    // 「小铁台球 39.9」既无货币单位也无交易动词 → 档 4 → 丢，这是对的
-    expect(verifyParsed('小铁台球 39.9', [item(3990)], true).verdict).toBe('drop')
+    // 整段无信号（tier 4）→ 整段丢：这句既无金额也没动词，模型确实抽不出东西
+    expect(verifyParsed('昨天在星巴克请朋友喝了两杯拿铁，用信用卡付的', [item(3990)], true).verdict).toBe('drop')
     // 有交易动词、无货币单位 → 档 3 → 调 AI + 强制佐证 → review
     const text = '订单已消费 您的订单【小铁台球】39.9两小时中八已成功消费'
     expect(verifyParsed(text, [item(3990)], true).verdict).toBe('review')
+
+    /* 注：本用例以前用「小铁台球 39.9」（截断的短句）当 tier 4 的例子。
+       现在短句里的光杆数字算 tier 2（reason=`bare_amount`）——它很可能就是一条被
+       截断的真实通知（同一个台球的完整通知就在上面那条用例里），整段丢=漏记一笔真账
+       （「只挡噪声、不漏真账」）。所以 tier 4 的例子换成真正无信号的句子。 */
+    expect(verifyParsed('小铁台球 39.9', [item(3990)], true).verdict).toBe('review')
   })
 
   it('逐条判定：混合结果时按条给结论，不整段一刀切', () => {

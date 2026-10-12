@@ -2,7 +2,7 @@
  * 公共 lib 单元测试：日期区间 + 预算进度
  */
 import { describe, it, expect } from 'vitest'
-import { monthRange, prevMonthRange, toDateStr, dateOffset, today, beijingNow, monthOffset, monthOffsetFrom } from '../../src/lib/date.js'
+import { monthRange, prevMonthRange, toDateStr, dateOffset, today, beijingNow, monthOffset, monthOffsetFrom, addDaysTo } from '../../src/lib/date.js'
 import { budgetProgress, budgetStatus, spentPercent, WARN_PERCENT, OVER_PERCENT } from '../../src/lib/budget.js'
 
 describe('lib/date', () => {
@@ -68,6 +68,16 @@ describe('lib/date', () => {
     for (let i = 0; i < 12; i++) next = monthOffsetFrom(next, 1)
     expect(next).toBe('2027-01-28') // 12 个月后回到同一天（每月钳到月末）
     expect(monthOffset(1)).toBe(monthOffsetFrom(today(), 1))
+  })
+
+  it('addDaysTo 以**给定日期**为基准偏移（跨月/跨年/负数）', () => {
+    expect(addDaysTo('2026-10-12', 0)).toBe('2026-10-12')
+    expect(addDaysTo('2026-10-12', -6)).toBe('2026-10-06')
+    expect(addDaysTo('2026-11-02', -6)).toBe('2026-10-27') // 跨月
+    expect(addDaysTo('2027-01-02', -6)).toBe('2026-12-27') // 跨年
+    expect(addDaysTo('2026-10-12', 7)).toBe('2026-10-19')
+    // 非法串不抛：退回「相对今天」的 dateOffset（保持与 dateOffset 同语义）
+    expect(addDaysTo('不是日期', 0)).toBe(dateOffset(0))
   })
 })
 

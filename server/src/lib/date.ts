@@ -140,6 +140,19 @@ export function monthOffsetFrom(dateStr: string, months: number): string {
 }
 
 /**
+ * 从**任意日期串**（YYYY-MM-DD）偏移 n 天（n 可为负），北京时间口径。
+ *
+ * 纯日期串运算：两边都按 UTC 午夜，差值恒为整数天（与 `daysUntil` 同一套口径）。
+ * 需要「以某一个确定的日期为基准推几天」时用它——`dateOffset(n)` 是相对**当前时刻**的，
+ * 在同一个 handler 里连调多次会各自取一次 now（跨北京午夜就错位）。
+ */
+export function addDaysTo(dateStr: string, days: number): string {
+  const base = Date.parse(`${dateStr}T00:00:00Z`)
+  if (Number.isNaN(base)) return dateOffset(days)
+  return toDateStr(new Date(base + days * 86_400_000))
+}
+
+/**
  * 距离某个日期还有几天（**北京时间**口径）：`0` = 今天，`1` = 明天，负数 = 已过。
  *
  * 两个都是 YYYY-MM-DD，两边都按 UTC 午夜解析 ⇒ 差值恒为整数天，

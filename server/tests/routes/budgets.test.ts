@@ -33,6 +33,8 @@ describe('Budget Routes', () => {
         items: [
           { client_id: 'b1111111-1111-1111-1111-111111111111', type: 'expense', amount: 5000, category_id: userCategoryId, description: '午饭', date: '2026-07-15' },
           { client_id: 'b2222222-2222-2222-2222-222222222222', type: 'expense', amount: 3000, category_id: userCategoryId, description: '晚饭', date: '2026-07-20' },
+          // 非请求月（3 月）：全年预算应计入，月度预算不应计入——用来鉴别两个区间
+          { client_id: 'b3333333-3333-3333-3333-333333333333', type: 'expense', amount: 2000, category_id: userCategoryId, description: '三月午饭', date: '2026-03-05' },
         ],
       },
     })
@@ -53,6 +55,30 @@ describe('Budget Routes', () => {
       const body = JSON.parse(res.payload)
       expect(res.statusCode).toBe(200)
       expect(body.code).toBe(0)
+    })
+
+    it('非安全整数金额应被拒（否则 SQLite 把 INTEGER 列存成 REAL）', async () => {
+      for (const amount of [1e20, 9007199254740993]) {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/budgets',
+          headers: authHeaders(userToken),
+          payload: { category_id: 0, amount, year: 2026, month: 8 },
+        })
+        expect(res.statusCode, String(amount)).toBe(400)
+        expect(JSON.parse(res.payload).code).toBe(2000)
+      }
+      // PUT 也要拦
+      const list = JSON.parse(
+        (await app.inject({ method: 'GET', url: '/api/budgets?year=2026&month=7', headers: authHeaders(userToken) })).payload,
+      ).data.items
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/budgets/${list[0].id}`,
+        headers: authHeaders(userToken),
+        payload: { amount: 1e20 },
+      })
+      expect(res.statusCode).toBe(400)
     })
 
     it('should create a category budget', async () => {
@@ -84,6 +110,25 @@ describe('Budget Routes', () => {
         expect(totalBudget.spent).toBeGreaterThan(0)
         expect(totalBudget.percent).toBeGreaterThan(0)
       }
+    })
+
+    it('全年预算（month=0）的 spent 按全年区间，不是请求月份', async () => {
+      await app.inject({
+        method: 'POST',
+        url: '/api/budgets',
+        headers: authHeaders(userToken),
+        payload: { category_id: 0, amount: 500000, period: 'yearly', year: 2026, month: 0 },
+      })
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/budgets?year=2026&month=7',
+        headers: authHeaders(userToken),
+      })
+      const items = JSON.parse(res.payload).data.items
+      const yearly = items.find((b: any) => b.month === 0 && b.category_id === 0)
+      expect(yearly).toBeDefined()
+      // 7 月 5000+3000 + 3 月 2000 = 10000；旧实现只算 7 月 → 8000
+      expect(yearly.spent).toBe(10000)
     })
 
     it('should show category budget with correct spending', async () => {

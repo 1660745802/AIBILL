@@ -409,6 +409,59 @@ describe('Subscription Routes', () => {
     })
   })
 
+  describe('start_date 的日历有效性（2026-13-01 / 2026-02-30 不能进库）', () => {
+    const mk = (startDate: string) => ({
+      name: '非法日期订阅',
+      amount: 1000,
+      cycle: 'monthly',
+      category_id: userCategoryId,
+      account_id: userAccountId,
+      start_date: startDate,
+    })
+
+    it('格式对但不存在的日期必须 400，且不写库', async () => {
+      for (const bad of ['2026-13-01', '2026-02-30', '2026-04-31', '2026-00-10']) {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/subscriptions',
+          headers: authHeaders(userToken),
+          payload: mk(bad),
+        })
+        expect(res.statusCode, bad).toBe(400)
+        expect(JSON.parse(res.payload).code, bad).toBe(2000)
+      }
+      // 一行都不许落库：未校验时 '2026-13-01' 会被原样存进 next_payment_date，
+      // 等到字典序追上 2027-01-01 时 scheduler 会记出一笔 date='2026-13-01'
+      // 的账单（账本里多出幽灵账期 2026-13）
+      const rows = getDb()
+        .prepare("SELECT count(*) c FROM subscriptions WHERE start_date LIKE '2026-13%' OR start_date LIKE '%-02-30' OR start_date LIKE '%-04-31'")
+        .get() as { c: number }
+      expect(rows.c).toBe(0)
+    })
+
+    it('闰年 2028-02-29 是合法日期（不能把 refine 写成通配拒绝）', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/subscriptions',
+        headers: authHeaders(userToken),
+        payload: mk('2028-02-29'),
+      })
+      expect(res.statusCode).toBe(200)
+      expect(JSON.parse(res.payload).data.next_payment_date).toBe('2028-02-29')
+    })
+
+    it('非安全整数金额应被拒（会经 scheduler 直接写进账本）', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/subscriptions',
+        headers: authHeaders(userToken),
+        payload: { ...mk('2026-12-01'), amount: 1e20 },
+      })
+      expect(res.statusCode).toBe(400)
+      expect(JSON.parse(res.payload).code).toBe(2000)
+    })
+  })
+
   describe('next_payment_date calculation', () => {
     it('should calculate correct next_payment_date for monthly subscription', async () => {
       // Use a start_date in the past
@@ -605,5 +658,34 @@ describe('订阅自动记账跳过停用账户（D3）', () => {
     // 两条都已推进 next_payment_date
     const sub = getDb().prepare('SELECT next_payment_date FROM subscriptions WHERE id = ?').get(subId) as { next_payment_date: string }
     expect(sub.next_payment_date).not.toBe('2020-01-01')
+  })
+
+  /*
+    另一类「已经有了」必须区别对待：账单**已经在**（这一期已结算），
+    与上面「账户停用 → 账单根本没建」相反。
+    不推进日期的话 next_payment_date 永远停在过去：每跳重扫一遍 + 一条 warn，
+    而该订阅往后的每一期都不会再自动记账。
+  */
+  it('付款日上已有账单（已结算）时：不重复记账，但 next_payment_date 必须推进', async () => {
+    const countForSub = (id: number) => (getDb().prepare(
+      `SELECT count(*) c FROM transactions
+        WHERE source = 'subscription' AND source_detail = ? AND deleted_at IS NULL`,
+    ).get(`subscription:${id}`) as { c: number }).c
+    const nextOf = (id: number) => (getDb().prepare(
+      'SELECT next_payment_date FROM subscriptions WHERE id = ?',
+    ).get(id) as { next_payment_date: string }).next_payment_date
+
+    const subId = await makeSub('已结算的订阅')
+    setDue(subId, '2020-02-01')
+    await runScheduledTasks()                     // 第一次：记账 + 推进
+    expect(nextOf(subId)).not.toBe('2020-02-01')
+    expect(countForSub(subId)).toBe(1)
+
+    // 用户把付款日改回一个「已经有账单」的日期（订阅页改周期/起始日很容易落到这里）
+    setDue(subId, '2020-02-01')
+    await runScheduledTasks()
+
+    expect(countForSub(subId)).toBe(1)            // 不重复记账
+    expect(nextOf(subId)).not.toBe('2020-02-01')  // 不再卡死在那一期
   })
 })

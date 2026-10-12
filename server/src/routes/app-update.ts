@@ -9,6 +9,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { authMiddleware, adminMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { config } from '../config.js'
+import { pageParam } from '../lib/pagination.js'
 import path from 'node:path'
 import fs from 'node:fs'
 
@@ -24,6 +25,26 @@ function ensureUpdatesDir(): void {
   if (!fs.existsSync(UPDATES_DIR)) {
     fs.mkdirSync(UPDATES_DIR, { recursive: true })
   }
+}
+
+/**
+ * `version_name` → 安全的 APK 文件名。不合法返回 null。
+ *
+ * ⚠️ 以前是 `aibill-${versionName}.apk` 直接拼进 `path.join(UPDATES_DIR, ...)`，
+ * 而 `version_name` 是**完全可控**的表单字段：`../../dist/app.js`
+ * 这种值会写到存储目录**之外**（容器里是 root，能覆盖自己的代码或数据库）。
+ * 这里只允许字母/数字/点/下划线/连字符，并再验一次解析后的路径确实落在
+ * UPDATES_DIR 内——与 `/updates/:filename` 下载侧同一套判断（写与读两侧都不能少）。
+ */
+export function safeApkFilename(versionName: string): string | null {
+  const cleaned = String(versionName ?? '').trim()
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(cleaned)) return null
+  if (cleaned === '.' || cleaned === '..') return null
+  const name = `aibill-${cleaned}.apk`
+  const root = path.resolve(UPDATES_DIR)
+  const resolved = path.resolve(path.join(root, name))
+  if (!resolved.startsWith(root + path.sep)) return null
+  return name
 }
 
 /**
@@ -187,6 +208,20 @@ export async function appUpdateAdminRoutes(app: FastifyInstance): Promise<void> 
       return { code: 2000, data: null, message: '缺少 apk_file 字段' }
     }
 
+    // 内容校验：APK 本质是 ZIP 容器，文件头必须是 `PK\x03\x04`。
+    // 只校验字段不校验内容的话，任何文件（HTML/脚本/随便什么）都能挂成
+    // 「新版本」分发给客户端并被安装流程下载。非 APK 直接拒。
+    if (
+      apkBuffer.length < 4 ||
+      apkBuffer[0] !== 0x50 ||
+      apkBuffer[1] !== 0x4b ||
+      apkBuffer[2] !== 0x03 ||
+      apkBuffer[3] !== 0x04
+    ) {
+      reply.code(400)
+      return { code: 2000, data: null, message: 'apk_file 不是有效的 APK/ZIP 文件' }
+    }
+
     // 校验字段
     const versionName = fields.version_name
     const versionCode = parseInt(fields.version_code || '0', 10)
@@ -200,6 +235,17 @@ export async function appUpdateAdminRoutes(app: FastifyInstance): Promise<void> 
     if (!versionCode || versionCode <= 0) {
       reply.code(400)
       return { code: 2000, data: null, message: 'version_code 必须为正整数' }
+    }
+
+    // 文件名从 version_name 派生 → 必须先净化（防写到目录之外）
+    const safeName = safeApkFilename(versionName)
+    if (!safeName) {
+      reply.code(400)
+      return {
+        code: 2000,
+        data: null,
+        message: 'version_name 只能包含字母、数字、点、下划线、连字符（1-64 字符）',
+      }
     }
 
     const db = getDb()
@@ -219,7 +265,6 @@ export async function appUpdateAdminRoutes(app: FastifyInstance): Promise<void> 
     }
 
     // 生成文件名 & 写入磁盘
-    const safeName = `aibill-${versionName}.apk`
     const filePath = path.join(UPDATES_DIR, safeName)
     fs.writeFileSync(filePath, apkBuffer)
     const apkSize = apkBuffer.length
@@ -269,8 +314,8 @@ export async function appUpdateAdminRoutes(app: FastifyInstance): Promise<void> 
     const query = request.query as { page?: string; page_size?: string }
     const db = getDb()
 
-    const page = Math.max(1, parseInt(query.page || '1', 10))
-    const pageSize = Math.min(100, Math.max(1, parseInt(query.page_size || '20', 10)))
+    const page = pageParam(query.page, 1, Number.MAX_SAFE_INTEGER)
+    const pageSize = pageParam(query.page_size, 20, 100)
     const offset = (page - 1) * pageSize
 
     const countRow = db.prepare('SELECT COUNT(*) as total FROM app_updates').get() as { total: number }

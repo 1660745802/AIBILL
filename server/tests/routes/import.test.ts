@@ -74,6 +74,16 @@ describe('Import Routes', () => {
       }
     })
 
+    it('美团单车→交通、美团会员→娱乐（不被笼统的“美团→餐饮”吃掉）', async () => {
+      const { body } = await parseCsv(
+        wechatCsv([
+          '2026-09-20 08:00:00,商户消费,美团单车,骑行,支出,¥1.50,零钱,支付成功,11,,',
+          '2026-09-20 20:00:00,商户消费,美团会员,会员费,支出,¥15.00,零钱,支付成功,12,,',
+        ]),
+      )
+      expect(body.data.parsed.map((i: any) => i.category_name)).toEqual(['交通', '娱乐'])
+    })
+
     it('应把滴滴/地铁归入交通', async () => {
       const { body } = await parseCsv(
         wechatCsv([
@@ -305,5 +315,46 @@ describe('Import Routes', () => {
     for (const r of rows) {
       expect(ownerIds.has(r.category_id)).toBe(true)
     }
+  })
+
+  describe('日期与金额边界（预览必须与 POST /transactions 的校验一致）', () => {
+    const ALIPAY_HEADER =
+      '交易号,商家订单号,交易创建时间,付款时间,最近修改时间,交易来源地,类型,交易对方,商品名称,金额（元）,收/支,交易状态'
+    const alipayCsv = (rows: string[]) => `${ALIPAY_HEADER}\n${rows.join('\n')}\n`
+
+    it('单位数月/日的日期应补零成 YYYY-MM-DD（否则提交时被 400 整批拒掉）', async () => {
+      const { body } = await parseCsv(
+        alipayCsv([
+          '202609051230001,x1,2026/9/5 12:30,2026/9/5 12:31,2026/9/5 12:31,支付宝,即时到账,张三,午餐,32.50,支出,交易成功',
+        ]),
+        'alipay',
+      )
+      expect(body.code).toBe(0)
+      expect(body.data.parsed).toHaveLength(1)
+      expect(body.data.parsed[0].date).toBe('2026-09-05')
+      expect(body.data.parsed[0].amount).toBe(3250)
+    })
+
+    it('非法日期应计入 errors，不进预览', async () => {
+      const { body } = await parseCsv(
+        wechatCsv([
+          '2026-13-45 12:00:00,商户消费,美团,外卖,支出,¥32.00,零钱,支付成功,b1,,',
+          '不是日期,商户消费,美团,外卖,支出,¥33.00,零钱,支付成功,b2,,',
+        ]),
+      )
+      expect(body.data.parsed).toHaveLength(0)
+      expect(body.data.errors).toBe(3) // 2 条坏日期 + 尾部横线行
+    })
+
+    it('0 元 / 负金额行应计入 errors（POST 只收 amount>0）', async () => {
+      const { body } = await parseCsv(
+        wechatCsv([
+          '2026-09-20 12:00:00,商户消费,美团,0元单,支出,¥0.00,零钱,支付成功,z1,,',
+          '2026-09-20 13:00:00,商户消费,美团,负数,支出,-32.00,零钱,退款,z2,,',
+        ]),
+      )
+      expect(body.data.parsed).toHaveLength(0)
+      expect(body.data.errors).toBe(3) // 2 条坏金额 + 尾部横线行
+    })
   })
 })

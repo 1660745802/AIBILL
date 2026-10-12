@@ -15,12 +15,16 @@
  * 需要外部 HTTP 的测试（AI、汇率兜底源）照旧自己 `vi.stubGlobal('fetch', ...)`。
  */
 import { afterEach } from 'vitest'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 // Override config before any app code loads
 process.env.JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long'
 process.env.ADMIN_PASSWORD = 'testadmin123'
 process.env.ADMIN_USERNAME = 'admin'
 process.env.DB_PATH = ':memory:'
+// APK 上传/下载的目录：指向系统临时目录，别把测试产生的假 APK 写进仓库的 server/data/
+process.env.UPDATES_DIR = join(tmpdir(), 'aibill-test-updates')
 
 /** 允许的本地目标（测试夹具 / 本地 mock server）；其余一律算外发 */
 const LOCAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i

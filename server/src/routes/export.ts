@@ -129,11 +129,29 @@ function formatDate(d: Date = new Date()): string {
 }
 
 /**
- * CSV 字段转义：包含逗号、双引号或换行时用双引号包裹
+ * 会被 Excel / Google Sheets 当公式执行的开头（CSV 公式注入 / DDE），
+ * 允许前导空白（` =cmd|...` 同样会被执行），字符集取 OWASP 的
+ * `=` `+` `-` `@` `\t` `\r`。
+ */
+const FORMULA_LEAD = /^[ \u00a0]*[=+\-@\t\r]/
+
+/**
+ * CSV 字段转义：包含逗号、双引号或换行时用双引号包裹。
+ *
+ * 另外先中和公式注入：描述/分类名/账户名都来自第三方账单（商户名、AI 解析的
+ * 原始文本），用户导出后用 Excel 打开时，以 `=` `+` `-` `@` 开头的字段会被当
+ * 公式执行（`=cmd|' /C calc'!A1` 可拉起本机程序）。加前导单引号让 Excel 按文本
+ * 处理（单元格里不可见），代价是导出文本会多这个字符。
  */
 function escapeCsvField(field: string): string {
-  if (field.includes(',') || field.includes('"') || field.includes('\n')) {
-    return `"${field.replace(/"/g, '""')}"`
+  const guarded = FORMULA_LEAD.test(field) ? `'${field}` : field
+  if (
+    guarded.includes(',') ||
+    guarded.includes('"') ||
+    guarded.includes('\n') ||
+    guarded.includes('\r')
+  ) {
+    return `"${guarded.replace(/"/g, '""')}"`
   }
-  return field
+  return guarded
 }

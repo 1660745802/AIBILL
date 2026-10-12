@@ -84,12 +84,23 @@ describe('AI Parser', () => {
       expect(result).toHaveLength(0)
     })
 
-    it('should filter out extremely large amounts (>10M)', () => {
+    it('千万级/亿级真账不得被静默丢掉（购车、房款）', () => {
+      // 以前 >1000万元 直接 continue：整条消失且无提示。
+      // 每一条解析结果都是确认卡片，真账该让用户自己判断。
       const items = [
-        { type: 'expense' as const, amount: 99999999, category: '其他', description: '天文数字', date: '2026-07-30', account: '' },
+        { type: 'expense' as const, amount: 2800000, category: '其他', description: '购车款', date: '2026-07-30', account: '' },
+        { type: 'expense' as const, amount: 99999999, category: '其他', description: '房款', date: '2026-07-30', account: '' },
       ]
       const result = validateParsedItems(items, today)
-      expect(result).toHaveLength(0)
+      expect(result).toHaveLength(2)
+      expect(result.map((r) => r.amount)).toEqual([2800000, 99999999])
+    })
+
+    it('只丢「不可表示」的金额（转分后超过安全整数）', () => {
+      const items = [
+        { type: 'expense' as const, amount: 1e14, category: '其他', description: '不可表示', date: '2026-07-30', account: '' },
+      ]
+      expect(validateParsedItems(items, today)).toHaveLength(0)
     })
 
     it('should use today when date is invalid', () => {

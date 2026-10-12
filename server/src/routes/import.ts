@@ -63,13 +63,26 @@ function parseCsvLine(line: string): string[] {
 }
 
 /**
- * 标准化日期格式为 YYYY-MM-DD
+ * 标准化日期为 YYYY-MM-DD。
+ *
+ * 微信/支付宝导出的日期不保证补零（`2026/9/5 12:30`），原来只是 substring(0,10) +
+ * 把 / 换成 -，会得到 `2026-9-5 1` 这种垃圾日期：预览里看不出来，用户点导入时
+ * 被 `POST /transactions` 的 `^\d{4}-\d{2}-\d{2}$` 整批 400 拒掉。
+ * 这里统一补零 + 校验真实历法（2026-13-45 / 2026-02-30 都不算日期），
+ * 没法识别的返回 null，由调用方计入 errors。
  */
-function normalizeDate(raw: string): string {
-  // 取前 10 位
-  const datePart = raw.trim().substring(0, 10)
-  // 将 / 替换为 -
-  return datePart.replace(/\//g, '-')
+function normalizeDate(raw: string): string | null {
+  const m = raw.trim().match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/)
+  if (!m) return null
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null
+  const dt = new Date(Date.UTC(year, month - 1, day))
+  if (dt.getUTCFullYear() !== year || dt.getUTCMonth() !== month - 1 || dt.getUTCDate() !== day) {
+    return null
+  }
+  return `${m[1]}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
 /**
@@ -130,14 +143,20 @@ function parseWechat(content: string): RawParseResult {
       // amount: 去掉 ¥ 和逗号，转浮点再*100
       const amountStr = amountRaw.replace(/[¥￥,\s]/g, '')
       const amountFloat = parseFloat(amountStr)
-      if (isNaN(amountFloat)) {
+      const amount = Math.round(amountFloat * 100)
+      // 0 元 / 负金额（部分退款行）进不了账本：POST /transactions 只收 amount > 0。
+      // 放它进预览，用户点导入时整批被 400 拒掉。
+      if (!Number.isFinite(amount) || amount <= 0) {
         errors++
         continue
       }
-      const amount = Math.round(amountFloat * 100)
 
       // date
       const date = normalizeDate(dateRaw)
+      if (!date) {
+        errors++
+        continue
+      }
 
       parsed.push({
         type,
@@ -222,11 +241,11 @@ function parseAlipay(content: string): RawParseResult {
       // amount: 去掉空格，转浮点*100
       const amountStr = amountRaw.replace(/[\s,]/g, '')
       const amountFloat = parseFloat(amountStr)
-      if (isNaN(amountFloat)) {
+      const amount = Math.round(amountFloat * 100)
+      if (!Number.isFinite(amount) || amount <= 0) {
         errors++
         continue
       }
-      const amount = Math.round(amountFloat * 100)
 
       // date
       if (!dateRaw) {
@@ -234,6 +253,10 @@ function parseAlipay(content: string): RawParseResult {
         continue
       }
       const date = normalizeDate(dateRaw)
+      if (!date) {
+        errors++
+        continue
+      }
 
       parsed.push({
         type,

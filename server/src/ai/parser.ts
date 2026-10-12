@@ -101,8 +101,18 @@ export function validateParsedItems(items: ParsedTransaction[], today: string): 
       continue
     }
 
-    // 边界保护：金额异常大（>1000万）可能是误提取
-    if (amount > 10000000) {
+    /* 上限只用来挡**不可表示**的值，不再是一道「金额太大就不信」的静默闸门。
+
+       账本金额是「整数分」：`amount * 100` 超过 MAX_SAFE_INTEGER 后就是不可表示的
+       数字（下游 `POST /transactions` 的 `.safe()` 也会 400），所以这里必须挡。
+
+       而原来的阈值是 `> 1000万元` → 直接 `continue`：购车/房款这类**真账整条消失**，
+       且不给任何提示（用户只看到空结果）。每一条解析结果都是确认卡片，
+       真账该让用户自己判断，不该在这一层被静默丢掉。
+
+       「票号/卡号被当成金额」那种误提取由 verify.ts 的 `amountIsNonAmountDigit`
+       精确拦（尾号/卡号/单号/订单号/流水号/验证码/群名/票号），不靠这里一刀切。 */
+    if (!Number.isSafeInteger(Math.round(amount * 100))) {
       continue
     }
 

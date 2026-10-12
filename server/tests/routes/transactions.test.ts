@@ -258,4 +258,108 @@ describe('Transaction Routes', () => {
       expect(body.code).toBe(0)
     })
   })
+
+  describe('PUT /api/transactions/:id 的字段归属与类型一致性', () => {
+    /** 建一笔无归属支出，返回 id */
+    async function mkTx(desc: string): Promise<number> {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/transactions',
+        headers: authHeaders(userToken),
+        payload: { items: [{ type: 'expense', amount: 1234, date: '2026-07-30', description: desc }] },
+      })
+      return JSON.parse(res.payload).data.created[0].id
+    }
+
+    it('把账单改到别人的分类上应被拒绝（POST 校验了、PUT 漏了）', async () => {
+      const txId = await mkTx('跨用户分类')
+      const otherCats = JSON.parse(
+        (await app.inject({ method: 'GET', url: '/api/categories', headers: authHeaders(user2Token) })).payload,
+      ).data.items as Array<{ id: number; name: string; type: string }>
+      const otherCat = otherCats.find((c) => c.type === 'expense')!
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/transactions/${txId}`,
+        headers: authHeaders(userToken),
+        payload: { category_id: otherCat.id },
+      })
+      expect(res.statusCode).toBe(400)
+
+      // 而且不能真的写进去（写进去以后列表/统计会 JOIN 出别人的分类名）
+      const detail = JSON.parse(
+        (await app.inject({ method: 'GET', url: `/api/transactions/${txId}`, headers: authHeaders(userToken) })).payload,
+      ).data
+      expect(detail.category_id).toBeNull()
+      expect(detail.category_name).toBeNull()
+    })
+
+    it('把类型改成 transfer 却没给目标账户应被拒绝（否则源账户扣钱、对方不增，净资产凭空减少）', async () => {
+      const txId = await mkTx('无目标账户的转账')
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/transactions/${txId}`,
+        headers: authHeaders(userToken),
+        payload: { type: 'transfer' },
+      })
+      expect(res.statusCode).toBe(400)
+      const detail = JSON.parse(
+        (await app.inject({ method: 'GET', url: `/api/transactions/${txId}`, headers: authHeaders(userToken) })).payload,
+      ).data
+      expect(detail.type).toBe('expense')
+    })
+
+    it('只改金额不重传 target_account_id 时不应误伤已有的转账', async () => {
+      const mkAcc = async (name: string): Promise<number> => {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/accounts',
+          headers: authHeaders(userToken),
+          payload: { name, type: 'cash', initial_balance: 0 },
+        })
+        return JSON.parse(res.payload).data.id as number
+      }
+      const accA = await mkAcc('测试账户A')
+      const accB = await mkAcc('测试账户B')
+
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/transactions',
+        headers: authHeaders(userToken),
+        payload: {
+          items: [{ type: 'transfer', amount: 5000, date: '2026-07-30', account_id: accA, target_account_id: accB, description: '转账' }],
+        },
+      })
+      expect(created.statusCode).toBe(200)
+      const txId = JSON.parse(created.payload).data.created[0].id
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/api/transactions/${txId}`,
+        headers: authHeaders(userToken),
+        payload: { amount: 6000 },
+      })
+      expect(res.statusCode).toBe(200)
+      expect(JSON.parse(res.payload).data.target_account_id).toBe(accB)
+    })
+
+    it('page/page_size 传非数字不应 500（NaN 会绑进 LIMIT/OFFSET）', async () => {
+      for (const url of ['/api/transactions?page=abc&page_size=xyz', '/api/transactions/trash?page=abc']) {
+        const res = await app.inject({ method: 'GET', url, headers: authHeaders(userToken) })
+        expect(res.statusCode, url).toBe(200)
+        expect(JSON.parse(res.payload).data.page).toBe(1)
+      }
+    })
+
+    it('非安全整数金额应被拒绝（否则 SQLite 把 INTEGER 列存成 REAL）', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/transactions',
+        headers: authHeaders(userToken),
+        payload: { items: [{ type: 'expense', amount: 1e20, date: '2026-07-30', description: '溢出' }] },
+      })
+      expect(res.statusCode).toBe(400)
+      expect(JSON.parse(res.payload).code).toBe(2000)
+    })
+  })
 })

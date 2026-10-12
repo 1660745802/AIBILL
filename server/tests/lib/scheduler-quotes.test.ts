@@ -108,6 +108,22 @@ describe('shouldFetchQuotes —— 只在盘中与收盘后抓', () => {
     expect(shouldFetchQuotes(new Date('2026-10-08T18:00:00Z'), ['us']).fetch).toBe(true)
   })
 
+  /*
+    美股跨午夜 ⇒ 北京凌晨那一段属于**前一个自然日**的美股交易日。
+    周末判断如果不跟着跨，就会把北京周六凌晨（美东周五盘中，收盘价就在这一段）
+    当成周末。A股/港股都在当天收盘，不受影响。
+  */
+  it('周末按**该市场自己的交易日**判：北京周六凌晨是美东周五盘中', () => {
+    // 北京 2026-10-10 02:00（周六）= 美东 10-09 14:00（周五盘中）
+    expect(shouldFetchQuotes(new Date('2026-10-09T18:00:00Z'), ['us']).fetch).toBe(true)
+    // 同一天的 A 股确实是周末
+    expect(shouldFetchQuotes(new Date('2026-10-09T18:00:00Z'), ['cn']).fetch).toBe(false)
+    // 北京 2026-10-11 02:00（周日）= 美东 10-10 14:00（周六休市）
+    expect(shouldFetchQuotes(new Date('2026-10-10T18:00:00Z'), ['us']).fetch).toBe(false)
+    // 北京 2026-10-12 02:00（周一）= 美东 10-11 14:00（周日休市）
+    expect(shouldFetchQuotes(new Date('2026-10-11T18:00:00Z'), ['us']).fetch).toBe(false)
+  })
+
   it('多市场时任一开着就抓，并报出是哪个市场', () => {
     const hkOnly = bj('16:20')
     const r = shouldFetchQuotes(hkOnly, ['cn', 'hk'])
@@ -282,6 +298,42 @@ describe('节假日识别（从数据推断，不维护日历）', () => {
     fetchQuotes.mockClear()
     await processQuoteFetch()
     expect(marketClosedDate('cn')).not.toBe('2026-10-14')  // 不标记
+    vi.useRealTimers()
+  })
+
+  /*
+    美股跨午夜：北京凌晨那一跳对应的美股交易日是**前一天**。
+    若拿北京日期去比行情日期，凌晨拿到的「美东周一」行情会被读成
+    「北京周二休市」，于是**整个周二晚上（美东周二盘中）被跳过**——
+    收盘价永远抓不到，页面上的美股价格停在半夜那一瞬间。
+  */
+  it('美股：北京凌晨那一跳不得把当天（北京）判成休市，晚上还要照抓', async () => {
+    const { initDb } = await import('../../src/db/index.js')
+    const { processQuoteFetch, marketClosedDate } = await import('../../src/services/scheduler.js')
+    const db = initDb()
+    await seed(db, 'usAAPL')
+    fetchQuotes.mockClear()
+
+    // 北京 2026-10-13（周二）02:00 = 美东 10-12（周一）14:00，行情日期必然是周一
+    fetchQuotes.mockResolvedValueOnce([{
+      code: 'usAAPL', name: '苹果', price: 336.64, prevClose: 330,
+      changeRate: 2.0, quoteDate: '2026-10-12', quoteAt: '2026-10-12 14:00:00',
+    }])
+    vi.setSystemTime(new Date('2026-10-12T18:00:00Z'))
+    await processQuoteFetch()
+    expect(fetchQuotes).toHaveBeenCalledTimes(1)
+    expect(marketClosedDate('us')).toBeNull()      // 不是「今天休市」
+
+    // 北京 2026-10-13 22:00 = 美东 10-13（周二）10:00，盘中必须继续抓
+    fetchQuotes.mockResolvedValueOnce([{
+      code: 'usAAPL', name: '苹果', price: 340, prevClose: 336.64,
+      changeRate: 1.0, quoteDate: '2026-10-13', quoteAt: '2026-10-13 10:00:00',
+    }])
+    vi.setSystemTime(new Date('2026-10-13T14:00:00Z'))
+    await processQuoteFetch()
+    expect(fetchQuotes).toHaveBeenCalledTimes(2)
+    const rows = db.prepare("SELECT quote_date FROM investment_quotes WHERE code='usAAPL' ORDER BY quote_date").all()
+    expect(rows).toEqual([{ quote_date: '2026-10-12' }, { quote_date: '2026-10-13' }])
     vi.useRealTimers()
   })
 })

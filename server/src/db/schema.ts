@@ -731,3 +731,38 @@ UPDATE accounts SET
                    AND t.status='confirmed' AND t.deleted_at IS NULL), 0)
 WHERE NOT EXISTS (SELECT 1 FROM asset_snapshots s WHERE s.user_id = accounts.user_id AND s.account_id = accounts.id);
 `
+
+/**
+ * 018 — app_updates.version_code 唯一约束（幂等）。
+ *
+ * 背景：`app_updates` 从 011 建表起就没有 UNIQUE(version_code)，而上传接口
+ * 靠「SELECT 当前激活版本 → 比较 → INSERT」保证单调，多实例并发/重试下
+ * 仍可能落重复行。这里补上唯一索引。
+ *
+ * ⚠️ 生产库可能已有重复（日志里有 26 次上传），直接建唯一索引会让**启动失败**。
+ * 所以先安全去重：同 version_code 只留一条，优先保留 `is_active=1`（当前激活），
+ * 其次保留 id 最大的（最新）。判据用「不存在比它更该留的兄弟行」表达，
+ * 对 is_active 为 NULL 的行也成立（COALESCE 成 0）。
+ *
+ * 去重 + 建索引都在 db/index.ts 的 migration 事务里执行，中途失败整体回滚。
+ */
+export const migration018 = `
+DELETE FROM app_updates
+ WHERE id NOT IN (
+   SELECT x.id FROM app_updates x
+    WHERE NOT EXISTS (
+      SELECT 1 FROM app_updates y
+       WHERE y.version_code = x.version_code
+         AND y.id <> x.id
+         AND (
+           COALESCE(y.is_active, 0) > COALESCE(x.is_active, 0)
+           OR (COALESCE(y.is_active, 0) = COALESCE(x.is_active, 0) AND y.id > x.id)
+         )
+    )
+ );
+
+-- 011 建的同名列是非唯一索引；先删掉再以同名重建为唯一索引，避免两个索引冗余
+DROP INDEX IF EXISTS idx_app_updates_version_code;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_app_updates_version_code
+  ON app_updates(version_code);
+`

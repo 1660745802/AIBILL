@@ -141,6 +141,26 @@ describe('buildPortfolio', () => {
     expect(p.accounts[0]!.unrealized).toBeNull()
   })
 
+  it('账户级算不出浮盈时，聚合级也不许编（否则同屏两个数打架）', () => {
+    // 有持仓、有现金，但**没填总投入** ⇒ 账户级 null（上面那条用例）
+    const p = buildPortfolio([acc(INV, { asset_type: 'investment' })], [snap(INV, TODAY, 500000)], 1, TODAY, holdingsWith(8617000))
+    expect(p.accounts[0]!.unrealized).toBeNull()
+    // 聚合级以前会拿 totalInvested=0 顶替，凭空给出 +¥91,170 的「盈利」
+    // （861,700 + 5,000 − 0）——正是 UI-DESIGN §6.8 「未配置不是亏损」的反面：
+    // 同一响应里账户行显示「—」、头条却显示一个大盈利。
+    expect(p.investment.unrealized).toBeNull()
+    expect(p.investment.unrealizedRate).toBeNull()
+  })
+
+  it('没持仓又没填总投入的理财账户：账户里的现金不等于浮盈', () => {
+    const p = buildPortfolio([acc(INV, { asset_type: 'investment', invested_total: 0 })], [snap(INV, TODAY, 500000)], 1, TODAY)
+    expect(p.investment.marketValue).toBe(0)
+    expect(p.investment.cash).toBe(500000)
+    // 无持仓 ⇒ 账户级算不出盈亏；那 5,000 现金也就不能当成 +5,000 的收益
+    expect(p.accounts[0]!.unrealized).toBeNull()
+    expect(p.investment.unrealized).toBeNull()
+  })
+
   it('负债账户浮盈为 null，并单列负债', () => {
     const p = buildPortfolio(
       [acc(9, { asset_type: 'credit', invested_total: 100000 })],

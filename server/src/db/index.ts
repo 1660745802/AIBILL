@@ -6,7 +6,7 @@ import Database from 'better-sqlite3'
 import path from 'node:path'
 import fs from 'node:fs'
 import { config } from '../config.js'
-import { migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015, migration016, migration017, seedSettings } from './schema.js'
+import { migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015, migration016, migration017, migration018, seedSettings } from './schema.js'
 
 let db: Database.Database
 
@@ -35,6 +35,9 @@ export function initDb(): Database.Database {
 
   // 开启 WAL 模式（提升并发读性能）
   db.pragma('journal_mode = WAL')
+  // 写冲突等待：better-sqlite3 是同步驱动，不设 busy_timeout 时
+  // 另一个连接（备份脚本 / 第二个进程）持写锁会立刻抛 SQLITE_BUSY
+  db.pragma('busy_timeout = 5000')
   // 开启外键约束
   db.pragma('foreign_keys = ON')
 
@@ -85,6 +88,7 @@ function runMigrations(): void {
     { version: 15, name: 'ai_parse_filters_backfill', sql: migration015 },
     { version: 16, name: 'drop_holding_cost_basis', sql: migration016 },
     { version: 17, name: 'account_balance_single_source', sql: migration017 },
+    { version: 18, name: 'app_updates_version_code_unique', sql: migration018 },
   ]
 
   const applied = db

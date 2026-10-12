@@ -5,19 +5,21 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
-import { monthRange, beijingYearMonth } from '../lib/date.js'
+import { monthRange, beijingYearMonth, today } from '../lib/date.js'
 import { budgetProgress } from '../lib/budget.js'
 
 const createBudgetSchema = z.object({
   category_id: z.number().int().min(0).default(0), // 0=总预算
-  amount: z.number().int().positive('预算金额必须大于0'),
+  // `.safe()`：`int().positive()` 放过 1e20，而 SQLite 的 INTEGER 列会把它存成 REAL
+  // （实测 typeof='real'）——预算是「整数分」，浮点会让 percent/remaining 跟着飘
+  amount: z.number().int().positive('预算金额必须大于0').safe(),
   period: z.enum(['monthly', 'yearly']).default('monthly'),
   year: z.number().int().min(2020).max(2100),
   month: z.number().int().min(0).max(12).default(0), // 0=全年
 })
 
 const updateBudgetSchema = z.object({
-  amount: z.number().int().positive('预算金额必须大于0'),
+  amount: z.number().int().positive('预算金额必须大于0').safe(),
 })
 
 export async function budgetRoutes(app: FastifyInstance): Promise<void> {
@@ -35,6 +37,12 @@ export async function budgetRoutes(app: FastifyInstance): Promise<void> {
 
     const { start: startDate, end: endDate } = monthRange(year, month)
 
+    // 全年预算（`month=0`）的 spent 要按**全年区间**统计：请求月份那一个月的
+    // 区间会把全年进度算成当月进度。取「年初 → 今天」（北京时间，lib/date.ts），
+    // 因为进度回答的是「今年到目前为止用了多少」；请求往年则统计整年。
+    const yearStart = `${year}-01-01`
+    const yearSpentEnd = year === bj.year ? today() : `${year}-12-31`
+
     // 获取当月所有预算
     const budgets = db
       .prepare(
@@ -46,28 +54,35 @@ export async function budgetRoutes(app: FastifyInstance): Promise<void> {
       )
       .all(userId, year, month) as any[]
 
-      // 预取一次当月支出（每条预算再查一次就是 N+1）
-      const spentByCategory = new Map<number, number>()
-      let totalSpent = 0
-      if (budgets.length > 0) {
-        const spentRows = db
-          .prepare(
-            `SELECT category_id, SUM(amount) as total FROM transactions
-             WHERE user_id = ? AND type = 'expense' AND status = 'confirmed' AND deleted_at IS NULL
-               AND date BETWEEN ? AND ?
-             GROUP BY category_id`,
-          )
-          .all(userId, startDate, endDate) as Array<{ category_id: number; total: number }>
-
-        for (const r of spentRows) {
-          spentByCategory.set(r.category_id, r.total)
-          totalSpent += r.total
-        }
+    // 预取支出（每条预算再查一次就是 N+1）：月度区间一份、年度区间一份
+    const sumByCategory = (from: string, to: string) => {
+      const rows = db
+        .prepare(
+          `SELECT category_id, SUM(amount) as total FROM transactions
+           WHERE user_id = ? AND type = 'expense' AND status = 'confirmed' AND deleted_at IS NULL
+             AND date BETWEEN ? AND ?
+           GROUP BY category_id`,
+        )
+        .all(userId, from, to) as Array<{ category_id: number; total: number }>
+      const byCat = new Map<number, number>()
+      let total = 0
+      for (const r of rows) {
+        byCat.set(r.category_id, r.total)
+        total += r.total
       }
+      return { byCat, total }
+    }
+    const emptyBucket = { byCat: new Map<number, number>(), total: 0 }
+    const monthSpent = budgets.length > 0 ? sumByCategory(startDate, endDate) : emptyBucket
+    const yearSpent = budgets.some((b: any) => b.month === 0)
+      ? sumByCategory(yearStart, yearSpentEnd)
+      : emptyBucket
 
       // 计算每个预算的已用金额
       const items = budgets.map((b: any) => {
-        const spent = b.category_id === 0 ? totalSpent : (spentByCategory.get(b.category_id) || 0)
+        // 年度预算走年度区间，月度预算走请求月份区间；category_id=0 是「总预算」聚合
+        const bucket = b.month === 0 ? yearSpent : monthSpent
+        const spent = b.category_id === 0 ? bucket.total : (bucket.byCat.get(b.category_id) || 0)
         const { percent, status, remaining } = budgetProgress(spent, b.amount)
 
         return {

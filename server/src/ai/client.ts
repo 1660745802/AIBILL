@@ -20,8 +20,12 @@ interface ChatCompletionResponse {
 
 /**
  * 获取 AI 配置（优先读数据库 settings，fallback 到 env）
+ *
+ * 模型支持**用户级覆盖**：`user_settings.ai_model` > `settings.ai_model`（DATA.md §2.7）。
+ * 之前只读全局 `settings`，而 `PUT /api/settings` 又把 `ai_model` 放进普通用户白名单
+ * → 用户设了自己的模型却完全不生效（设置页是死设置）。传 `userId` 即生效。
  */
-function getAiConfig(): { baseUrl: string; apiKey: string; model: string } {
+function getAiConfig(userId?: number): { baseUrl: string; apiKey: string; model: string } {
   try {
     const db = getDb()
     const getVal = (key: string, fallback: string): string => {
@@ -31,10 +35,18 @@ function getAiConfig(): { baseUrl: string; apiKey: string; model: string } {
       return row?.value || fallback
     }
 
+    let userModel: string | undefined
+    if (userId != null) {
+      const row = db
+        .prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?')
+        .get(userId, 'ai_model') as { value: string } | undefined
+      userModel = row?.value || undefined
+    }
+
     return {
       baseUrl: getVal('ai_base_url', config.aiBaseUrl),
       apiKey: getVal('ai_api_key', config.aiApiKey) || config.aiApiKey,
-      model: getVal('ai_model', config.aiModel),
+      model: userModel || getVal('ai_model', config.aiModel),
     }
   } catch {
     return {
@@ -50,13 +62,15 @@ function getAiConfig(): { baseUrl: string; apiKey: string; model: string } {
  * @param messages 消息列表
  * @param temperature 温度参数
  * @param timeoutMs 超时毫秒数（默认 10000）
+ * @param userId 传入则该用户的 `user_settings.ai_model` 覆盖全局模型
  */
 export async function chatCompletion(
   messages: ChatMessage[],
   temperature = 0.1,
   timeoutMs = 10000,
+  userId?: number,
 ): Promise<string> {
-  const aiConfig = getAiConfig()
+  const aiConfig = getAiConfig(userId)
 
   if (!aiConfig.apiKey || aiConfig.apiKey === 'sk-your-key') {
     throw new AiError('AI_KEY_MISSING', 'AI API Key 未配置，请在设置中填写')
@@ -90,7 +104,10 @@ export async function chatCompletion(
       if (response.status === 429) {
         throw new AiError('AI_RATE_LIMIT', 'AI 请求频率超限，请稍后再试')
       }
-      throw new AiError('AI_API_ERROR', `AI 接口错误 (${response.status}): ${errorText.slice(0, 200)}`)
+      /* ⚠️ 只回状态码：上游正文可能含内部信息（甚至 Key 片段），
+         而 DEVELOPMENT §5.2 要求响应不暴露内部信息。
+         `errorText` 已在上面 `console.error` 完整落服务端日志，排查不受影响。 */
+      throw new AiError('AI_API_ERROR', `AI 接口错误 (${response.status})`)
     }
 
     const data = (await response.json()) as ChatCompletionResponse

@@ -231,6 +231,12 @@ describe('币种与汇率', () => {
     expect(parseQuoteLine('v_whHKDCNY="310~港元人民币~HKDCNY~abc~0~20261010045653~0.85"')).toBeNull()
     expect(parseQuoteLine('v_whHKDCNY="310~short"')).toBeNull()
   })
+
+  it('汇率时间戳解析不出来也返回 null（空日期会让 fx 链路盖「今天」当新鲜度）', () => {
+    // 段[5] 是日期/时间，真实响应是 20261010045653
+    expect(parseQuoteLine('v_whHKDCNY="310~港元人民币~HKDCNY~0.8525~0~~0.8538~"')).toBeNull()
+    expect(parseQuoteLine('v_whHKDCNY="310~港元人民币~HKDCNY~0.8525~0~不是时间~0.8538~"')).toBeNull()
+  })
 })
 
 /* 折算本身 */

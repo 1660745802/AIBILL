@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
-import { config } from './config.js'
+import { config, PLACEHOLDER_JWT_SECRETS, PLACEHOLDER_ADMIN_PASSWORDS } from './config.js'
 import { registerRoutes } from './routes/index.js'
 import { initDb, closeDb } from './db/index.js'
 import { ensureAdminUser } from './services/auth.service.js'
@@ -21,12 +21,15 @@ async function start(): Promise<void> {
     fs.mkdirSync(config.updatesDir, { recursive: true })
   }
 
-  // 安全警告
-  if (config.jwtSecret === 'your-random-secret-at-least-32-chars') {
-    console.warn('[⚠️  Security] JWT_SECRET 使用默认值，生产环境请务必设置自定义密钥！')
+  // 安全警告（占位值清单位于 config.ts，compose 的兜底值也在列）
+  if (PLACEHOLDER_JWT_SECRETS.includes(config.jwtSecret)) {
+    console.warn('[⚠️  Security] JWT_SECRET 使用默认/占位值，生产环境请务必设置自定义密钥！')
   }
-  if (config.adminPassword === 'changeme123') {
+  if (PLACEHOLDER_ADMIN_PASSWORDS.includes(config.adminPassword)) {
     console.warn('[⚠️  Security] ADMIN_PASSWORD 使用默认值，请尽快修改！')
+  }
+  if (config.corsOrigins.includes('*')) {
+    console.warn('[⚠️  Security] CORS_ORIGINS=*，生产环境应改为具体 origin 白名单')
   }
 
   // 确保管理员账户存在
@@ -48,7 +51,13 @@ async function start(): Promise<void> {
         cb(null, true)
         return
       }
-      cb(new Error('CORS not allowed'), false)
+      // 403，不是框架默认的 500：这是策略拒绝（origin 不在白名单），不是服务端故障。
+      // 用 500 会有两个副作用：客户端把「配错了 CORS」当服务异常（API.md §0.2 中
+      // 403 才是权限不足）；且 onResponse 钩子把它记成 error 级 app_logs，
+      // 任意跨域请求（无认证）都能往生产库刷错误日志。
+      const denied = new Error('CORS not allowed') as Error & { statusCode: number }
+      denied.statusCode = 403
+      cb(denied, false)
     },
     // 不需要 credentials：项目用 JWT Bearer header（localStorage），
     // 不依赖 cookie。开启 credentials 会与 origin: '*' 冲突。
@@ -114,11 +123,17 @@ async function start(): Promise<void> {
         ? (err as { statusCode: number }).statusCode
         : 500
     // 5xx 一律对外只说「服务器内部错误」：真实原因（堆栈、SQL）只进日志，不外泄。
-    // 4xx 是请求方自己的问题（body 解析失败、超限、限流……），原样给出可读原因。
+    // 4xx 是请求方自己的问题（body 解析失败、超限、CORS 拒绝……），原样给出可读原因。
     const rawMessage = err instanceof Error ? err.message : String(err ?? '')
     const message = status >= 500 ? '服务器内部错误' : rawMessage
 
-    request.log.error({ err, status, url: request.url }, 'request failed')
+    // 日志级别同理：4xx 记 warn。error 级代表「服务端坏了」，
+    // 否则未认证的坏请求（漏 Origin 的跨域、坏 JSON）能一直往日志里灌 error。
+    if (status >= 500) {
+      request.log.error({ err, status, url: request.url }, 'request failed')
+    } else {
+      request.log.warn({ status, url: request.url, message }, 'request rejected')
+    }
 
     reply.code(status).send({ code: status, data: null, message })
   })
@@ -153,7 +168,10 @@ async function start(): Promise<void> {
     }
     reply.type('application/vnd.android.package-archive')
     reply.header('Content-Length', fs.statSync(filepath).size.toString())
-    // 支持范围请求（resume download）
+    // 注意：这里只是整文件流式发送，Node/Fastify **不处理 Range 头**——
+    // 即「断点续传」并未实现（实测 Range: bytes=2-4 返回 200 而非 206，
+    // 无 Content-Range/Accept-Ranges）。Android 客户端要 resume 得自己实现
+    // 206/Content-Range，或把这段换成 @fastify/static 的 sendFile（它支持 Range）。
     return reply.send(fs.createReadStream(filepath))
   })
 
@@ -190,8 +208,11 @@ async function start(): Promise<void> {
     reply.code(404).send({ code: 4004, data: null, message: 'Not Found' })
   })
 
-  // 优雅关闭
+  // 优雅关闭（幂等：SIGINT/SIGTERM 可能前后到达，app.close()/closeDb() 不可重入）
+  let shuttingDown = false
   const shutdown = async () => {
+    if (shuttingDown) return
+    shuttingDown = true
     stopScheduler()
     await app.close()
     closeDb()
@@ -211,4 +232,15 @@ async function start(): Promise<void> {
   }
 }
 
-start()
+start().catch((err) => {
+  // 启动期异常（initDb / migration / ensureAdminUser / 插件注册）以前没人接：
+  // 会以 unhandled rejection 结束进程，既不关 DB 也不打结构化日志。
+  // app.listen 自身的失败已在 start() 内处理，这里兜住其余部分。
+  console.error('[App] 启动失败', err)
+  try {
+    closeDb()
+  } catch {
+    // 可能还没初始化
+  }
+  process.exit(1)
+})
