@@ -190,7 +190,7 @@ bill/
 │   │   ├── services/          # auth / logger / scheduler
 │   │   └── lib/               # 纯领域逻辑：portfolio / account-balance / precheck /
 │   │                          # quotes·fx·holdings·quote-acquisition / date
-│   └── tests/                 # 53 个测试文件（686 用例）
+│   └── tests/                 # 53 个测试文件（687 用例）
 ├── web/                       # 前端（Vue 3 + TailwindCSS）
 │   ├── src/
 │   │   ├── App.vue            # PC 侧边栏 + 移动端 Tab + Toast

@@ -219,6 +219,16 @@ env `RULES_PATH`（默认 `<cwd>/config/rules.json`）。非 Docker 部署需保
 `docker restart bill-app` 即可）→ 客户端凭 ETag 自动重拉。**回滚**：`git revert` 该文件后重启。
 ⚠️ 老库升级后首次启动会发布一个新版本（存量行里没有 `precheck`），客户端会重拉一次；再启动即幂等。
 
+**改规则要不要拉客户端？**（规则内容是服务端资产，决定权全在服务端）
+- **免客户端参与（内容变更）**：改词表/正则/阈值（`nls`/`sms`/`a11y`/`processor`）、新增 `precheck` 规则
+  （只要 pattern 过交集子集）、改语料（只需**手动播报新 `corpus_hash`** 让对方同步测试夹具）。
+- **必须客户端参与（能力变更）**：新增**键**（对方要消费）、改**语义**（改契约文字）、
+  `precheck.schema` 升级、`transactions.source` 加值（DB `CHECK` → 需重建表 migration，见 §4.3）。
+- ⚠️ **只看服务端日志决定不了规则**：`ai_parse_filters` / `ai_parse_logs` 只覆盖**服务端**看到的拦截与解析；
+  **客户端在发请求前挡掉的那部分（`client_only.*`）不在其中**，只能靠 `POST /api/ai/filter-report` 上报、
+  在 `/api/admin/filter-stats` 里与侧对比。只看服务端日志会系统性低估拦截量，
+  也会错过「客户端误杀真交易」（P0 级、只能用语料 `expect_txn` 判）。
+
 ### 3.8 App 自更新与 `versionCode` 纪律
 
 Android 客户端用 `GET /api/app/update?versionCode=` 检查更新；`app_updates` 表里激活版本的
@@ -290,6 +300,13 @@ App 侧的 `versionCode` 纪律见 §3.8。
 
 **Schema 变更**：在 `db/schema.ts` 新增 `migrationNNN` → 在 `db/index.ts` 注册 → 启动自动执行；
 **禁止修改已应用的 migration，只能新增**。
+
+**⚠️ 改 `CHECK` 约束 = 重建表**：SQLite 不能 `ALTER … DROP CONSTRAINT`，所以「给枚举列加一个合法取值」
+必须走「建新表 → 拷数据 → 删旧表 → 改名 → **重建全部索引**」。⚠️ 漏掉索引（尤其像
+`idx_transactions_client_id` 这种 **UNIQUE 部分索引 = 幂等键**）不会报错、会**静默错账**；`id` 也不能变
+（`accounts.balance_as_of_txn_id` 存的是 `MAX(transactions.id)`）。**动手前先确认这个值真的需要落在该列上**——
+真实案例：Android 的 Tasker 入口原本送 `source='external_intent'`（被 DB `CHECK` 拒 → 恒定 400），
+最终由**客户端**改成 `app_notification`（区分语义交给 `source_detail`），服务端**零迁移**。
 
 #### ⚠️ 读生产库只能用只读连接
 
@@ -372,7 +389,7 @@ initDb()   // 会建表 / 跑 migration / 写库
 | 集成 | API 路由 + DB（内存 SQLite） | Vitest + Fastify `app.inject` |
 | E2E | 核心用户流程 | 手动清单（§7.3） |
 
-测试在 `server/tests/`（**53 个文件 / 686 用例**，以 `vitest run` 为准）。用例即文档，不重复枚举；
+测试在 `server/tests/`（**53 个文件 / 687 用例**，以 `vitest run` 为准）。用例即文档，不重复枚举；
 下面是**关注点 → 回归测试**的索引，改对应代码前先找它：
 
 | 关注点 | 先看这些测试 |

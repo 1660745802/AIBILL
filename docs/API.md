@@ -731,6 +731,8 @@ If-None-Match: "ab12…"
 </details>
 - **只覆盖入站**：`precheck` 是「调模型之前」的判据；出站佐证（`verifyParsed` 的 drop 理由）在模型调用后才产生，客户端算不出来，故不在清单、也不参与 ⑤ 对比。
 - ⚠️ 正则交集子集（**本轮修正**）：**允许有界 lookaround**（单字符类，如 `(?<![\d.])`、`(?!\d)`——服务端自己的判据就在用，且 Java 的定长 lookbehind 能表达）；**禁变长 lookbehind**（`(?<=a+)`，JVM 编译不过）/ 命名组 / `\p{}` / possessive / 内联 flags。服务端**启动时校验**，且**派生出的正则自己先过一遍**（有回归用例自证）。文件与 admin POST **两条发布路径都注入 precheck**（否则激活 admin 版本会让客户端丢掉整个判据）；文件里手写 `precheck` 直接 400。
+- ⚠️ **禁裸 `\s`/`\S`**（同类事故第三例）：JS 的 `\s` 是 **Unicode 空白**（含 U+3000 全角空格、U+00A0 NBSP、U+FEFF），而 **Java/Kotlin 默认只有 ASCII** `[ \t\n\x0B\f\r]` → 同一 pattern 两端判决分叉（`RMB　100` / `100　元` 服务端算金额、客户端不算；极端下客户端落 `no_signal` 直接拦）。要空白请**显式列字符类**（服务端用的是 `[ \t\n\x0B\f\r\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]`）；整个「任意字符」用 `[\s\S]`（两语言一致）。服务端 `regexSafetyError` 与**发布期**（`buildPublishPayload`）都会拒绝裸 `\s`。
+  - ⚠️ 已知保守误拒：写成 `\\s`（字面量反斜杠+s）也会被判成裸 `\s`；当前真源不含这种写法。
 - ⚠️ **判据必须自足**：`signals.*.pattern` / `rules[].pattern` **不得依赖任何未写进本契约的文本预处理**——客户端拿到的 pattern 就是完整规格，不需要自己加任何归一化步骤。
   - 反面案例（真实发生过）：`money` 曾依赖服务端内部「先剥掉千分位逗号」这一步，而它**没写进契约** → 同一段 `…支出(跨行汇款)1,000元，余额24,210.99元。` 服务端判 `money+verb`(tier1)、客户端判 `verb_only`(tier3)，**两端计数不可比**（换条文本就可能变成 P0 误杀）。形态与 `gi` 丢标志那次同源：判据依赖了隐式输入预处理。
   - 现口径：`money` 的 pattern **自己吞千分位**（`\d{1,3}(?:,\d{3})+` 支路），客户端**不做任何预处理**：`1,000元` ✓ / `24,210.99元` ✓ / `¥1,000.50` ✓；畸形分组（`1,23元`、`2.555元`）两端都**不**当金额。
@@ -739,6 +741,7 @@ If-None-Match: "ab12…"
 ## 4. 拦截计数上报（Q3）—— **已实现**（`POST /api/ai/filter-report`，认证，限流 20/min）
 - **不复用 `ai_parse_filters`**：那张表是「服务端挡了哪些」的**逐条事件**（DATA §10.4）；客户端上报是按窗口**聚合计数**且带客户端维度，混在一起「服务端 53%」就不可比。新表 `client_filter_stats` + `client_filter_totals`（migration021）。
 - 请求：`{window_start, window_end, client_version, channel, counts:[{rule_id,count}], totals:{notifications,blocked}}`。`channel` **必填**（nls|sms|a11y|manual）且**进幂等键**（SQLite 唯一索引里 NULL 互不相等，允许 NULL 会让重复上报变多行）。
+- **分母定义（写死，客户端按此实现）**：`totals.notifications` = 该渠道该窗口内**进入判据链的通知总数 = 拦下的 + 放行的**（即「分母含被拦的」）；`blocked` ≤ `notifications`，`放行 = notifications − blocked`。客户端侧从未见过「先拦后放行」二次计数的情况，故不存在重复计入。
 - **窗口**：可解析、`start<=end`、跨度 ≤31 天；**无时区串按北京时间解释**（项目「今天」口径），存储与去重统一为 **UTC** `YYYY-MM-DD HH:MM:SS` → 所以 `2026-10-12T00:00:00+08:00` 与 `2026-10-12 00:00:00` 是**同一个键**。⚠️ 别用 `Date.parse` 直接归一：它对无时区串按**本机时区**解释（容器跑 UTC 就差 8h）。
 - **幂等 = 覆盖**：同 (user, client_version, channel, 窗口, rule_id) 重复上报**改写** hits 而非累加 → 客户端可放心重试。
 - `rule_id` 只允许 `precheck.*`（可比）或 `client_only.*`（服务端无对应，不可比）；**第三个前缀 400**。回执 `{accepted, unknown_precheck_ids}`——后者是「你的清单与我当前清单不一致」的**漂移信号**（收下但标出，不拒绝）。
@@ -798,3 +801,10 @@ If-None-Match: "ab12…"
 - **客户端支持基线（≥1.5.0）与 `versionCode` 纪律** → [ARCHITECTURE.md §3.8](ARCHITECTURE.md)
 - **护栏写法**（按分支枚举配「数据非空」构造、变异自检、清单按基线版本生成）→ [ARCHITECTURE.md §7.2](ARCHITECTURE.md)
 - **语料形状**（`testcases` 的 `expect_tier`/`expect_txn`/`expect_reason`）由 `server/config/rules.json` 与 `lib/notification-rules.ts` 的 `validateRules` 定义。⚠️ 语料本体、本附录的共享导出件、对账 payload 都属**开发阶段产物**，专项结束后删除；**需要长期固化的语义只留在上面三处**。
+- **两个 hash 的算法与用途（别把两者搞混）**：
+  - `content_hash` = sha256(canonical JSON of **发布载荷**)，载荷 = 文件（剔除 `testcases`）+ **代码派生的 `precheck`**；它是 `GET /api/config/notification-rules` 的 **ETag**，也是 `notification_rules.content_hash`。
+    ⇒ **改了判据代码（不只文件）也会换 hash → 客户端自动重拉**。
+  - `corpus_hash` = sha256(**`testcases` 数组**的 canonical JSON)；用于让客户端核对自己 vendor 的语料副本是否漂移。
+    ⇒ **改语料不会换 `content_hash`**（不会因为改一条用例就让全体客户端重拉）。
+  - canonical JSON = **递归按键名排序、无空白**；只含字符串/整数/数组，不含浮点，故两端可直接复现。
+  - 语料变更的流程：服务端改 `rules.json` → 同一条命令算出新的 `corpus_hash` → **手动播报给对方**，对方同步 vendor 夹具即可（不需要发版）。
