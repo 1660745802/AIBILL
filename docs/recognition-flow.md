@@ -87,14 +87,13 @@
   "title":"…", "body":"…", "received_at":"2026-10-12T23:40:00+08:00",
   "hints": {"amount_cents":3200,"merchant":"美团","account_name":"微信","direction":"expense"} }
 ```
-- `input` 仍唯一必填（向后兼容）；`title`/`body` 为结构化补充：服务端以 `input` 为主，
-  `title` 参与去噪、`body` 参与金额佐证。
-- `received_at` **必须带时区偏移**：只用于判断「这条通知属于哪一天」（跨午夜迟发）；
-  **服务端「今天」恒为北京时间**，不随客户端时区变。
-- ⚠️ `source.source_name`：服务端已有 `source_mapping`（包名→友好名）**唯一真源**；
-  客户端请**必发 `package_name`**，友好名可选且**仅作参考**（避免两边各维护一份映射）。
-- ⚠️ `hints` v1 **只落库、不喂 prompt**：hints 进 prompt 会让模型「抄 hint」而非读文本，
-  绕过金额佐证（`hasCorroboration`）→ 直接制造假账。响应可回 `hints_conflict` 供客户端本地校验。
+- `input` 仍唯一必填（向后兼容）。`title`/`body` v1 **只收 + 校验 + 落库**，**暂不参与**去噪/佐证：
+  body 变长会让 tier2「短句光杆数字」判据（len≤30）失效，属独立行为变更，不混做。
+- `received_at` **必须带时区偏移**：服务端取它的**北京日期**作为该请求的「今天」（跨午夜迟发不写错日期）；
+  越出 [今天-7, 今天+1] 则忽略并回落今天（手机时钟护栏）；锚定值在 quickParse / prompt / 校验间保持一致。
+- ⚠️ `source.source_name`：服务端已有 `source_mapping`（包名→友好名）**唯一真源**；请**必发 `package_name`**，友好名可选且仅作参考。
+- ⚠️ `hints` v1 **只落库、不喂 prompt**（进 prompt 会让模型抄 hint、绕过金额佐证→假账）；响应新增可选 `hints_conflict`。
+  落库：`ai_parse_logs` 加 `channel/source_package/received_at/hints`，`ai_parse_filters` 加 `channel/source_package`（migration019）。
 
 ## 6. 出参扩展（Q5）—— 6 项可给（**机械推导/抽取，不进 prompt**），1 项建议复用
 | 客户端要的 | 结论 | 来源 |
