@@ -121,7 +121,17 @@
       "设置"
     ],
     "amount_regex": "[¥￥]\\s*(\\d+\\.?\\d{0,2})|(\\d+\\.?\\d{0,2})元",
-    "cooldown_minutes": 5
+    "cooldown_minutes": 5,
+    "list_page_keywords": [
+      "账单",
+      "交易记录",
+      "明细",
+      "全部交易",
+      "收支记录",
+      "历史",
+      "月账单"
+    ],
+    "list_page_min_amounts": 3
   },
   "sms": {
     "spam_keywords": [

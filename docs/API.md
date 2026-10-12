@@ -731,8 +731,12 @@ If-None-Match: "ab12…"
 - `rule_id` 只允许 `precheck.*`（可比）或 `client_only.*`（服务端无对应，不可比）；**第三个前缀 400**。回执 `{accepted, unknown_precheck_ids}`——后者是「你的清单与我当前清单不一致」的**漂移信号**（收下但标出，不拒绝）。
 - 约束：`counts` 1..200 条、`blocked <= notifications`；超限一律 400（不静默截断）。
 - **admin 对照视图**：`GET /api/admin/filter-stats?days=30` → `client.by_rule[{rule_id,namespace,comparable,hits}]` + `client.by_channel/totals(block_rate)` + `server.by_reason`（**只含入站** reason，出站不在 precheck 范围）。⚠️ **不返回「误杀率」**：它必须靠语料 `expect_txn` 判定，用计数相减算出来的是编的（视图 `note` 里明说）。
-- `client_only.*` = **客户端独有判据 + 诊断计数**（服务端无对应判据，**不可比**）；id 语义由**客户端维护**，此处为 2026-10 快照（`self_notification` 自身通知 · `duplicate_content` 5s 内容去重 · `blank_text` 空正文 · `system_group_summary` 系统分组摘要 · `summary_report` 日报/区间合计 · `promo_sentence` 促销句式 · `marketing` 营销词且无强交易特征 · `not_financial` 账务判据未过 · `ai_memory` 5min 长窗 · `ai_muted` 单包熔断 · `db_duplicate` 1s 去重 · **`precheck_unknown_expr` 漂移诊断，非拦截**）。
+- `client_only.*` = **客户端独有判据 + 诊断计数**（服务端无对应判据，**不可比**）；id 语义由**客户端维护**，此处为 2026-10 快照（`self_notification` 自身通知 · `duplicate_content` 5s 内容去重 · `blank_text` 空正文 · `system_group_summary` 系统分组摘要 · `summary_report` 日报/区间合计 · `promo_sentence` 促销句式 · `marketing` 营销词且无强交易特征 · `not_financial` 账务判据未过 · `ai_memory` 5min 长窗 · `ai_muted` 单包熔断 · `db_duplicate` 1s 去重 · `list_page` A11Y 账单/明细**列表页**（双条件：页面可见文本里金额节点 ≥3 **且**命中列表词）· **`precheck_unknown_expr` 漂移诊断，非拦截**）。
   接受诊断类条目上报（否则漂移没人看得见）：服务端只搬计数，**不维护 id→语义 映射**（映射会腐）——语义真源在客户端。
+- **可选云控键**（渠道门禁调参，缺失时客户端用内置默认）：`a11y.list_page_keywords`（非空字符串数组）、
+  `a11y.list_page_min_amounts`（正整数）。服务端 `validateRules` 对它们做**出现即校验类型**（缺失放行）。
+  ⚠️ 服务端 `classifyNotification` **不读这两键**——它们纯属客户端渠道门禁，**不改变 `precheck.*` 判决**，
+  因此 ⑤ 对账不受影响；但它们进 `content_hash`，改了会让客户端重拉（正是调参想要的）。
 
 ## 5. 入参扩展（Q4）—— 收，但 `hints` 不进 prompt
 ```jsonc

@@ -160,6 +160,32 @@ describe('validateRules · 拒绝规则', () => {
     }
   })
 
+  /* 可选键（云控调参）：缺失 = 客户端用内置默认 → 必须通过；出现则类型必须对
+     （把类型写错会安静地把云控变成「发了一份坏参数」）。 */
+  it('可选键 a11y.list_page_*：缺失通过；类型错拒绝', () => {
+    const base = loadReal()
+    delete ((base.a11y as Record<string, unknown>).list_page_keywords)
+    delete ((base.a11y as Record<string, unknown>).list_page_min_amounts)
+    expect(validateRules(base)).toEqual([]) // 缺失 = 用客户端内置默认
+
+    const lk = loadReal()
+    ;(lk.a11y as Record<string, unknown>).list_page_keywords = '账单' // 应为数组
+    expect(validateRules(lk).join('|')).toMatch(/list_page_keywords 若出现必须是非空字符串数组/)
+
+    const lk2 = loadReal()
+    ;(lk2.a11y as Record<string, unknown>).list_page_keywords = []
+    expect(validateRules(lk2).join('|')).toMatch(/list_page_keywords 若出现必须是非空字符串数组/)
+
+    const lm = loadReal()
+    ;(lm.a11y as Record<string, unknown>).list_page_min_amounts = 0
+    expect(validateRules(lm).join('|')).toMatch(/list_page_min_amounts 若出现必须是正整数/)
+
+    const lm2 = loadReal()
+    ;(lm2.a11y as Record<string, unknown>).list_page_min_amounts = '3'
+    expect(validateRules(lm2).join('|')).toMatch(/list_page_min_amounts 若出现必须是正整数/)
+  })
+
+
   it('审计：文件里键名含 regex 的项都被清单覆盖（不许有漏网的正则）', () => {
     const r = loadReal() as Record<string, unknown>
     const found: string[] = []

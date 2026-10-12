@@ -219,6 +219,36 @@ function validateRequiredShape(rules: Record<string, unknown>): string[] {
   return errors
 }
 
+/**
+ * **可选**键的形状校验：不强制存在（客户端有内置兜底），但一旦出现就必须是对的。
+ *
+ * 为什么单独一份：`REQUIRED_RULES_SHAPE` 是「缺了就崩」的键；这些是「有则生效」的调参键
+ * （如客户端 A11Y 列表页门禁的词表与阈值）。把类型写错会安静地把云控变成"发了一份坏参数"，
+ * 所以出现即校验。
+ */
+const OPTIONAL_RULES_SHAPE: readonly RulesShapeSpec[] = [
+  { path: 'a11y.list_page_keywords', kind: 'string[]' },
+  { path: 'a11y.list_page_min_amounts', kind: 'positiveInt' },
+]
+
+function validateOptionalShape(rules: Record<string, unknown>): string[] {
+  const errors: string[] = []
+  for (const spec of OPTIONAL_RULES_SHAPE) {
+    const v = pickPath(rules, spec.path)
+    if (v === undefined) continue // 可选：缺失 = 客户端用内置默认
+    if (spec.kind === 'string[]') {
+      if (!Array.isArray(v) || v.length === 0 || !v.every((x) => typeof x === 'string' && x.trim().length > 0)) {
+        errors.push(`${spec.path} 若出现必须是非空字符串数组`)
+      }
+    } else if (spec.kind === 'positiveInt') {
+      if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+        errors.push(`${spec.path} 若出现必须是正整数`)
+      }
+    }
+  }
+  return errors
+}
+
 /** 清单里的正则路径（正则安全子集按它校验，不再靠键名猜） */
 export function regexPaths(): string[] {
   return REQUIRED_RULES_SHAPE.filter((s) => s.kind === 'regex').map((s) => s.path)
@@ -289,6 +319,8 @@ export function validateRules(rules: unknown): string[] {
 
   // ③ 必需形状（显式清单：客户端运行时需要的键，缺了会 NPE → 发布前 fail-fast）
   errors.push(...validateRequiredShape(obj))
+  // ③' 可选形状（有则类型必须对；缺失由客户端兜底）
+  errors.push(...validateOptionalShape(obj))
 
   // ④ testcases（可选；出现则逐条校验）
   const tcs = obj.testcases
