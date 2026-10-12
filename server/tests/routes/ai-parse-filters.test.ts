@@ -100,8 +100,7 @@ describe('ai_parse_filters · duration_ms 只记判定耗时', () => {
     expect(inbound[0]!.duration_ms).toBeLessThan(JUDGE_MS_CEILING)
   })
 
-  it('用户该类型下一个分类都没有时：category_id 给 null（不是不存在的 0）', async () => {
-    // 删光这个用户的 expense 分类：AI 路径下 matchCategory 会返回 null
+  it('用户该类型下无活跃分类时：category_id 给 null（不是不存在的 0）', async () => {
     getDb()
       .prepare("UPDATE categories SET is_active = 0 WHERE user_id = ? AND type = 'expense'")
       .run(userId)

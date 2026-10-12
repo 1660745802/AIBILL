@@ -14,6 +14,8 @@ export interface AppConfig {
   dbPath: string;
   corsOrigins: string[];
   updatesDir: string;
+  /** 通知规则内容真源文件路径（进 git；启动时读取并发布） */
+  rulesPath: string;
 }
 
 /**
@@ -52,4 +54,5 @@ export const config: AppConfig = {
     .map((s) => s.trim())
     .filter(Boolean),
   updatesDir: process.env.UPDATES_DIR || path.join(process.cwd(), 'data', 'updates'),
+  rulesPath: process.env.RULES_PATH || path.join(process.cwd(), 'config', 'rules.json'),
 };

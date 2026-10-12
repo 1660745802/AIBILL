@@ -34,6 +34,8 @@ COPY --from=server-builder /app/server/package.json ./
 
 # 复制构建产物
 COPY --from=server-builder /app/server/dist ./dist
+# 通知规则内容真源（进 git，运行时只读；改文件 + 重启即发布新版本）
+COPY --from=server-builder /app/server/config ./config
 COPY --from=web-builder /app/web/dist ./public
 
 # 数据目录
@@ -43,6 +45,7 @@ VOLUME ["/app/data"]
 # 环境变量
 ENV PORT=3000
 ENV DB_PATH=/app/data/bill.db
+ENV RULES_PATH=/app/config/rules.json
 ENV NODE_ENV=production
 
 EXPOSE 3000

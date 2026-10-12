@@ -11,6 +11,8 @@ services:
       - "3000:3000"
     volumes:
       - ${BILL_DATA_DIR:-~/.bill}:/app/data
+      # 通知规则内容真源：宿主改文件后重启容器即生效（只读挂载，容器内不可写）
+      - ./server/config/rules.json:/app/config/rules.json:ro
     environment:
       - PORT=3000
       - JWT_SECRET=${JWT_SECRET:-please-change-this-secret-in-production}

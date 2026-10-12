@@ -18,7 +18,7 @@ import { extractJsonArray, validateParsedItems, ParseError } from '../ai/parser.
 import { matchCategory, isExactCategoryMatch } from '../ai/category-matcher.js'
 import { quickParse } from '../ai/quick-parser.js'
 import { extractParsedExtras, deriveReviewMeta } from '../lib/parse-extract.js'
-import { getSourceMapping } from './notification-rules.js'
+import { getSourceMapping } from '../lib/notification-rules.js'
 import {
   classifyNotification,
   shouldCallAi,
@@ -28,6 +28,12 @@ import {
 } from '../ai/verify.js'
 import { rememberParse } from '../lib/parse-landing.js'
 import { recordFiltered } from '../lib/parse-filter.js'
+import {
+  MAX_WINDOW_DAYS,
+  normalizeWindow,
+  ruleNamespace,
+  saveFilterReport,
+} from '../lib/filter-report.js'
 import { appLog } from '../services/logger.js'
 
 /**
@@ -79,6 +85,32 @@ const parseFeedbackSchema = z.object({
   parse_log_id: z.number().int().positive(),
   final_items: z.array(z.any()),
   modified: z.boolean(),
+})
+
+/**
+ * 客户端拦截计数上报（契约 §4）。
+ *
+ * `window_start`/`window_end` 允许 ISO8601 或 `YYYY-MM-DD HH:MM:SS`——服务端会
+ * **归一化后**再落库（否则同一窗口的两种写法会变成两个幂等键）。
+ */
+const filterReportSchema = z.object({
+  window_start: z.string().min(1).max(40),
+  window_end: z.string().min(1).max(40),
+  client_version: z.string().min(1).max(64),
+  channel: z.enum(['nls', 'sms', 'a11y', 'manual']),
+  counts: z
+    .array(
+      z.object({
+        rule_id: z.string().min(1).max(120),
+        count: z.number().int().min(0).max(1_000_000),
+      }),
+    )
+    .min(1, 'counts 不能为空')
+    .max(200, 'counts 过多（>200 条）'),
+  totals: z.object({
+    notifications: z.number().int().min(0).max(1_000_000),
+    blocked: z.number().int().min(0).max(1_000_000),
+  }),
 })
 
 interface CategoryRow {
@@ -353,7 +385,6 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
             categories.map((c) => ({ id: c.id, name: c.name, type: c.type as 'expense' | 'income' })),
             type,
           )
-          // null = 用户该类型下没有任何分类（不是 id 0）
           categoryId = matched ? matched.id : null
           categoryName = matched ? matched.name : ''
           const catRow = matched ? categories.find((c) => c.id === matched.id) : undefined
@@ -655,6 +686,73 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       throw err
     }
   })
+
+  // POST /api/ai/filter-report —— 客户端拦截计数上报（契约 §4）
+  app.post(
+    '/api/ai/filter-report',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      let parsed: z.infer<typeof filterReportSchema>
+      try {
+        parsed = filterReportSchema.parse(request.body)
+      } catch (err) {
+        if (err instanceof z.ZodError) {
+          reply.code(400)
+          return { code: 2000, data: null, message: err.errors[0].message }
+        }
+        throw err
+      }
+
+      /* rule_id 命名空间只允许 `precheck.*`（可比）/ `client_only.*`（服务端无对应）。
+         第三个命名空间一律 400 —— 否则「可比 / 不可比」这条线立刻腐掉。 */
+      const badId = parsed.counts.map((c) => c.rule_id).find((id) => ruleNamespace(id) === null)
+      if (badId) {
+        reply.code(400)
+        return {
+          code: 2000,
+          data: null,
+          message: `rule_id 必须以 precheck. 或 client_only. 开头：${badId}`,
+        }
+      }
+
+      if (parsed.totals.blocked > parsed.totals.notifications) {
+        reply.code(400)
+        return { code: 2000, data: null, message: 'blocked 不能大于 notifications' }
+      }
+
+      const start = normalizeWindow(parsed.window_start)
+      const end = normalizeWindow(parsed.window_end)
+      if (!start || !end) {
+        reply.code(400)
+        return { code: 2000, data: null, message: 'window_start/window_end 不是合法时间' }
+      }
+      if (start > end) {
+        reply.code(400)
+        return { code: 2000, data: null, message: 'window_start 不能晚于 window_end' }
+      }
+      if ((Date.parse(end) - Date.parse(start)) / 86_400_000 > MAX_WINDOW_DAYS) {
+        reply.code(400)
+        return { code: 2000, data: null, message: `窗口跨度不能超过 ${MAX_WINDOW_DAYS} 天` }
+      }
+
+      const result = saveFilterReport(getDb(), {
+        userId: request.user!.userId,
+        clientVersion: parsed.client_version,
+        channel: parsed.channel,
+        windowStart: start,
+        windowEnd: end,
+        counts: parsed.counts,
+        totals: parsed.totals,
+      })
+
+      // unknown_precheck_ids 是双向漂移信号（客户端用的是旧清单时能看出来）
+      return {
+        code: 0,
+        data: { accepted: result.accepted, unknown_precheck_ids: result.unknownPrecheckIds },
+        message: '',
+      }
+    },
+  )
 
   // ============ AI 问答 ============
 

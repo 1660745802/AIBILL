@@ -795,3 +795,80 @@ ALTER TABLE ai_parse_logs ADD COLUMN hints TEXT;
 ALTER TABLE ai_parse_filters ADD COLUMN channel TEXT;
 ALTER TABLE ai_parse_filters ADD COLUMN source_package TEXT;
 `
+
+/**
+ * 020 — 通知规则内容 hash + version 唯一（契约 docs/recognition-flow.md §9）。
+ *
+ * ETag 从「手填 version」改为「内容 hash」后需要把 hash 落库：
+ *   - `content_hash TEXT`：激活版本的内容指纹（旧行为 NULL）；
+ *   - `version` 唯一：手填 version 曾可重复，ETag 一旦绑 hash 也要防重复内容；
+ *   - `content_hash` 唯一：同内容不重复入库（SQLite 唯一索引允许多个 NULL，老行为 NULL 不冲突）。
+ *
+ * 建唯一索引前先安全去重（照 migration018 的写法）：生产库历史上可能有重复 version
+ * （`update_rules.sh` 手推 / 并发写），直接建唯一索引会让**启动失败**。
+ * 去重口径：同 version 保留 id 最大的一条（最新写入）。
+ */
+export const migration020 = `
+ALTER TABLE notification_rules ADD COLUMN content_hash TEXT;
+
+DELETE FROM notification_rules
+ WHERE id NOT IN (
+   SELECT MAX(id) FROM notification_rules GROUP BY version
+ );
+
+-- 007 建的同名列是非唯一索引；先删掉再以同名重建为唯一索引，避免两个索引冗余
+DROP INDEX IF EXISTS idx_notification_rules_version;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_rules_version
+  ON notification_rules(version);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_rules_content_hash
+  ON notification_rules(content_hash);
+`
+
+/**
+ * 021 — 客户端拦截计数上报（契约 §4）。
+ *
+ * 为什么不复用 `ai_parse_filters`：那张表是「服务端挡了哪些」的**逐条事件**
+ * （DATA §10.4 刻意与 `ai_parse_logs` 分离）；客户端上报是**按窗口聚合的计数**
+ * 且带客户端特有维度（自身通知/去重/熔断）。混在一起会让「服务端 53%」不可比。
+ *
+ * 两张表：
+ *   client_filter_stats  按 (窗口 × 渠道 × rule_id) 的命中数
+ *   client_filter_totals 同一窗口的通知总数/拦截总数（拦截率的分母）
+ *
+ * ⚠️ `channel` 进唯一键且**不允许为 NULL**：SQLite 唯一索引里 NULL 互不相等，
+ * 允许 NULL 会让重复上报变成多行（幂等失效）。
+ */
+export const migration021 = `
+CREATE TABLE IF NOT EXISTS client_filter_stats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  client_version TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  window_start TEXT NOT NULL,
+  window_end TEXT NOT NULL,
+  rule_id TEXT NOT NULL,
+  hits INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, client_version, channel, window_start, window_end, rule_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_client_filter_stats_user_window
+  ON client_filter_stats(user_id, window_end);
+
+CREATE TABLE IF NOT EXISTS client_filter_totals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  client_version TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  window_start TEXT NOT NULL,
+  window_end TEXT NOT NULL,
+  notifications INTEGER NOT NULL,
+  blocked INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, client_version, channel, window_start, window_end)
+);
+
+CREATE INDEX IF NOT EXISTS idx_client_filter_totals_user_window
+  ON client_filter_totals(user_id, window_end);
+`

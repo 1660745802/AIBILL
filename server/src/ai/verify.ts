@@ -194,6 +194,41 @@ const WEAK_NOISE: { name: string; re: RegExp }[] = [
 ]
 
 /* ══════════════════════════════════════════════════════════
+   二·附：预筛判据的对外导出（供 lib/precheck.ts 派生 `precheck` 下发，契约 §3）
+
+   为什么导出的是 `pattern`（正则源码）而不是让另一端手抄：
+   客户端要能在**发请求前**跑同一套判据、并用同一 `rule_id` 计数（否则 ⑤ 上报
+   与服务端 53% 没法比）。手抄两份词表必然会漂移，所以这里只暴露「同一份常量」。
+
+   ⚠️ 暴露即意味着这些正则要进客户端的 JS/Kotlin 交集子集：实测本文件用到的是
+   `(?<![\d.])` / `(?!\d)` 这类**单字符类有界 lookaround**（Java 要求 lookbehind 定长，
+   单字符类是安全的），不是变长 lookbehind。所以交集子集允许有界 lookaround、
+   仍禁变长 lookbehind / 命名组 / `\p{}` / possessive / 内联 flags（详见 lib/notification-rules.ts 校验）。
+   ══════════════════════════════════════════════════════════ */
+
+/**
+ * 判据链依赖的三个「信号」正则 + 短句阈值（客户端照此复现同一链）。
+ *
+ * ⚠️ **必须连 `flags` 一起发**：`MONEY_RE` 带 `gi`，只发 `.source` 会把大小写不敏感
+ * 丢掉（`rmb 100` 在服务端算金额、在客户端就不算），两个端口径就分叉了。
+ * 允许的 flags 仅 `g`/`i`/`m`：`u`/`y`/`s` 语义在 JVM 上没有对应物。
+ */
+export const INBOUND_SIGNAL_SOURCES = {
+  money: { pattern: MONEY_RE.source, flags: MONEY_RE.flags },
+  verb: { pattern: PAYMENT_VERB.source, flags: PAYMENT_VERB.flags },
+  bare_amount: { pattern: BARE_AMOUNT_RE.source, flags: BARE_AMOUNT_RE.flags },
+  bare_amount_max_len: BARE_AMOUNT_MAX_LEN,
+} as const
+
+/** 强噪声规则（顺序即判据顺序） */
+export const STRONG_NOISE_RULES: ReadonlyArray<{ name: string; pattern: string; flags: string }> =
+  STRONG_NOISE.map((r) => ({ name: r.name, pattern: r.re.source, flags: r.re.flags }))
+
+/** 弱噪声规则（顺序即判据顺序；只在没有正向信号时才生效） */
+export const WEAK_NOISE_RULES: ReadonlyArray<{ name: string; pattern: string; flags: string }> =
+  WEAK_NOISE.map((r) => ({ name: r.name, pattern: r.re.source, flags: r.re.flags }))
+
+/* ══════════════════════════════════════════════════════════
    三、分流
    ══════════════════════════════════════════════════════════ */
 

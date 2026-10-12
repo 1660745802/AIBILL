@@ -1,0 +1,431 @@
+{
+  "nls": {
+    "payment_signal_regex": "[¥￥$]|RMB|CNY|人民币|元|支付|已付|付款|实付|扣款|消费|收入|到账|收款|转账|退款",
+    "wechat": {
+      "package_name": "com.tencent.mm",
+      "direct_pass_titles": [
+        "微信支付",
+        "微信支付凭证"
+      ],
+      "direct_pass_title_contains": [
+        "零钱"
+      ],
+      "message_prefixes": [
+        "[转账]",
+        "[微信红包]"
+      ],
+      "amount_symbols": [
+        "¥",
+        "￥"
+      ]
+    },
+    "alipay": {
+      "package_name": "com.eg.android.AlipayGphone",
+      "allowed_title_keywords": [
+        "交易提醒",
+        "支付",
+        "账单",
+        "花呗",
+        "余额",
+        "到账",
+        "收款",
+        "退款"
+      ]
+    },
+    "bank_package_patterns": [
+      "bank",
+      "cmb",
+      "icbc",
+      "ccb",
+      "boc",
+      "abchina",
+      "psbc",
+      "cib",
+      "spdb"
+    ],
+    "sms_packages": [
+      "com.android.mms",
+      "com.google.android.apps.messaging",
+      "com.samsung.android.messaging",
+      "com.miui.mms",
+      "com.huawei.message",
+      "com.oppo.mms",
+      "com.vivo.mms"
+    ]
+  },
+  "a11y": {
+    "embedded_payment_apps": [
+      "me.ele",
+      "com.sankuai.meituan",
+      "com.dianping.v1",
+      "com.taobao.taobao",
+      "com.tmall.wireless",
+      "com.xunmeng.pinduoduo",
+      "cn.damai",
+      "com.taobao.idlefish",
+      "com.autonavi.minimap"
+    ],
+    "success_keywords": [
+      "支付成功",
+      "付款成功",
+      "交易成功",
+      "支付完成"
+    ],
+    "embedded_success_keywords": [
+      "订单支付成功",
+      "等待商家接单",
+      "订单已提交"
+    ],
+    "common_exclude_keywords": [
+      "购物车",
+      "加入购物车",
+      "立即购买",
+      "去支付",
+      "确认订单",
+      "极速付款",
+      "立即付款",
+      "确认付款",
+      "更改付款方式",
+      "查看物流",
+      "再次购买",
+      "评价",
+      "申请售后",
+      "退款成功",
+      "已收货",
+      "已签收",
+      "待发货",
+      "已发货",
+      "待收货",
+      "提交订单",
+      "确认收货",
+      "删除订单",
+      "追加评价",
+      "申请退款",
+      "交易已取消"
+    ],
+    "wechat_alipay_exclude_keywords": [
+      "朋友圈",
+      "通讯录",
+      "发现",
+      "搜索小程序",
+      "扫一扫",
+      "看一看",
+      "视频号",
+      "直播",
+      "购物",
+      "游戏",
+      "消息",
+      "收藏",
+      "相册",
+      "表情",
+      "设置"
+    ],
+    "amount_regex": "[¥￥]\\s*(\\d+\\.?\\d{0,2})|(\\d+\\.?\\d{0,2})元",
+    "cooldown_minutes": 5
+  },
+  "sms": {
+    "spam_keywords": [
+      "订购",
+      "退订",
+      "办理",
+      "开通",
+      "激活",
+      "贷款",
+      "借款",
+      "提额",
+      "申请",
+      "审批",
+      "邀请",
+      "回复R",
+      "回复TD",
+      "免费领",
+      "中奖",
+      "恭喜",
+      "点击链接"
+    ]
+  },
+  "source_mapping": {
+    "com.tencent.mm": "微信支付",
+    "com.eg.android.AlipayGphone": "支付宝",
+    "com.icbc": "工商银行",
+    "com.chinamworld.bocmbci": "中国银行",
+    "com.ccb.start": "建设银行",
+    "com.CMB.PB": "招商银行",
+    "com.xunmeng.pinduoduo": "拼多多",
+    "com.taobao.taobao": "淘宝",
+    "com.sankuai.meituan": "美团",
+    "me.ele": "饿了么",
+    "com.jd.app.reader": "京东"
+  },
+  "processor": {
+    "scoring_window_seconds": 10,
+    "dedup_window_seconds": 60,
+    "marketing_suffix_cutoffs": [
+      "点击领取",
+      "点击查看",
+      "点击开启",
+      "戳我领",
+      "立即领取",
+      "去领",
+      "快来领",
+      "可领取",
+      "赶紧领"
+    ],
+    "max_amount_cents": 10000000,
+    "min_amount_cents": 1
+  },
+  "testcases": [
+    {
+      "id": "sms-bank-consume-debit",
+      "note": "银行动账：金额 + 支动词 → tier1",
+      "channel": "sms",
+      "text": "动账提醒 您尾号2256的储蓄账户8月1日9时58分支出人民币4.20元。",
+      "expect_tier": 1,
+      "expect_client": "pass",
+      "tags": [
+        "bank",
+        "debit"
+      ],
+      "expect_txn": true
+    },
+    {
+      "id": "sms-bank-consume-thousands",
+      "channel": "sms",
+      "text": "工商银行 尾号9766卡10月5日18:28手机银行支出(跨行汇款)1,000元，余额24,210.99元。",
+      "expect_tier": 1,
+      "expect_client": "pass",
+      "tags": [
+        "bank",
+        "thousands"
+      ],
+      "expect_txn": true
+    },
+    {
+      "id": "nls-wechat-paid",
+      "channel": "nls",
+      "text": "微信支付 已支付¥32.50",
+      "expect_tier": 1,
+      "expect_client": "pass",
+      "tags": [
+        "wechat"
+      ],
+      "expect_txn": true
+    },
+    {
+      "id": "sms-bank-income-salary",
+      "channel": "sms",
+      "text": "招商银行 【招商银行】您账户2415于10月08日14:01入账工资，人民币14322.83。",
+      "expect_tier": 1,
+      "expect_client": "pass",
+      "tags": [
+        "bank",
+        "income"
+      ],
+      "expect_txn": true
+    },
+    {
+      "id": "verb-adjacent-number",
+      "note": "动词紧邻数字不得被降级（右边界回归）",
+      "channel": "sms",
+      "text": "招行信用卡消费32.50人民币",
+      "expect_tier": 1,
+      "expect_client": "pass",
+      "tags": [
+        "bank",
+        "boundary"
+      ],
+      "expect_txn": true
+    },
+    {
+      "id": "manual-kfc-bare-amount",
+      "channel": "manual",
+      "text": "肯德基45",
+      "expect_tier": 2,
+      "expect_client": "pass",
+      "tags": [
+        "manual",
+        "bare_amount"
+      ],
+      "expect_txn": true
+    },
+    {
+      "id": "manual-rent-bare-amount",
+      "channel": "manual",
+      "text": "房租5000",
+      "expect_tier": 2,
+      "expect_client": "pass",
+      "tags": [
+        "manual",
+        "bare_amount"
+      ],
+      "expect_txn": true
+    },
+    {
+      "id": "manual-reimburse-verb-only",
+      "channel": "manual",
+      "text": "报销",
+      "expect_tier": 3,
+      "expect_client": "pass",
+      "tags": [
+        "manual",
+        "verb_only"
+      ],
+      "expect_txn": true
+    },
+    {
+      "id": "manual-refund-verb-only",
+      "channel": "manual",
+      "text": "退货到账",
+      "expect_tier": 3,
+      "expect_client": "pass",
+      "tags": [
+        "manual",
+        "verb_only"
+      ],
+      "expect_txn": true
+    },
+    {
+      "id": "nls-coupon-facevalue",
+      "note": "券面额不是到账金额（线上 60% 红包误编 income 的回归）",
+      "channel": "nls",
+      "text": "支付宝卡包 你有淘宝闪购10元红包今晚失效",
+      "expect_tier": 0,
+      "tags": [
+        "coupon",
+        "regression"
+      ],
+      "expect_reason": "coupon_facevalue",
+      "expect_txn": false
+    },
+    {
+      "id": "nls-reward-ad",
+      "channel": "nls",
+      "text": "在线寻找手游玩家 参加访谈任务，获得 200 元京东卡！",
+      "expect_tier": 0,
+      "tags": [
+        "ad",
+        "regression"
+      ],
+      "expect_reason": "reward_ad",
+      "expect_txn": false
+    },
+    {
+      "id": "nls-self-report",
+      "channel": "nls",
+      "text": "【记账日报】昨天共有2笔支出 昨日支出220.00元，共2笔",
+      "expect_tier": 0,
+      "tags": [
+        "self_report"
+      ],
+      "expect_reason": "self_report",
+      "expect_txn": false
+    },
+    {
+      "id": "nls-zero-yuan-marketing",
+      "channel": "nls",
+      "text": "😍1号会员日来啦 🛒12包抽纸0元领千份放量！ 🔥实付159元",
+      "expect_tier": 0,
+      "tags": [
+        "marketing"
+      ],
+      "expect_reason": "zero_yuan",
+      "expect_txn": false
+    },
+    {
+      "id": "nls-social-redpacket",
+      "channel": "nls",
+      "text": "209[嗨] [QQ红包]太越林全员老公型: [红包]国庆快乐",
+      "expect_tier": 0,
+      "tags": [
+        "redpacket"
+      ],
+      "expect_reason": "social_redpacket",
+      "expect_txn": false
+    },
+    {
+      "id": "long-no-signal",
+      "channel": "nls",
+      "text": "亲爱的用户您好，感谢您一直以来对我们的支持与厚爱，为了回馈广大用户，我们特别推出了一系列精彩活动，详情请见活动页面，祝您生活愉快，万事如意",
+      "expect_tier": 4,
+      "tags": [
+        "no_signal"
+      ],
+      "expect_reason": "no_signal",
+      "expect_txn": false
+    },
+    {
+      "id": "a11y-wechat-paid",
+      "note": "无障碍：微信支付成功（金额+动词）→ 真交易",
+      "channel": "a11y",
+      "text": "微信支付 支付成功 ¥32.00",
+      "expect_tier": 1,
+      "expect_txn": true,
+      "expect_client": "pass",
+      "tags": [
+        "embedded",
+        "wechat"
+      ]
+    },
+    {
+      "id": "a11y-embedded-order-paid",
+      "note": "无障碍：嵌入式订单支付成功（外卖/电商形态）",
+      "channel": "a11y",
+      "text": "订单支付成功 等待商家接单 实付 ¥128.00",
+      "expect_tier": 1,
+      "expect_txn": true,
+      "expect_client": "pass",
+      "tags": [
+        "embedded",
+        "ordering"
+      ]
+    },
+    {
+      "id": "a11y-transfer-detail",
+      "note": "无障碍：转账详情（真交易）",
+      "channel": "a11y",
+      "text": "微信支付 转账 ¥500.00 已到账",
+      "expect_tier": 1,
+      "expect_txn": true,
+      "expect_client": "pass",
+      "tags": [
+        "transfer"
+      ]
+    },
+    {
+      "id": "a11y-pending-payment-page",
+      "note": "无障碍：待付款页（未成交，非交易；客户端 a11y 排除表应拦）",
+      "channel": "a11y",
+      "text": "美团外卖 待付款 ¥45.00 立即支付",
+      "expect_tier": 1,
+      "expect_txn": false,
+      "tags": [
+        "a11y_exclude",
+        "not_settled"
+      ]
+    },
+    {
+      "id": "a11y-cart-buttons",
+      "note": "无障碍：购物车按钮串（非交易）→ 服务端已判 tier0(order_state)；客户端 a11y 排除表也应拦",
+      "channel": "a11y",
+      "text": "加入购物车 立即购买 去支付",
+      "expect_tier": 0,
+      "expect_txn": false,
+      "tags": [
+        "a11y_exclude"
+      ],
+      "expect_reason": "order_state"
+    },
+    {
+      "id": "a11y-wallet-balance-page",
+      "note": "无障碍：零钱/余额页 → 服务端因「充值/提现」进动词表而判 tier1（**会对余额页多调一次模型**，已知问题，非交易）",
+      "channel": "a11y",
+      "text": "零钱 余额 ¥1,234.56 充值 提现",
+      "expect_tier": 1,
+      "expect_txn": false,
+      "tags": [
+        "a11y_exclude",
+        "balance_only"
+      ]
+    }
+  ]
+}
