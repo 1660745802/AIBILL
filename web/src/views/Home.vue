@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 记账：把一句话交给 AI，拆成多笔账。
+ * 记账：把一句话交给 AI，解析出**一笔**账（取消批量记账：一次解析 = 一笔）。
  * 这是整个产品唯一"用力"的地方——它是主动作，也是差异点。
  */
 import { ref, onMounted, computed, nextTick, watch } from 'vue'

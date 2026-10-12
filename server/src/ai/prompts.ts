@@ -89,6 +89,7 @@ function buildQuickPrompt(ctx: PromptContext): string {
 示例里的分类/账户名只是示范，实际要用下面这份清单里的。
 
 只输出 JSON 数组，无代码块，无解释。
+**一次只回最主要的一笔**：即使文本里出现多笔，也只输出其中金额最大/信息最完整的那一条（服务端也只取一笔）。
 
 支出分类：${ctx.expenseCategories.join('、')}
 收入分类：${ctx.incomeCategories.join('、')}
@@ -158,6 +159,9 @@ function buildFullPrompt(ctx: PromptContext): string {
 \`\`\`
 
 注意：即使只有一笔，**最外层也必须是数组** \`[...]\`。不要只输出单个对象 \`{...}\`。
+
+**一次只回最主要的一笔**：文本里出现多笔时（长短信、整页无障碍文本、含「共 N 笔」的汇总），
+只输出其中金额最大/信息最完整的那一条。服务端也只会取一笔。
 
 ## 示例
 

@@ -177,7 +177,7 @@
 入参/出参扩展、跨端约定）见 本文件附录 C §1/§5/§6**；此处只列要点：
 ```jsonc
 // Request（只有 input 必填；其余可选，不传时行为与旧版完全一致）
-{ "input": "午饭32，打车15",
+{ "input": "午饭32",
   "channel": "nls",                                  // nls | sms | a11y | manual
   "source": { "package_name": "com.tencent.mm", "source_name": "微信支付" },
   "title": "...", "body": "...",
@@ -773,6 +773,7 @@ If-None-Match: "ab12…"
 | 字段 | 取值 | 来源（均为机械，模型不参与） |
 |---|---|---|
 | `source` | `quick｜ai｜prefilter｜postfilter` | 补齐 #4 缺失的 `'ai'` |
+| `extra_items_dropped` | int（**恒出现**，0=没丢） | 因「一次解析只回一笔」被裁掉的条数；**不含**出站 verify 丢弃（那是 `source:'postfilter'`）。全部条目仍落 `ai_parse_logs.parsed_items` |
 | `merchant` | string｜null | 商户关键词/描述前缀抽取（供分类预填与学习）；与 `description` 并存 |
 | `order_no` / `card_tail` | string｜null | 正文正则（订单号/流水号、`尾号\d{4}`）；**不让模型复制**（纯复制必幻觉） |
 | `balance_after_cents` | int｜null，**仅提示** | 正文「余额/剩余」抽取；**语义未定**（可用余额 vs 账户余额无法区分） |
@@ -781,6 +782,10 @@ If-None-Match: "ab12…"
 | `confidence` | `high｜medium｜low`（**枚举，非 0~1**） | 派生：quick? + 分类是否精确命中 + 金额是否有佐证 |
 | `confidence_reasons` | string[] | 上述判据的机械原因（阈值可审计） |
 | `needs_review` | boolean | **服务端用唯一阈值算**：`verifyParsed=review`／分类未精确命中／金额来自裸数字 |
+- **⚡ 取消批量记账（2026-10，产品决定）**：`POST /api/ai/parse` 的 `items` **恒 ≤ 1**——多笔时服务端按唯一标准挑一笔（① 金额有货币单位佐证 ② 信息完整度 ③ 金额降序 ④ 模型原序，实现见 `server/src/lib/main-item.ts`），把被裁条数放 `extra_items_dropped`。
+  - 客户端**不要再自己挑**（此前 `maxByOrNull { aiItemScore }` 是**静默丢账**，与「失败绝不静默」冲突）→ 直接用 `items[0]`，用 `extra_items_dropped` 计数告警（`client_only.ai_extra_items`）。
+  - `parse-feedback` 的 `final_items` 长度 **0 或 1** 语义**不变**（这正是取消批量的收益：反馈闭环无需再改）。
+  - `POST /transactions` 的 `items[]` 批量**保留**（CSV 导入/离线补传依赖），两处不要混为一谈。
 - **客户端请用 `needs_review` 作「不自动入账」判据，不要自己对 `confidence` 设阈值**——否则又是两套阈值（本项目顽疾）；`confidence` 仅供展示/排序。
 - `confidence` **不是模型自评**（模型根本不输出它），派生自 tier/quick/精确分类/金额佐证 → 语义稳定、可回归；**不要**用 0~1 浮点。
 - `card_tail` 与 `balance_after_cents`/`balance_text` **必在同一 items 元素**（按元素抽取，抽不到则同为 null）。

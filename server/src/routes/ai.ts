@@ -18,6 +18,7 @@ import { extractJsonArray, validateParsedItems, ParseError } from '../ai/parser.
 import { matchCategory, isExactCategoryMatch } from '../ai/category-matcher.js'
 import { quickParse } from '../ai/quick-parser.js'
 import { extractParsedExtras, deriveReviewMeta } from '../lib/parse-extract.js'
+import { pickMainItem } from '../lib/main-item.js'
 import { getSourceMapping } from '../lib/notification-rules.js'
 import {
   classifyNotification,
@@ -258,10 +259,14 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           ...logMeta,
         })
 
+        /* 一次解析只回一笔（取消批量记账，契约不变量）。全部条目已写进
+           `ai_parse_logs.parsed_items`，这里只裁响应并把裁掉的条数回给客户端。 */
+        const picked = pickMainItem(items, body.input)
         return {
           code: 0,
           data: {
-            items,
+            items: picked.main ? [picked.main] : [],
+            extra_items_dropped: picked.droppedCount,
             raw_input: body.input,
             parse_log_id: logId,
             source: 'quick',
@@ -305,7 +310,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         })
         return {
           code: 0,
-          data: { items: [], raw_input: body.input, source: 'prefilter' },
+          data: { items: [], extra_items_dropped: 0, raw_input: body.input, source: 'prefilter' },
           message: '',
         }
       }
@@ -464,7 +469,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         })
         return {
           code: 0,
-          data: { items: [], raw_input: body.input, source: 'postfilter' },
+          data: { items: [], extra_items_dropped: 0, raw_input: body.input, source: 'postfilter' },
           message: '',
         }
       }
@@ -504,13 +509,17 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         ...logMeta,
       })
 
-      // 记下这次解析的指纹，等 /transactions 写入时回关联（见 lib/parse-landing.ts）
-      rememberParse(userId, logId, items as any, body.input)
+      /* 一次解析只回一笔（同上）：指纹只记**客户端真正会入账的那一笔**，
+         否则被裁掉的笔会留在指纹里，之后误关联到别的账单。 */
+      const picked = pickMainItem(items, body.input)
+
+      rememberParse(userId, logId, (picked.main ? [picked.main] : []) as any, body.input)
 
       return {
         code: 0,
         data: {
-          items,
+          items: picked.main ? [picked.main] : [],
+          extra_items_dropped: picked.droppedCount,
           raw_input: body.input,
           parse_log_id: logId,
           source: 'ai',

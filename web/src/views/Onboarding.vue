@@ -36,7 +36,7 @@ const toast = useToast()
 const examplePhrases = [
   { text: '午饭 32', desc: '最简单的记账' },
   { text: '打车 15 支付宝', desc: '指定账户' },
-  { text: '早餐8，咖啡18，地铁4', desc: '一次记多笔' },
+  { text: '午饭32', desc: '一句话记一笔' },
   { text: '发工资 12000', desc: '记一笔收入' },
 ]
 
