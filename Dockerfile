@@ -47,4 +47,9 @@ ENV NODE_ENV=production
 
 EXPOSE 3000
 
+# 健康检查：探自身 /health（node 20 自带 fetch；基础镜像里没有 curl/wget）。
+# 容器重启策略是 unless-stopped，没有 HEALTHCHECK 时重启只能靠进程退出。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 CMD ["node", "dist/app.js"]

@@ -2,10 +2,21 @@ node_modules
 dist
 data
 .env
+# ⚠️ 模式是**相对构建上下文根**匹配的，`.env` 只挡根目录那一个——
+# server/.env（含 JWT_SECRET / AI_API_KEY）会被 `COPY server/ ./` 带进构建层。
+**/.env
 *.db
+**/*.db
+**/*.db-wal
+**/*.db-shm
+*.tsbuildinfo
+**/*.tsbuildinfo
 .git
 .gitignore
 docs
 *.md
 server/node_modules
+server/data
+server/dist
 web/node_modules
+web/dist
