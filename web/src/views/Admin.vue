@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
@@ -72,10 +72,29 @@ function tabFromQuery(): TabKey {
 const activeTab = ref<TabKey>(tabFromQuery())
 
 /* 读失败的统一展示（上一版有 11 处 静默 catch：读不到时页面空着，
-   管理员会判成“没有数据”而不是“读不到”）。 */
-const loadErrors = ref<Partial<Record<TabKey, boolean>>>({})
-function markLoaded(key: TabKey): void { delete loadErrors.value[key] }
-function markFailed(key: TabKey): void { loadErrors.value[key] = true }
+   管理员会判成“没有数据”而不是“读不到”）。
+
+   ⚠️ 粒度是**每次 fetch**（不是每个 tab）：一个 tab 可能有两个独立请求
+   （quality = 统计 + 日志；overview = 系统统计 + 「需要处理」信号），
+   共用一个 key 会让「一个成功」把「另一个失败」的错误抹掉（复核 A-04）。 */
+const loadErrors = ref<Record<string, boolean>>({})
+function markLoaded(key: string): void { delete loadErrors.value[key] }
+function markFailed(key: string): void { loadErrors.value[key] = true }
+
+/** 每个 tab 的失败来源有哪些（AI 设置的配置也走 fetchAdminData） */
+const TAB_FETCH_KEYS: Record<TabKey, string[]> = {
+  overview: ['overview', 'ops'],
+  users: ['users'],
+  ai: ['users'],
+  quality: ['quality-stats', 'quality-logs'],
+  automation: ['automation'],
+  logs: ['logs'],
+  rules: ['rules'],
+  release: ['release'],
+}
+function tabHasError(key: TabKey): boolean {
+  return (TAB_FETCH_KEYS[key] ?? [key]).some((k) => loadErrors.value[k] === true)
+}
 function retryActiveTab(): void {
   const key = activeTab.value
   markLoaded(key)
@@ -87,6 +106,16 @@ function retryActiveTab(): void {
   else if (key === 'logs') fetchAppLogs()
   else if (key === 'release') fetchAppUpdates()
 }
+
+/* 浏览器前进/后退会改 URL 但不走 switchTab → 这里补上反向同步 */
+watch(
+  () => route.query.tab,
+  (v) => {
+    const t = String(v ?? '')
+    const key = (TAB_KEYS as string[]).includes(t) ? (t as TabKey) : 'overview'
+    if (key !== activeTab.value) switchTab(key)
+  },
+)
 
 function switchTab(key: TabKey) {
   activeTab.value = key
@@ -271,19 +300,19 @@ async function saveSettings() {
 }
 
 async function fetchParseStats() {
-  markLoaded('quality') // 开始加载 = 清掉上一次的错误提示
+  markLoaded('quality-stats') // 开始加载 = 清掉上一次的错误提示
   try {
     const { data } = await api.get('/admin/ai-parse-stats', {
       params: { days: parseLogsFilter.value.days },
     })
     if (data.code === 0) parseStats.value = data.data
   } catch {
-    markFailed('quality')
+    markFailed('quality-stats')
   }
 }
 
 async function fetchParseLogs(page = 1) {
-  markLoaded('quality') // 开始加载 = 清掉上一次的错误提示
+  markLoaded('quality-logs') // 开始加载 = 清掉上一次的错误提示
   loadingParseLogs.value = true
   try {
     const params: any = {
@@ -300,7 +329,7 @@ async function fetchParseLogs(page = 1) {
       parseLogsPagination.value = { ...parseLogsPagination.value, ...(data.data.pagination ?? {}) }
     }
   } catch {
-    markFailed('quality')
+    markFailed('quality-logs')
   }
   finally { loadingParseLogs.value = false }
 }
@@ -400,6 +429,7 @@ const loadingOpsSignals = ref(false)
 
 async function fetchOpsSignals(): Promise<void> {
   loadingOpsSignals.value = true
+  markLoaded('ops')
   try {
     const [parseRes, filterRes, rulesRes, updatesRes] = await Promise.allSettled([
       api.get('/admin/ai-parse-stats?days=30'),
@@ -467,8 +497,14 @@ async function fetchOpsSignals(): Promise<void> {
     }
 
     opsSignals.value = signals
+    /* 任一接口读不到就置错误（banner 会显示 + 重试），但已算出的信号照常展示——
+       「读不到」与「都正常」是相反的两件事，不能因为 signals 为空就冒充后者。 */
+    if ([parseRes, filterRes, rulesRes, updatesRes].some((r) => r.status === 'rejected')) {
+      markFailed('ops')
+    }
   } catch {
     opsSignals.value = []
+    markFailed('ops')
   } finally {
     loadingOpsSignals.value = false
   }
@@ -696,7 +732,7 @@ function closeUserTransactions() {
 
         <!-- 读不到数据时的统一提示（替代上一版 11 处静默 catch：
              读不到 ≠ 没有数据，不提示就等于谎报） -->
-        <Notice v-if="loadErrors[activeTab]" tone="warn" class="mb-4">
+        <Notice v-if="tabHasError(activeTab)" tone="warn" class="mb-4">
           <div class="flex items-center justify-between gap-3">
             <span class="text-xs">读不到数据（接口失败或超时）—— 这不是「没有数据」。</span>
             <button type="button" class="act shrink-0" @click="retryActiveTab()">重试</button>
@@ -710,7 +746,7 @@ function closeUserTransactions() {
             <div class="ledger-label mb-3">需要处理</div>
             <div v-if="loadingOpsSignals" class="text-center py-4 text-xs text-ink-3">检查中…</div>
             <EmptyState
-              v-else-if="opsSignals.length === 0"
+              v-else-if="opsSignals.length === 0 && !loadErrors.ops"
               icon="check"
               title="没有需要处理的事项"
               description="解析成功率、判据漂移、规则激活与版本分发都正常。"

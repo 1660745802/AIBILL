@@ -420,7 +420,17 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           avg_duration_ms: overview.avg_duration_ms || 0,
         },
         by_status: byStatus,
-        recent_failures: recentFailures,
+        /* recent_failures 里带**跨用户**的 raw_input（用户原话）——与「查看他人明细/原文」同口径，
+           属于排障用途，按 ARCHITECTURE §5.3 必须写审计日志（复核：此前这条是审计缺口）。 */
+        recent_failures: (() => {
+          if (recentFailures.length > 0) {
+            appLog('warn', 'admin', `查看解析失败明细（${recentFailures.length} 条，含跨用户原文）`, {
+              admin_id: request.user!.userId,
+              returned: recentFailures.length,
+            })
+          }
+          return recentFailures
+        })(),
         modification: {
           total_with_feedback: modificationStats.total_with_feedback,
           modified_count: modificationStats.modified_count,

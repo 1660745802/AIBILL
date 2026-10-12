@@ -576,7 +576,7 @@ If-None-Match: "ab12…"
 | DELETE | `/api/admin/users/:id` | 删除用户（**硬删 + 撤销该用户所有 token**） |
 | GET | `/api/admin/settings` | 全局设置（Key 脱敏） |
 | PUT | `/api/admin/settings` | 更新白名单全局设置 |
-| GET | `/api/admin/ai-parse-stats` | AI 解析总览（成功率/修正率/P95） |
+| GET | `/api/admin/ai-parse-stats` | AI 解析总览（成功率/修正率/P95）＋ **`prefilter` 服务端预筛块**（挡下总数/入站/出站/日均/判定耗时/按 reason 分档） |
 | GET | `/api/admin/ai-parse-logs` | 解析日志分页（**返回用户原始输入 `raw_input`**，访问写审计日志） |
 | GET | `/api/admin/ai-parse-logs/:id` | 单条日志（含 `raw_input` 原文，访问写审计日志） |
 | GET | `/api/admin/logs` | 应用日志分页 |
@@ -726,7 +726,7 @@ If-None-Match: "ab12…"
 - **客户端未消费**：`data.source`（`quick`/`ai`/`prefilter`/`postfilter`）与失败形态的 `fallback` 字段 Android DTO 未声明 → 目前分支只能按 `code` + `items` 判。
 - **待产品决策 R-24**：`received_at` 的锚定日期在**自动入账**那步被丢掉（入账 `date` 取设备时钟）→ 跨午夜迟发仍可能差一天。
 - **R-03 已闭环（客户端侧）**：Android 已在 `7aac3e1` 把该入口的 `source` 改成 `app_notification`，区分语义由 `source_detail='tasker_quick_record'` 承载。**服务端残留**：其他调用方/老 APK 送 `external_intent` 仍 400，且**只改 zod 会变 500**（`transactions.source` 有 DB `CHECK` 约束）→ 真要在 `source` 上支持新取值必须配一次**重建表** migration；已评估**不做**（代价：逐字重建 9 个索引/22 列，漏一项就静默错账，收益仅语义纯度）。
-- **待决策 S-07**：`POST /api/admin/notification-rules` **走同一套校验链**（`validateRules` + `selfTestTestcases` + `precheck` 注入 + `content_hash` 去重），它缺的是**与仓库文件绑定**——可发布与 `config/rules.json` 不同的内容；建议要求携带 `expected content_hash`。
+- **待决策 S-07（风险面已收窄）**：`POST /api/admin/notification-rules` **走同一套校验链**（`validateRules` + `selfTestTestcases` + `precheck` 注入 + `content_hash` 去重），它缺的是**与仓库文件绑定**——可发布与 `config/rules.json` 不同的内容；建议要求携带 `expected content_hash`。**⚠️ 2026-10 起 Web 管理面板已不再提供在线编辑**（只做查看历史/激活/回滚），故该接口在仓库内**已无调用方**——风险只剩外部脚本/旧前端。
 
 </details>
 - **只覆盖入站**：`precheck` 是「调模型之前」的判据；出站佐证（`verifyParsed` 的 drop 理由）在模型调用后才产生，客户端算不出来，故不在清单、也不参与 ⑤ 对比。
