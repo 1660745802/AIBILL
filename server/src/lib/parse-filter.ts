@@ -25,14 +25,21 @@ export interface FilterRecord {
   reasons: string[]
   /** 判定本身花掉的毫秒数。分流是纯字符串匹配，应当远小于 1ms */
   durationMs: number
+  /**
+   * 入口归因（契约 §0）：`nls`｜`sms`｜`a11y`｜`manual`，客户端可送、可缺省。
+   * 只做统计维度，**不参与任何判据**——预筛的行为不能因为入口不同而不同。
+   */
+  channel?: string | null
+  /** 来源应用包名（契约 §0 的 `source.package_name`），同样只留档 */
+  sourcePackage?: string | null
 }
 
 export function recordFiltered(db: Db, rec: FilterRecord): number {
   const res = db
     .prepare(
       `INSERT INTO ai_parse_filters
-         (user_id, raw_input, cleaned_input, stage, tier, reasons, duration_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (user_id, raw_input, cleaned_input, stage, tier, reasons, duration_ms, channel, source_package)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       rec.userId,
@@ -42,6 +49,8 @@ export function recordFiltered(db: Db, rec: FilterRecord): number {
       rec.tier,
       JSON.stringify(rec.reasons),
       rec.durationMs,
+      rec.channel ?? null,
+      rec.sourcePackage ?? null,
     )
   return Number(res.lastInsertRowid)
 }

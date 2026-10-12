@@ -12,7 +12,7 @@ import crypto from 'node:crypto'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { chatCompletion, AiError } from '../ai/client.js'
-import { today, beijingYearMonth } from '../lib/date.js'
+import { today, toDateStr, addDaysTo, beijingYearMonth } from '../lib/date.js'
 import { buildParsePrompt } from '../ai/prompts.js'
 import { extractJsonArray, validateParsedItems, ParseError } from '../ai/parser.js'
 import { matchCategory } from '../ai/category-matcher.js'
@@ -22,12 +22,55 @@ import {
   shouldCallAi,
   requiresCorroboration,
   verifyParsed,
+  extractMoneyAmounts,
 } from '../ai/verify.js'
 import { rememberParse } from '../lib/parse-landing.js'
 import { recordFiltered } from '../lib/parse-filter.js'
+import { appLog } from '../services/logger.js'
 
+/**
+ * `POST /api/ai/parse` 入参（契约 docs/recognition-flow.md §5）。
+ *
+ * 兼容底线：**`input` 仍是唯一必填**。新增键全部可选，zod 默认会静默剥离未知键
+ * （本轮**不做 `.strict()`**）——已发布客户端发来的多余字段不该变成 400。
+ *
+ * 已读到的语义（§5）：
+ * - `channel` / `source` / `received_at` / `hints` → 只落库留档（见 migration 019）；
+ *   `hints` **绝不进 prompt**（见下方 hintsConflict 注释）。
+ * - `title` / `body` 本轮只做**收 + 校验**：契约 §8 ② 服务端交付就是「收」。
+ *   把它们并入分类/佐证口径会改变既有请求的预筛结果（例如 `body` 很长会让
+ *   tier2 的「短句光杆数字」判据失效），属于独立的行为变更，不在本轮一起做。
+ */
 const parseInputSchema = z.object({
   input: z.string().min(1, '输入不能为空').max(3000, '输入过长'),
+  channel: z.enum(['nls', 'sms', 'a11y', 'manual']).optional(),
+  source: z
+    .object({
+      package_name: z.string().min(1).max(200),
+      source_name: z.string().max(100).optional(),
+    })
+    .optional(),
+  title: z.string().max(200).optional(),
+  body: z.string().max(3000).optional(),
+  /**
+   * 通知到达时刻，只用于判「这条属于哪一天」（跨午夜迟发）。
+   * **必须带时区偏移**：不带 offset 的本地时间会按服务器时区解释，
+   * 部署机是 UTC 时北京 23:40 会被算成前一天的 15:40。
+   * 两条一起断言：`Date.parse` 可解析 + 串尾有 `Z` / `±HH:MM`。
+   */
+  received_at: z
+    .string()
+    .refine((s) => !Number.isNaN(Date.parse(s)), 'received_at 不是合法时间')
+    .refine((s) => /(Z|[+-]\d{2}:\d{2})$/.test(s), 'received_at 必须带时区偏移（如 +08:00）')
+    .optional(),
+  hints: z
+    .object({
+      amount_cents: z.number().int().safe().positive().optional(),
+      merchant: z.string().max(100).optional(),
+      account_name: z.string().max(100).optional(),
+      direction: z.enum(['expense', 'income', 'transfer']).optional(),
+    })
+    .optional(),
 })
 
 const parseFeedbackSchema = z.object({
@@ -63,6 +106,24 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       const db = getDb()
       const userId = request.user!.userId
 
+      /* 本请求的「今天」= 通知到达日的**北京日期**（有 received_at 时），否则 today()。
+         通知 23:40 到、00:05 才解析，必须落在通知当天，否则 date 会被记成隔天。 */
+      const anchorDate = resolveAnchorDate(body.received_at, userId)
+
+      /* hints 只用来算 hints_conflict，**绝不拼进 prompt**：
+         hints 一旦进 prompt，模型会直接抄 hint 而不读文本，绕过金额佐证
+         （verify.ts 的 hasCorroboration）→ 客户端拿到一个「文本里根本没有的数字」，
+         也就是伪造账目。金额冲突标记是机械比对，不依赖模型，所以可以给。 */
+      const hintsConflict = computeHintsConflict(body.hints?.amount_cents, body.input)
+
+      // 入参上下文落库（仅留档，见 migration 019）
+      const logMeta = {
+        channel: body.channel ?? null,
+        sourcePackage: body.source?.package_name ?? null,
+        receivedAt: body.received_at ?? null,
+        hints: body.hints ? JSON.stringify(body.hints) : null,
+      }
+
       // 获取用户的分类和账户列表
       const categories = db
         .prepare('SELECT id, name, type, icon FROM categories WHERE user_id = ? AND is_active = 1')
@@ -82,7 +143,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       // === 快捷解析：简单输入直接正则匹配，毫秒级响应 ===
       const quickResult = quickParse(cleanedInput, {
-        today: today(),
+        today: anchorDate,
         expenseCategories: expenseCategories.map((c) => c.name),
         incomeCategories: incomeCategories.map((c) => c.name),
         accounts: accounts.map((a) => a.name),
@@ -133,11 +194,18 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           status: 'success',
           errorMessage: null,
           durationMs,
+          ...logMeta,
         })
 
         return {
           code: 0,
-          data: { items: result, raw_input: body.input, parse_log_id: logId, source: 'quick' },
+          data: {
+            items: result,
+            raw_input: body.input,
+            parse_log_id: logId,
+            source: 'quick',
+            hints_conflict: hintsConflict,
+          },
           message: '',
         }
       }
@@ -171,6 +239,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           tier: classification.tier,
           reasons: classification.reasons,
           durationMs: classifyMs,
+          channel: body.channel ?? null,
+          sourcePackage: body.source?.package_name ?? null,
         })
         return {
           code: 0,
@@ -183,7 +253,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       // 根据输入长度选择快速/完整 prompt
       const systemPrompt = buildParsePrompt({
-        today: today(),
+        today: anchorDate,
         expenseCategories: expenseCategories.map((c) => c.name),
         incomeCategories: incomeCategories.map((c) => c.name),
         accounts: accounts.map((a) => a.name),
@@ -217,7 +287,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       // 解析响应
       const rawItems = extractJsonArray(aiResponse)
-      const validItems = validateParsedItems(rawItems, today())
+      const validItems = validateParsedItems(rawItems, anchorDate)
 
       if (validItems.length === 0) {
         // Log empty result
@@ -231,6 +301,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           status: 'empty',
           errorMessage: null,
           durationMs,
+          ...logMeta,
         })
 
         reply.code(200)
@@ -328,6 +399,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           tier: classification.tier,
           reasons: [verified.reason],
           durationMs: verifyMs,
+          channel: body.channel ?? null,
+          sourcePackage: body.source?.package_name ?? null,
         })
         return {
           code: 0,
@@ -347,6 +420,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         status: 'success',
         errorMessage: null,
         durationMs,
+        ...logMeta,
       })
 
       // 记下这次解析的指纹，等 /transactions 写入时回关联（见 lib/parse-landing.ts）
@@ -354,7 +428,12 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       return {
         code: 0,
-        data: { items: result, raw_input: body.input, parse_log_id: logId },
+        data: {
+          items: result,
+          raw_input: body.input,
+          parse_log_id: logId,
+          hints_conflict: hintsConflict,
+        },
         message: '',
       }
     } catch (err) {
@@ -379,6 +458,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           status,
           errorMessage: `${err.type}: ${err.message}`,
           durationMs,
+          ...readParseMeta(request.body),
         })
 
         const statusCode = err.type === 'AI_TIMEOUT' ? 504 : 502
@@ -407,6 +487,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           status: 'error',
           errorMessage: `ParseError: ${err.message}`,
           durationMs,
+          ...readParseMeta(request.body),
         })
 
         reply.code(200)
@@ -801,7 +882,87 @@ export function loadRecentHistory(
 }
 
 /**
+ * 从**未校验**的原始 body 里宽松读出入参上下文（错误路径用）。
+ *
+ * 模型超时 / 响应格式异常时，zod 解析出的 `body` 已经不在作用域里，但日志仍然
+ * 应该记下这条请求的入口归因。宽容读取：任何字段形状不对就当没有，**不让日志
+ * 提取反过来把错误处理搞挂**。
+ */
+function readParseMeta(raw: unknown): {
+  channel: string | null
+  sourcePackage: string | null
+  receivedAt: string | null
+  hints: string | null
+} {
+  const b = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const src = (b.source && typeof b.source === 'object' ? b.source : {}) as Record<string, unknown>
+  return {
+    channel: typeof b.channel === 'string' ? b.channel : null,
+    sourcePackage: typeof src.package_name === 'string' ? src.package_name : null,
+    receivedAt: typeof b.received_at === 'string' ? b.received_at : null,
+    hints: b.hints && typeof b.hints === 'object' ? JSON.stringify(b.hints) : null,
+  }
+}
+
+/**
+ * 推出本次请求的「锚定日期」（北京口径的 YYYY-MM-DD）。
+ *
+ * 为什么需要它：通知 23:40 到达、客户端 00:05 才联网解析时，如果直接用今天的
+ * `today()`，这笔账会被写到「明天」——用户看到日期不对。所以客户端送
+ * `received_at`，服务端取它的**北京日期**作为这次请求的「今天」，并在
+ * quickParse / buildPrompt / validateParsedItems 里**用同一个值**（同一请求内一致）。
+ *
+ * 护栏：手机时钟歪（或客户端乱填）时，锚定日期会离谱。只接受落在
+ * [北京今天-7 天, 北京今天+1 天] 内的值——**+1 天保留**是因为「通知 23:40 到、
+ * 用户次日凌晨才联」本来就可能晚一天入库，而「-7 天」给换机/补录留余地。
+ * 越界就回落 `today()` 并打 warn，不让一个坏时间戳把整批账写到几年前。
+ *
+ * 导出是为了能在测试里直接锁这个窗口判据（路由层不易构造「未来日期」）。
+ */
+export function resolveAnchorDate(receivedAt: string | undefined, userId: number): string {
+  const fallback = today()
+  if (!receivedAt) return fallback
+
+  const ts = Date.parse(receivedAt)
+  if (Number.isNaN(ts)) return fallback // 理论上 zod 已拦；防御性兼底
+
+  const anchor = toDateStr(new Date(ts))
+  const low = addDaysTo(fallback, -7)
+  const high = addDaysTo(fallback, 1)
+  if (anchor < low || anchor > high) {
+    appLog('warn', 'ai', 'received_at 超出可信窗口，按今天处理', {
+      user_id: userId,
+      received_at: receivedAt,
+      anchor_date: anchor,
+      window: [low, high],
+    })
+    return fallback
+  }
+  return anchor
+}
+
+/**
+ * 机械算出「hints 金额与文本金额是否矛盾」。
+ *
+ * 只在三个条件都成立时才可能为 true：有 `amount_cents`、文本里能抽出带单位的金额、
+ * 且 hint 金额不在该集合里。任缺其一返回 false（「没有信号」不等于「矛盾」，
+ * 不能把缺依据当成冲突——否则客户端会对着一张没有金额的通知弹警告）。
+ *
+ * 比对是分→元的可逆换算，与 `extractMoneyAmounts` 的「元保留两位」同口径。
+ */
+export function computeHintsConflict(amountCents: number | undefined, rawInput: string): boolean {
+  if (amountCents == null) return false
+  const amounts = extractMoneyAmounts(rawInput)
+  if (amounts.size === 0) return false
+  const hintYuan = Math.round(amountCents / 100 * 100) / 100
+  return !amounts.has(hintYuan)
+}
+
+/**
  * 插入 AI 解析日志
+ *
+ * `channel` / `sourcePackage` / `receivedAt` / `hints` 是 019 新增的**可空**留档列：
+ * 旧调用点不传就是 NULL（不猜值），新调用点把入参上下文原样落下来。
  */
 function insertParseLog(
   db: ReturnType<typeof getDb>,
@@ -814,11 +975,17 @@ function insertParseLog(
     status: 'success' | 'empty' | 'error' | 'timeout'
     errorMessage: string | null
     durationMs: number
+    channel?: string | null
+    sourcePackage?: string | null
+    receivedAt?: string | null
+    hints?: string | null
   },
 ): number {
   const result = db.prepare(
-    `INSERT INTO ai_parse_logs (user_id, raw_input, cleaned_input, ai_response, parsed_items, status, error_message, duration_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ai_parse_logs
+       (user_id, raw_input, cleaned_input, ai_response, parsed_items, status, error_message, duration_ms,
+        channel, source_package, received_at, hints)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     params.userId,
     params.rawInput,
@@ -828,6 +995,10 @@ function insertParseLog(
     params.status,
     params.errorMessage,
     params.durationMs,
+    params.channel ?? null,
+    params.sourcePackage ?? null,
+    params.receivedAt ?? null,
+    params.hints ?? null,
   )
   return Number(result.lastInsertRowid)
 }
