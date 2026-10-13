@@ -897,3 +897,31 @@ export const migration022 = `
 ALTER TABLE ai_parse_logs ADD COLUMN failure_code TEXT;
 ALTER TABLE ai_parse_logs ADD COLUMN attempts INTEGER;
 `
+
+/**
+ * 023 — 「不确定」人工裁决记录（design: docs/ARCHITECTURE.md §3.9）。
+ *
+ * 机器事实与人工意见**分开存**：裁决**绝不改 `ai_parse_logs`**（那是「机器事实」的留痕），
+ * 也**绝不写 `transactions`**（不绕过「未确认不得声称已记」）。本表只记「人看了这条失败记录，
+ * 判断它是什么」——`mark_not_bill` / `mark_rule_missing` 同时充当**规则/语料候选池**
+ * （只落库待人工整理，最终改动仍走 `rules.json` 发布流程，不允许在线改判据）。
+ *
+ * `UNIQUE(parse_log_id, admin_id, action)`：
+ *   - 同一管理员对同一 log 重复提交 = **幂等**（不会堆重复行）；
+ *   - 同 log **不同 action 允许**（改判留历史），**当前态取最新一行**（历史不删，审计要求）。
+ *
+ * ⚠️ FK：`parse_log_id → ai_parse_logs(id)`、`admin_id → users(id)`。删除用户时
+ * `purgeUserData` 必须**先**清这里的行，否则外键约束会让「有裁决记录的用户」删不掉。
+ */
+export const migration023 = `
+CREATE TABLE IF NOT EXISTS admin_unparsed_triage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  parse_log_id INTEGER NOT NULL REFERENCES ai_parse_logs(id),
+  action TEXT NOT NULL CHECK(action IN ('mark_bill', 'mark_not_bill', 'mark_rule_missing')),
+  reason TEXT NOT NULL,
+  admin_id INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(parse_log_id, admin_id, action)
+);
+CREATE INDEX IF NOT EXISTS idx_admin_unparsed_triage_log ON admin_unparsed_triage(parse_log_id);
+`

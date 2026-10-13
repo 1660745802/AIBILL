@@ -23,6 +23,7 @@ type TabKey =
   | 'ai'
   | 'quality'
   | 'automation'
+  | 'triage'
   | 'logs'
   | 'rules'
   | 'release'
@@ -43,6 +44,7 @@ const navGroups: { key: string; label: string; items: NavItem[] }[] = [
     label: '自动化',
     items: [
       { key: 'quality', label: '解析质量', short: '质量', icon: 'search' },
+      { key: 'triage', label: '未解析裁决', short: '裁决', icon: 'check' },
       { key: 'automation', label: '自动化对照', short: '自动化', icon: 'spark' },
       { key: 'rules', label: '通知规则', short: '规则', icon: 'code' },
       { key: 'ai', label: 'AI 设置', short: 'AI', icon: 'spark' },
@@ -88,6 +90,7 @@ const TAB_FETCH_KEYS: Record<TabKey, string[]> = {
   ai: ['users'],
   quality: ['quality-stats', 'quality-logs'],
   automation: ['automation'],
+  triage: ['triage'],
   logs: ['logs'],
   rules: ['rules'],
   release: ['release'],
@@ -102,6 +105,7 @@ function retryActiveTab(): void {
   else if (key === 'users') fetchAdminData()
   else if (key === 'quality') { fetchParseStats(); fetchParseLogs(1) }
   else if (key === 'automation') fetchAutomationStats()
+  else if (key === 'triage') fetchTriage()
   else if (key === 'rules') fetchNotifRules()
   else if (key === 'logs') fetchAppLogs()
   else if (key === 'release') fetchAppUpdates()
@@ -124,6 +128,7 @@ function switchTab(key: TabKey) {
   if (key === 'logs') fetchAppLogs()
   if (key === 'rules') fetchNotifRules()
   if (key === 'automation') fetchAutomationStats()
+  if (key === 'triage') fetchTriage()
   if (key === 'release') fetchAppUpdates()
   if (key === 'overview') fetchOpsSignals()
 }
@@ -173,6 +178,7 @@ onMounted(async () => {
   const t = activeTab.value
   if (t === 'quality') { fetchParseStats(); fetchParseLogs(1) }
   else if (t === 'automation') fetchAutomationStats()
+  else if (t === 'triage') fetchTriage()
   else if (t === 'rules') fetchNotifRules()
   else if (t === 'logs') fetchAppLogs()
   else if (t === 'release') fetchAppUpdates()
@@ -453,11 +459,17 @@ async function fetchOpsSignals(): Promise<void> {
       const bad = (parse.by_status ?? [])
         .filter((x: any) => x.status === 'error' || x.status === 'timeout')
         .reduce((n: number, x: any) => n + Number(x.count ?? 0), 0)
-      if (bad > 0) {
+      // 优先用 022 的干净口径：unavailable = error+timeout，**不含「判非账」**（empty 不是故障）
+      const unavailable = Number(parse.overview?.unavailable_count ?? bad)
+      const notABill = Number(parse.overview?.not_a_bill_count ?? 0)
+      if (unavailable > 0) {
+        const topReason = (parse.by_failure_code ?? [])[0]
         signals.push({
-          level: 'warn',
-          title: `解析失败/超时 ${bad} 次`,
-          detail: '可在「解析质量」按状态筛选，能看到原始输入与失败原因',
+          level: (parse.overview?.unavailable_rate ?? 0) >= 30 ? 'danger' : 'warn',
+          title: `AI 不可用 ${unavailable} 次（${parse.overview?.unavailable_rate ?? '?'}%）`,
+          detail: topReason
+            ? `主要原因 ${topReason.failure_code}（${topReason.count} 次）；另有判非账 ${notABill} 次（非故障）`
+            : '可在「解析质量」按 failure_code 查看',
           tab: 'quality',
         })
       }
@@ -472,6 +484,20 @@ async function fetchOpsSignals(): Promise<void> {
         level: 'warn',
         title: '客户端判据漂移告警',
         detail: `precheck_unknown_expr 命中 ${drift.hits} 次——客户端上的判据形态与服务端清单对不上`,
+        tab: 'automation',
+      })
+    }
+
+    /* 客户端因 AI 不可用丢弃：**服务端无对应判据**，无法直接对账（要靠 failure_code 近似比对）。
+       它把「AI 挂了」的后果从用户视野里拿掉了，所以必须在这里露出来。 */
+    const unparsed = (filter?.client?.by_rule ?? []).find(
+      (r: any) => r.rule_id === 'client_only.unparsed_ai_failed',
+    )
+    if (unparsed && unparsed.hits > 0) {
+      signals.push({
+        level: 'warn',
+        title: `客户端因 AI 不可用丢弃 ${unparsed.hits} 条`,
+        detail: '客户端本地计数（client_only.unparsed_ai_failed）——服务端无对应判据，无法直接对账；AI 是否真的挂了看「解析质量」的 unavailable_rate',
         tab: 'automation',
       })
     }
@@ -510,17 +536,28 @@ async function fetchOpsSignals(): Promise<void> {
   }
 }
 
-// === 自动化对照（客户端上报 vs 服务端入站预筛）===
+// === 自动化对照（客户端上报 vs 服务端入站预筛 + AI 失败交叉核对）===
 const automationDays = ref('30')
 const automationStats = ref<any>(null)
+/** 服务端口径的失败统计（交叉核对用；主数据是 filter-stats） */
+const automationParseStats = ref<any>(null)
 const loadingAutomation = ref(false)
 
 async function fetchAutomationStats() {
   markLoaded('automation') // 开始加载 = 清掉上一次的错误提示
   loadingAutomation.value = true
   try {
-    const { data } = await api.get(`/admin/filter-stats?days=${automationDays.value}`)
-    automationStats.value = data.code === 0 ? data.data : null
+    // 两个接口各司其职：filter-stats 给客户端侧（含漏斗），ai-parse-stats 给服务端 failure_code/by_channel
+    const [filterRes, parseRes] = await Promise.allSettled([
+      api.get(`/admin/filter-stats?days=${automationDays.value}`),
+      api.get(`/admin/ai-parse-stats?days=${automationDays.value}`),
+    ])
+    automationStats.value =
+      filterRes.status === 'fulfilled' && filterRes.value.data.code === 0 ? filterRes.value.data.data : null
+    automationParseStats.value =
+      parseRes.status === 'fulfilled' && parseRes.value.data.code === 0 ? parseRes.value.data.data : null
+    // 主数据读不到才报错；服务端失败统计读不到只影响交叉核对那一块
+    if (filterRes.status === 'rejected') markFailed('automation')
   } catch {
     markFailed('automation')
   }
@@ -532,6 +569,76 @@ function incomparableRules(list: any[] | undefined): any[] { return (list ?? [])
 /** 服务端返回的是 0~1 的比例，展示成百分比；null = 窗口内没有数据 */
 function rateText(v: number | null | undefined): string {
   return v == null ? '—' : `${(v * 100).toFixed(1)}%`
+}
+
+// === 漏斗 + 双失败交叉核对（数据来自 filter-stats.client.funnel + ai-parse-stats.by_channel）===
+function funnel(): any {
+  return automationStats.value?.client?.funnel ?? {
+    received: 0, dropped: 0, unparsed_ai_failed: 0, by_channel: [], dropped_reasons: [],
+  }
+}
+/** 通过捕获层 = received − dropped（**不等于**入账数：后面还有预筛/解析） */
+function funnelPassed(f = funnel()): number {
+  return Math.max(0, (f.received ?? 0) - (f.dropped ?? 0))
+}
+/**
+ * 同窗口/渠道交叉核对：客户端 `unparsed_ai_failed` vs 服务端 `unavailable_count`。
+ *
+ * ⚠️ 两者口径不完全相同（都如实写明）：
+ * - 客户端是**进程内存**计数（重启清零）→ 偏低通常意味着计数器被重启清掉；
+ * - 服务端口径含所有调用方（含手动 channel）；`unknown` 是没上报 channel 的老 APK。
+ */
+function crossCheckRows(): Array<{ channel: string; client: number; server: number; diff: number; pct: string }> {
+  const clientRows = (funnel().by_channel ?? []) as any[]
+  const serverByCh = new Map<string, number>(
+    ((automationParseStats.value?.by_channel ?? []) as any[]).map((c) => [String(c.channel), Number(c.unavailable_count ?? 0)]),
+  )
+  const channels = [...new Set<string>([...clientRows.map((c) => String(c.channel)), ...serverByCh.keys()])]
+  return channels
+    .map((channel) => {
+      const client = Number(clientRows.find((c) => String(c.channel) === channel)?.unparsed_ai_failed ?? 0)
+      const server = serverByCh.get(channel) ?? 0
+      const diff = client - server
+      const pct = server > 0 ? `${diff >= 0 ? '+' : ''}${((diff / server) * 100).toFixed(0)}%` : '—'
+      return { channel, client, server, diff, pct }
+    })
+    .sort((a, b) => a.channel.localeCompare(b.channel))
+}
+
+// === 未解析裁决（P1 列表 + P2 裁决，design: docs/UNPARSED-TRIAGE.md）===
+const triageFilter = ref({ days: '7', channel: '', action: '', includeRaw: false })
+const triageStats = ref<any>(null)
+const loadingTriage = ref(false)
+const triageSubmitting = ref<number | null>(null)
+/** 每条的理由输入（裁决必填，供审计/复盘） */
+const triageReasons = ref<Record<number, string>>({})
+
+async function fetchTriage() {
+  markLoaded('triage') // 开始加载 = 清掉上一次的错误提示
+  loadingTriage.value = true
+  try {
+    const params = new URLSearchParams({ days: triageFilter.value.days })
+    if (triageFilter.value.channel) params.set('channel', triageFilter.value.channel)
+    if (triageFilter.value.action) params.set('triage', triageFilter.value.action)
+    if (triageFilter.value.includeRaw) params.set('include_raw', '1')
+    const { data } = await api.get(`/admin/unparsed?${params.toString()}`)
+    triageStats.value = data.code === 0 ? data.data : null
+  } catch {
+    markFailed('triage')
+  } finally { loadingTriage.value = false }
+}
+
+/** 三个动作：只写裁决记录（服务端不写账、不回推客户端） */
+async function submitTriage(id: number, action: 'mark_bill' | 'mark_not_bill' | 'mark_rule_missing') {
+  const reason = (triageReasons.value[id] ?? '').trim()
+  if (!reason) { toast.error('请先填写裁决理由'); return }
+  triageSubmitting.value = id
+  try {
+    await api.post(`/admin/unparsed/${id}/triage`, { action, reason })
+    toast.success('裁决已记录')
+    await fetchTriage()
+  } catch { /* 拦截器已提示 */ }
+  finally { triageSubmitting.value = null }
 }
 
 // === App 更新（APK 自托管分发）===
@@ -1051,6 +1158,45 @@ function closeUserTransactions() {
             </div>
           </section>
 
+          <!-- AI 可用性（migration 022）——客户端把失败移出用户视野后，这里是唯一能发现「AI 挂了」的地方 -->
+          <section v-if="parseStats && parseStats.overview" class="mt-5">
+            <div class="ledger-label mb-3">AI 可用性（失败可观测）</div>
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div class="admin-stat" style="border-top-color: var(--color-warn)">
+                <div class="admin-stat-num">{{ parseStats.overview.unavailable_rate }}%</div>
+                <div class="admin-stat-label">不可用率（{{ parseStats.overview.unavailable_count }} 次）</div>
+              </div>
+              <div class="admin-stat" style="border-top-color: var(--color-info)">
+                <div class="admin-stat-num">{{ parseStats.overview.not_a_bill_rate }}%</div>
+                <div class="admin-stat-label">判非账（{{ parseStats.overview.not_a_bill_count }} 次·非故障）</div>
+              </div>
+              <div class="admin-stat" style="border-top-color: var(--color-income)">
+                <div class="admin-stat-num">{{ parseStats.overview.retry_rescued }}</div>
+                <div class="admin-stat-label">重试救回（共重试 {{ parseStats.overview.retried_count }}）</div>
+              </div>
+              <div class="admin-stat" style="border-top-color: var(--color-action)">
+                <div class="admin-stat-num">{{ parseStats.overview.success_count }}</div>
+                <div class="admin-stat-label">解析成功</div>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-3">
+              <div v-if="parseStats.by_failure_code?.length" class="sheet">
+                <div class="sheet-row"><span class="ledger-label">失败原因（failure_code）</span></div>
+                <div v-for="r in parseStats.by_failure_code" :key="r.failure_code" class="sheet-row">
+                  <span class="flex-1 text-xs mono text-ink-1 truncate">{{ r.failure_code }}</span>
+                  <span class="text-sm text-ink-1 amt">{{ r.count }}</span>
+                </div>
+              </div>
+              <div v-if="parseStats.by_channel?.length" class="sheet">
+                <div class="sheet-row"><span class="ledger-label">按渠道（老包无 channel 归 unknown）</span></div>
+                <div v-for="c in parseStats.by_channel" :key="c.channel" class="sheet-row">
+                  <span class="flex-1 text-xs text-ink-1">{{ c.channel }}</span>
+                  <span class="text-xs text-ink-3 amt">不可用 {{ c.unavailable_count }}/{{ c.total }}（{{ c.unavailable_rate }}%）</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- 状态筛选 chip -->
           <div class="scroll-x flex gap-2 mb-3 pb-1">
             <button
@@ -1108,6 +1254,8 @@ function closeUserTransactions() {
                   <span class="badge" :class="statusBadge(log.status)">{{ statusLabel(log.status) }}</span>
                   <span class="text-xs text-ink-3">{{ log.username }}</span>
                   <span class="text-xs text-ink-3 amt">{{ formatDuration(log.duration_ms) }}</span>
+                  <span v-if="log.failure_code" class="badge badge-warn">{{ log.failure_code }}</span>
+                  <span v-if="log.attempts > 1" class="badge">重试 {{ log.attempts }} 次</span>
                   <span v-if="log.user_modified" class="badge badge-warn">已修正</span>
                 </div>
               </div>
@@ -1291,6 +1439,63 @@ function closeUserTransactions() {
               </div>
             </section>
 
+            <!-- 客户端漏斗：received → dropped（捕获层早退）→ unparsed（AI 失败丢弃） -->
+            <section>
+              <div class="ledger-label mb-3">客户端漏斗（捕获层）</div>
+              <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div class="admin-stat" style="border-top-color: var(--color-action)">
+                  <div class="admin-stat-num">{{ funnel().received }}</div>
+                  <div class="admin-stat-label">收到 received</div>
+                </div>
+                <div class="admin-stat" style="border-top-color: var(--color-warn)">
+                  <div class="admin-stat-num">{{ funnel().dropped }}</div>
+                  <div class="admin-stat-label">捕获层早退 dropped</div>
+                </div>
+                <div class="admin-stat" style="border-top-color: var(--color-expense)">
+                  <div class="admin-stat-num">{{ funnel().unparsed_ai_failed }}</div>
+                  <div class="admin-stat-label">AI 失败丢弃 unparsed</div>
+                </div>
+                <div class="admin-stat" style="border-top-color: var(--color-income)">
+                  <div class="admin-stat-num">{{ funnelPassed() }}</div>
+                  <div class="admin-stat-label">通过捕获层</div>
+                </div>
+              </div>
+              <p class="text-xs text-ink-3 leading-relaxed mt-2">
+                「通过捕获层」= 收到 − 早退；<b>不等于入账数</b>（后面还有预筛/解析）。漏斗只用于定位「在哪一层丢的」。
+                <code>unparsed</code> 是 AI 已应答之后客户端对「不确定」的处置，服务端<b>无对应判据</b>。
+              </p>
+              <div v-if="funnel().dropped_reasons?.length" class="sheet mt-3">
+                <div class="sheet-row"><span class="ledger-label">早退原因 dropped_reasons</span></div>
+                <div v-for="r in funnel().dropped_reasons" :key="r.rule_id" class="sheet-row">
+                  <span class="flex-1 text-xs mono text-ink-1 truncate">{{ r.rule_id }}</span>
+                  <span class="text-sm text-ink-1 amt">{{ r.hits }}</span>
+                </div>
+              </div>
+              <div v-if="funnel().by_channel?.length" class="sheet mt-3">
+                <div class="sheet-row"><span class="ledger-label">按渠道</span></div>
+                <div v-for="c in funnel().by_channel" :key="c.channel" class="sheet-row">
+                  <span class="text-sm text-ink-1 w-16">{{ c.channel }}</span>
+                  <span class="flex-1 text-xs text-ink-3 amt">收到 {{ c.received }} / 早退 {{ c.dropped }} / AI 失败 {{ c.unparsed_ai_failed }}</span>
+                </div>
+              </div>
+            </section>
+
+            <!-- 双失败计数交叉核对：客户端内存计数 vs 服务端 failure_code(unavailable) -->
+            <section>
+              <div class="ledger-label mb-3">双失败交叉核对（客户端 vs 服务端）</div>
+              <div class="sheet">
+                <div v-for="r in crossCheckRows()" :key="r.channel" class="sheet-row">
+                  <span class="text-sm text-ink-1 w-16">{{ r.channel }}</span>
+                  <span class="flex-1 text-xs text-ink-3 amt">客户端 {{ r.client }} / 服务端 {{ r.server }}</span>
+                  <span class="text-xs amt" :class="r.diff === 0 ? 'text-ink-4' : 'text-ink-2'">{{ r.pct }}</span>
+                </div>
+              </div>
+              <p class="text-xs text-ink-3 leading-relaxed mt-2">
+                两者应接近。客户端<b>显著偏低</b>通常意味着内存计数被进程重启清零（P0-2 的直接量化）；
+                服务端含所有调用方（含手动 channel），<code>unknown</code> 是未上报 channel 的老 APK。
+              </p>
+            </section>
+
             <section>
               <div class="ledger-label mb-3">可比（precheck.*，与服务端同一 rule_id）</div>
               <EmptyState
@@ -1341,6 +1546,111 @@ function closeUserTransactions() {
             </section>
 
             <p class="text-xs text-ink-3 leading-relaxed">{{ automationStats.note }}</p>
+          </template>
+        </div>
+
+        <!-- ───── 未解析裁决（P1 列表 + P2 裁决）───── -->
+        <div v-if="activeTab === 'triage'" class="space-y-6">
+          <div class="flex items-center justify-between gap-3 flex-wrap">
+            <span class="ledger-label ledger-label-solid">未解析裁决</span>
+            <div class="flex items-center gap-2 flex-wrap">
+              <select v-model="triageFilter.days" class="field w-auto" @change="fetchTriage()">
+                <option value="1">今天</option>
+                <option value="7">近 7 天</option>
+                <option value="30">近 30 天</option>
+                <option value="90">近 90 天</option>
+              </select>
+              <select v-model="triageFilter.channel" class="field w-auto" @change="fetchTriage()">
+                <option value="">全部渠道</option>
+                <option value="nls">nls</option>
+                <option value="sms">sms</option>
+                <option value="a11y">a11y</option>
+                <option value="manual">manual</option>
+              </select>
+              <select v-model="triageFilter.action" class="field w-auto" @change="fetchTriage()">
+                <option value="">全部裁决状态</option>
+                <option value="mark_bill">已判「是账」</option>
+                <option value="mark_not_bill">已判「不是账」</option>
+                <option value="mark_rule_missing">判据缺失（规则候选）</option>
+              </select>
+              <label class="flex items-center gap-1.5 text-xs text-ink-2 whitespace-nowrap">
+                <input type="checkbox" v-model="triageFilter.includeRaw" @change="fetchTriage()" />
+                显示原文（写审计）
+              </label>
+            </div>
+          </div>
+
+          <p class="text-xs text-ink-3 leading-relaxed">
+            AI <b>失败 = 不确定</b>（客户端不落待审、不打扰用户，只在这里留痕）。默认只给<b>脱敏预览</b>（首 60 字）；
+            勾选「显示原文」才取全文，且服务端会写审计。裁决<b>只落记录</b>：<b>不写账、不回推客户端</b>；
+            「不是账 / 判据缺失」充当规则/语料候选池（最终改动仍走 <code>rules.json</code> 发布流程）。
+          </p>
+
+          <div v-if="loadingTriage" class="text-center py-8 text-xs text-ink-3">加载中…</div>
+          <EmptyState
+            v-else-if="!triageStats"
+            icon="search"
+            title="读不到未解析记录"
+            description="服务端未返回数据，或窗口内没有 AI 不可用的失败记录。"
+            compact
+          />
+          <template v-else>
+            <section>
+              <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div class="admin-stat" style="border-top-color: var(--color-action)">
+                  <div class="admin-stat-num">{{ triageStats.summary.total }}</div>
+                  <div class="admin-stat-label">窗口内失败总数</div>
+                </div>
+                <div
+                  v-for="r in (triageStats.summary.by_failure_code ?? []).slice(0, 3)"
+                  :key="r.failure_code"
+                  class="admin-stat"
+                  style="border-top-color: var(--color-warn)"
+                >
+                  <div class="admin-stat-num">{{ r.count }}</div>
+                  <div class="admin-stat-label mono truncate">{{ r.failure_code }}</div>
+                </div>
+              </div>
+              <div v-if="triageStats.summary.by_channel?.length" class="sheet mt-3">
+                <div v-for="c in triageStats.summary.by_channel" :key="c.channel" class="sheet-row">
+                  <span class="text-sm text-ink-1 w-16">{{ c.channel }}</span>
+                  <span class="flex-1 text-xs text-ink-3 amt">{{ c.count }} 条</span>
+                </div>
+              </div>
+            </section>
+
+            <EmptyState
+              v-if="triageStats.items.length === 0"
+              icon="check"
+              title="窗口内没有未解析失败"
+              compact
+            />
+            <div v-else class="space-y-2">
+              <div v-for="it in triageStats.items" :key="it.id" class="surface p-3">
+                <div class="flex items-center gap-2 flex-wrap text-xs text-ink-3">
+                  <span class="badge badge-warn">{{ it.failure_code }}</span>
+                  <span v-if="it.channel" class="badge">{{ it.channel }}</span>
+                  <span v-if="it.source_package" class="truncate max-w-40">{{ it.source_package }}</span>
+                  <span class="amt">#{{ it.id }}</span>
+                  <span>{{ formatLocalTime(it.created_at) }}</span>
+                  <span v-if="it.attempts > 1">调模型 {{ it.attempts }} 次</span>
+                </div>
+                <div class="text-sm text-ink-1 mt-2 break-words">{{ it.raw_input ?? it.text_preview }}</div>
+                <div v-if="!it.raw_input && it.raw_input_len > it.text_preview.length" class="text-xs text-ink-4 mt-1">
+                  已脱敏（共 {{ it.raw_input_len }} 字）
+                </div>
+                <div v-if="it.triage" class="text-xs text-ink-3 mt-2">
+                  当前裁决：<span class="badge badge-ink">{{ it.triage.action }}</span>
+                  <span class="ml-1">{{ it.triage.reason }}</span>
+                </div>
+                <div class="flex items-center gap-2 mt-2 flex-wrap">
+                  <input v-model="triageReasons[it.id]" class="field flex-1 min-w-40" placeholder="裁决理由（必填）" />
+                  <button class="btn btn-sm" :disabled="triageSubmitting === it.id" @click="submitTriage(it.id, 'mark_bill')">是账</button>
+                  <button class="btn btn-outline btn-sm" :disabled="triageSubmitting === it.id" @click="submitTriage(it.id, 'mark_not_bill')">不是账</button>
+                  <button class="btn btn-outline btn-sm" :disabled="triageSubmitting === it.id" @click="submitTriage(it.id, 'mark_rule_missing')">判据缺失</button>
+                </div>
+              </div>
+            </div>
           </template>
         </div>
 
@@ -1461,6 +1771,9 @@ function closeUserTransactions() {
         <div class="flex items-center gap-3 flex-wrap p-3 rounded-[var(--radius-sm)] bg-paper-sunk">
           <span class="badge" :class="statusBadge(showParseDetail.status)">{{ statusLabel(showParseDetail.status) }}</span>
           <span class="text-xs text-ink-3">#{{ showParseDetail.id }} · 用户 {{ showParseDetail.username }} · 耗时 {{ formatDuration(showParseDetail.duration_ms) }}</span>
+          <span v-if="showParseDetail.channel" class="badge">{{ showParseDetail.channel }}</span>
+          <span v-if="showParseDetail.failure_code" class="badge badge-expense">{{ showParseDetail.failure_code }}</span>
+          <span v-if="showParseDetail.attempts > 1" class="badge badge-warn">调模型 {{ showParseDetail.attempts }} 次</span>
           <span v-if="showParseDetail.user_modified" class="badge badge-warn">已修正</span>
         </div>
 

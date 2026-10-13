@@ -11,6 +11,7 @@ import { appLog } from '../services/logger.js'
 import { pageParam } from '../lib/pagination.js'
 import { loadFilterStats } from '../lib/filter-report.js'
 import { filterStats } from '../lib/parse-filter.js'
+import { AI_UNAVAILABLE_FAILURE_CODES } from '../lib/ai-failure.js'
 import crypto from 'node:crypto'
 
 /**
@@ -44,6 +45,15 @@ const USER_SCOPED_TABLES: string[] = [
  * @param userId 目标用户 id
  */
 function purgeUserData(db: ReturnType<typeof getDb>, userId: number): void {
+  /* 人工裁决记录（migration 023）：既可能挂在目标用户的解析行上（`parse_log_id → ai_parse_logs`），
+     也可能是目标用户作为 admin 留下的（`admin_id → users`）。必须在删 `ai_parse_logs` / `users`
+     **之前**清，否则外键约束会让「有裁决记录的用户」删不掉。 */
+  db.prepare(
+    `DELETE FROM admin_unparsed_triage
+      WHERE parse_log_id IN (SELECT id FROM ai_parse_logs WHERE user_id = ?)
+         OR admin_id = ?`,
+  ).run(userId, userId)
+
   for (const table of USER_SCOPED_TABLES) {
     db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(userId)
   }
@@ -64,6 +74,12 @@ const updateUserSchema = z.object({
 })
 
 const updateSettingsSchema = z.record(z.string(), z.string())
+
+/** P2 人工裁决入参（docs/ARCHITECTURE.md §3.9）：`reason` 必填，可追责/可复盘 */
+const triageSchema = z.object({
+  action: z.enum(['mark_bill', 'mark_not_bill', 'mark_rule_missing']),
+  reason: z.string().min(1, 'reason 不能为空').max(500, 'reason 过长'),
+})
 
 export async function adminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware)
@@ -348,6 +364,261 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return { code: 0, data: loadFilterStats(getDb(), null, rangeDays), message: '' }
   })
 
+  // GET /api/admin/unparsed —— 「不确定」集中裁决面 · P1 只读（design: docs/ARCHITECTURE.md §3.9）
+  //
+  // 客户端把「AI 失败 = 不确定」移出用户视野后，这些失败只剩服务端留痕。本端点把它们
+  // 集中捞出来，让「这段窗口到底漏了哪些」可查。**只读、不写账、不重跑 AI、不碰判定链**。
+  //
+  // 默认**不给原文**：只给 `text_preview`（首 60 字）+ `raw_input_len`（够判「像不像账」）；
+  // `include_raw=1` 才给全文，并写审计（与 GET /api/admin/ai-parse-logs 同口径）。
+  app.get('/api/admin/unparsed', async (request: FastifyRequest, reply: FastifyReply) => {
+    const q = request.query as Record<string, string | undefined>
+    const rangeDays = Math.min(Math.max(Number(q.days) || 7, 1), 90)
+    const page = pageParam(q.page, 1, Number.MAX_SAFE_INTEGER)
+    const size = pageParam(q.page_size, 20, 100)
+    const includeRaw = q.include_raw === '1'
+
+    if (q.channel !== undefined && !['nls', 'sms', 'a11y', 'manual'].includes(q.channel)) {
+      reply.code(400)
+      return { code: 2000, data: null, message: `channel 非法：${q.channel}` }
+    }
+    const channel = q.channel
+
+    // 裁决动作过滤（P2 候选池导出：`?triage=mark_rule_missing` 即「待整理规则候选」）
+    const TRIAGE_ACTIONS = ['mark_bill', 'mark_not_bill', 'mark_rule_missing'] as const
+    if (q.triage !== undefined && !(TRIAGE_ACTIONS as readonly string[]).includes(q.triage)) {
+      reply.code(400)
+      return { code: 2000, data: null, message: `triage 非法：${q.triage}` }
+    }
+    const triageFilter = q.triage
+
+    // failure_code 逗号多值；只接受 unavailable 集合（真源 lib/ai-failure.ts，不手抄）
+    let codes: readonly string[] = AI_UNAVAILABLE_FAILURE_CODES
+    if (q.failure_code) {
+      const asked = q.failure_code.split(',').map((s) => s.trim()).filter(Boolean)
+      const bad = asked.find((c) => !AI_UNAVAILABLE_FAILURE_CODES.includes(c as never))
+      if (asked.length === 0 || bad) {
+        reply.code(400)
+        return {
+          code: 2000,
+          data: null,
+          message: `failure_code 非法或不属于 unavailable 集合：${bad ?? '(空)'}`,
+        }
+      }
+      codes = asked
+    }
+
+    let targetUserId: number | null = null
+    if (q.user_id !== undefined && q.user_id !== '') {
+      const uid = Number(q.user_id)
+      if (!Number.isInteger(uid) || uid <= 0) {
+        reply.code(400)
+        return { code: 2000, data: null, message: 'user_id 非法' }
+      }
+      targetUserId = uid
+    }
+
+    const db = getDb()
+    const since = new Date(Date.now() - rangeDays * 86_400_000).toISOString().slice(0, 19).replace('T', ' ')
+    const codePlaceholders = codes.map(() => '?').join(', ')
+    const conds: string[] = [`failure_code IN (${codePlaceholders})`, 'created_at >= ?']
+    const params: unknown[] = [...codes, since]
+    if (channel) {
+      conds.push('channel = ?')
+      params.push(channel)
+    }
+    if (targetUserId !== null) {
+      conds.push('user_id = ?')
+      params.push(targetUserId)
+    }
+    if (triageFilter) {
+      /* 「当前态」= 该 log 最新一行的 action（同 log 不同 action 允许、改判留历史）；
+         用相关子查询而不是 `IN`，否则「先 mark_rule_missing 后 mark_bill」会被两个桶都算。 */
+      conds.push(
+        `(SELECT t.action FROM admin_unparsed_triage t WHERE t.parse_log_id = ai_parse_logs.id ORDER BY t.id DESC LIMIT 1) = ?`,
+      )
+      params.push(triageFilter)
+    }
+    const where = `WHERE ${conds.join(' AND ')}`
+
+    const total = (db.prepare(`SELECT COUNT(*) AS c FROM ai_parse_logs ${where}`).get(...params) as { c: number }).c
+
+    const rows = db
+      .prepare(
+        `SELECT id, created_at, channel, source_package, failure_code, attempts, status, raw_input
+           FROM ai_parse_logs ${where}
+          ORDER BY created_at DESC, id DESC
+          LIMIT ? OFFSET ?`,
+      )
+      .all(...params, size, (page - 1) * size) as Array<{
+      id: number
+      created_at: string
+      channel: string | null
+      source_package: string | null
+      failure_code: string
+      attempts: number | null
+      status: string
+      raw_input: string | null
+    }>
+
+    const preview = (s: string | null): string => {
+      const t = s ?? ''
+      return t.length > 60 ? `${t.slice(0, 60)}…` : t
+    }
+
+    /* P2：把每行**最新的**裁决（当前态）带出来，供管理页显示与「候选池」查看。
+       同 log 可能有多次/不同 action（历史不删），这里只取 id 最大的一行。 */
+    const triageByLog = new Map<number, { action: string; reason: string; admin_id: number; created_at: string }>()
+    const ids = rows.map((r) => r.id)
+    if (ids.length > 0) {
+      const tRows = db
+        .prepare(
+          `SELECT parse_log_id, action, reason, admin_id, created_at
+             FROM admin_unparsed_triage
+            WHERE parse_log_id IN (${ids.map(() => '?').join(', ')})
+            ORDER BY id DESC`,
+        )
+        .all(...ids) as Array<{
+        parse_log_id: number
+        action: string
+        reason: string
+        admin_id: number
+        created_at: string
+      }>
+      for (const t of tRows) {
+        if (!triageByLog.has(t.parse_log_id)) {
+          triageByLog.set(t.parse_log_id, {
+            action: t.action,
+            reason: t.reason,
+            admin_id: t.admin_id,
+            created_at: t.created_at,
+          })
+        }
+      }
+    }
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      created_at: r.created_at,
+      channel: r.channel,
+      source_package: r.source_package,
+      failure_code: r.failure_code,
+      attempts: r.attempts,
+      status: r.status,
+      raw_input_len: (r.raw_input ?? '').length,
+      text_preview: preview(r.raw_input),
+      /* 默认脱敏：只给预览；`include_raw=1` 才给全文（并审计） */
+      raw_input: includeRaw ? r.raw_input : null,
+      /** 当前态裁决（P2）；null = 尚未裁决 */
+      triage: triageByLog.get(r.id) ?? null,
+    }))
+
+    /* 跨用户读原文 → 审计（与 recent_failures / 解析日志列表同口径，ARCHITECTURE §5.3）。
+       仓库目前**没有「自部署 / SaaS」模式标志**，所以统一按最保守的「默认关原文」实现；
+       自部署默认开等策略待有模式标志后再谈（见 docs/ARCHITECTURE.md §3.9）。 */
+    if (includeRaw && items.length > 0) {
+      appLog('warn', 'admin', `查看未解析原文（${items.length} 条，含跨用户原文）`, {
+        action: 'view_unparsed_raw',
+        admin_id: request.user!.userId,
+        returned: items.length,
+        days: rangeDays,
+        channel: channel ?? null,
+        target_user_id: targetUserId,
+      })
+    }
+
+    const byFailureCode = db
+      .prepare(
+        `SELECT failure_code, COUNT(*) AS count FROM ai_parse_logs ${where}
+          GROUP BY failure_code ORDER BY count DESC`,
+      )
+      .all(...params) as Array<{ failure_code: string; count: number }>
+    const byChannel = db
+      .prepare(
+        `SELECT COALESCE(channel, 'unknown') AS channel, COUNT(*) AS count FROM ai_parse_logs ${where}
+          GROUP BY COALESCE(channel, 'unknown') ORDER BY count DESC`,
+      )
+      .all(...params) as Array<{ channel: string; count: number }>
+
+    return {
+      code: 0,
+      data: {
+        window: { days: rangeDays },
+        include_raw: includeRaw,
+        items,
+        pagination: { page, page_size: size, total, total_pages: Math.ceil(total / size) },
+        summary: { total, by_failure_code: byFailureCode, by_channel: byChannel },
+      },
+      message: '',
+    }
+  })
+
+  // POST /api/admin/unparsed/:id/triage —— P2 人工裁决（design: docs/ARCHITECTURE.md §3.9）
+  //
+  // ⚠️ 硬边界：**绝不改 `ai_parse_logs`**（机器事实与人工意见分开存）、**绝不写 `transactions`**
+  // （不绕过「未确认不得声称已记」）。产品决策（2026-10，选 A）：`mark_bill` 也**不回推客户端**。
+  // 幂等：同 (parse_log_id, admin_id, action) 重复提交返回成功（created=false）；同 log 不同 action 允许。
+  app.post('/api/admin/unparsed/:id/triage', async (request: FastifyRequest, reply: FastifyReply) => {
+    let body: { action: 'mark_bill' | 'mark_not_bill' | 'mark_rule_missing'; reason: string }
+    try {
+      body = triageSchema.parse(request.body)
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        reply.code(400)
+        return { code: 2000, data: null, message: err.errors[0].message }
+      }
+      throw err
+    }
+
+    const id = Number((request.params as { id: string }).id)
+    if (!Number.isInteger(id) || id <= 0) {
+      reply.code(400)
+      return { code: 2000, data: null, message: 'id 非法' }
+    }
+
+    const db = getDb()
+    const log = db.prepare('SELECT id, failure_code FROM ai_parse_logs WHERE id = ?').get(id) as
+      | { id: number; failure_code: string | null }
+      | undefined
+    /* 只允许裁决「不确定」失败记录（与 P1 列表同一集合）；入参类 / 非失败 / 不存在一律 404。
+       不区分「不存在」与「不是该集合」——避免泄漏「这个 id 存在但类型不同」。 */
+    if (
+      !log ||
+      !log.failure_code ||
+      !(AI_UNAVAILABLE_FAILURE_CODES as readonly string[]).includes(log.failure_code)
+    ) {
+      reply.code(404)
+      return { code: 3002, data: null, message: '记录不存在或不是「不确定」失败记录' }
+    }
+
+    const adminId = request.user!.userId
+    const inserted = db
+      .prepare(
+        `INSERT INTO admin_unparsed_triage (parse_log_id, action, reason, admin_id)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(parse_log_id, admin_id, action) DO NOTHING`,
+      )
+      .run(id, body.action, body.reason, adminId)
+    const saved = db
+      .prepare(
+        'SELECT id, created_at FROM admin_unparsed_triage WHERE parse_log_id = ? AND admin_id = ? AND action = ?',
+      )
+      .get(id, adminId, body.action) as { id: number; created_at: string }
+
+    const created = inserted.changes > 0
+    return {
+      code: 0,
+      data: {
+        id: saved.id,
+        parse_log_id: id,
+        action: body.action,
+        created,
+        created_at: saved.created_at,
+      },
+      message: created ? '裁决已记录' : '裁决已存在（幂等）',
+    }
+  })
+
   // GET /api/admin/ai-parse-stats - AI 解析质量统计
   app.get('/api/admin/ai-parse-stats', async (request: FastifyRequest) => {
     const db = getDb()
@@ -358,20 +629,77 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
 
     // 总量 + 成功率 + 平均时长
+    //
+    // ⚠️ 「判非账」与「失败」在这里分开：`status='empty'` 且 `failure_code IS NULL`
+    // = AI **明确判非账**（回了 `[]`），**不是故障**；只有 error/timeout 才是「AI 挂了」。
+    // 旧口径把 empty 也算进「非成功」，「AI 挂了」的信号被噪声活埋（客户端专项明确要求）。
+    //
+    // 「不可用」还须排除**入参类失败**（input_empty/input_too_long）：那是客户端 bug，
+    // 不是「AI 挂了」（与 lib/ai-failure.ts 的 AI_INPUT_FAILURE_CODES 对应）。
+    const UNAVAILABLE = `status IN ('error', 'timeout') AND (failure_code IS NULL OR failure_code NOT IN ('input_empty', 'input_too_long'))`
     const overview = db
       .prepare(
         `SELECT
           COUNT(*) as total,
-          SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+          COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) as success_count,
+          COALESCE(SUM(CASE WHEN ${UNAVAILABLE} THEN 1 ELSE 0 END), 0) as unavailable_count,
+          COALESCE(SUM(CASE WHEN status = 'empty' AND failure_code IS NULL THEN 1 ELSE 0 END), 0) as not_a_bill_count,
+          COALESCE(SUM(CASE WHEN COALESCE(attempts, 1) > 1 THEN 1 ELSE 0 END), 0) as retried_count,
+          COALESCE(SUM(CASE WHEN COALESCE(attempts, 1) > 1 AND status = 'success' THEN 1 ELSE 0 END), 0) as retry_rescued,
           ROUND(AVG(duration_ms)) as avg_duration_ms
          FROM ai_parse_logs
          WHERE created_at >= ?`,
       )
-      .get(sinceDate) as { total: number; success_count: number; avg_duration_ms: number | null }
+      .get(sinceDate) as {
+      total: number
+      success_count: number
+      unavailable_count: number
+      not_a_bill_count: number
+      retried_count: number
+      retry_rescued: number
+      avg_duration_ms: number | null
+    }
 
-    const successRate = overview.total > 0
-      ? Math.round((overview.success_count / overview.total) * 10000) / 100
-      : 0
+    const pct = (n: number, d: number): number => (d > 0 ? Math.round((n / d) * 10000) / 100 : 0)
+    const successRate = pct(overview.success_count, overview.total)
+    const unavailableRate = pct(overview.unavailable_count, overview.total)
+    const notABillRate = pct(overview.not_a_bill_count, overview.total)
+
+    // 失败原因分布（022 的 failure_code）。这是「AI 挂了」的唯一可机械聚合的信号。
+    const byFailureCode = db
+      .prepare(
+        `SELECT failure_code, COUNT(*) as count
+           FROM ai_parse_logs
+          WHERE created_at >= ? AND failure_code IS NOT NULL
+          GROUP BY failure_code
+          ORDER BY count DESC`,
+      )
+      .all(sinceDate) as Array<{ failure_code: string; count: number }>
+
+    // 按渠道拆分（channel 是 019 的可空列；老 APK / 未上报的归 'unknown'）。
+    const byChannelRows = db
+      .prepare(
+        `SELECT COALESCE(channel, 'unknown') as channel,
+                COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) as success_count,
+                COALESCE(SUM(CASE WHEN status = 'empty' AND failure_code IS NULL THEN 1 ELSE 0 END), 0) as not_a_bill_count,
+                COALESCE(SUM(CASE WHEN ${UNAVAILABLE} THEN 1 ELSE 0 END), 0) as unavailable_count
+           FROM ai_parse_logs
+          WHERE created_at >= ?
+          GROUP BY COALESCE(channel, 'unknown')
+          ORDER BY total DESC`,
+      )
+      .all(sinceDate) as Array<{
+      channel: string
+      total: number
+      success_count: number
+      not_a_bill_count: number
+      unavailable_count: number
+    }>
+    const byChannel = byChannelRows.map((c) => ({
+      ...c,
+      unavailable_rate: pct(c.unavailable_count, c.total),
+    }))
 
     // 按状态分组
     const byStatus = db
@@ -386,7 +714,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     // 最近失败记录
     const recentFailures = db
       .prepare(
-        `SELECT id, user_id, raw_input, status, error_message, duration_ms, created_at
+        `SELECT id, user_id, raw_input, status, error_message, duration_ms, created_at,
+                failure_code, attempts, channel
          FROM ai_parse_logs
          WHERE created_at >= ? AND status IN ('error', 'timeout')
          ORDER BY created_at DESC
@@ -417,9 +746,19 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           total: overview.total,
           success_count: overview.success_count,
           success_rate: successRate,
+          unavailable_count: overview.unavailable_count,
+          unavailable_rate: unavailableRate,
+          not_a_bill_count: overview.not_a_bill_count,
+          not_a_bill_rate: notABillRate,
+          retried_count: overview.retried_count,
+          retry_rescued: overview.retry_rescued,
           avg_duration_ms: overview.avg_duration_ms || 0,
         },
         by_status: byStatus,
+        /* 失败原因分布（按 failure_code）与按渠道拆分 —— 客户端把失败移出用户视野后，
+           这两个是「AI 挂了」的唯一可见信号（见 docs/API.md 附录 C §9 / DATA §13.4）。 */
+        by_failure_code: byFailureCode,
+        by_channel: byChannel,
         /* recent_failures 里带**跨用户**的 raw_input（用户原话）——与「查看他人明细/原文」同口径，
            属于排障用途，按 ARCHITECTURE §5.3 必须写审计日志（复核：此前这条是审计缺口）。 */
         recent_failures: (() => {

@@ -162,12 +162,33 @@ export interface ClientRuleStat {
   hits: number
 }
 
+/**
+ * 客户端捕获层漏斗（从 `client_filter_stats` 机械归类，**不新增接口**）。
+ *
+ * 归类只按**前缀/固定 id**，**不维护 id→语义映射**（映射会腐；语义真源在客户端）：
+ * - `client_only.capture_received_*` → received（入口）
+ * - `client_only.capture_dropped_*`  → dropped（捕获层早退）
+ * - `client_only.unparsed_ai_failed` → AI 失败丢弃（AI 已应答之后；服务端无对应判据）
+ *
+ * ⚠️ `received - dropped` 只是「**通过捕获层**」的数，**不等于**真正入账数（后面还有预筛/解析）。
+ */
+export interface ClientFunnel {
+  received: number
+  dropped: number
+  unparsed_ai_failed: number
+  by_channel: Array<{ channel: string; received: number; dropped: number; unparsed_ai_failed: number }>
+  /** 捕获层早退按原因（`capture_dropped_*`，降序）—— 定位「在哪一层丢的」 */
+  dropped_reasons: Array<{ rule_id: string; hits: number }>
+}
+
 export interface FilterStatsReport {
   window: { days: number }
   client: {
     by_rule: ClientRuleStat[]
     by_channel: Array<{ channel: string; notifications: number; blocked: number; block_rate: number | null }>
     totals: { notifications: number; blocked: number; block_rate: number | null }
+    /** 捕获层漏斗（只含 `capture_*` / `unparsed_ai_failed` 这几个前缀） */
+    funnel: ClientFunnel
   }
   /** 服务端侧对照：`ai_parse_filters` 的**入站** reason 计数（出站不在 precheck 范围，故剔除） */
   server: { by_reason: Array<{ reason: string; hits: number }> }
@@ -206,6 +227,59 @@ export function loadFilterStats(db: Db, userId: number | null, days: number): Fi
       hits: r.hits,
     }
   })
+
+  /* 捕获层漏斗：按 (渠道 × rule_id) 再聚合一次。客户端上报是**按渠道**的（每条报告带
+     `channel`），所以 channel 列就是权威维度；`unparsed_ai_failed` 是单键但同行带渠道。 */
+  const ruleChannelRows = db
+    .prepare(
+      `SELECT channel, rule_id, SUM(hits) AS hits FROM client_filter_stats
+        WHERE window_end >= ?${userCond}
+        GROUP BY channel, rule_id`,
+    )
+    .all(since, ...userArg) as Array<{ channel: string; rule_id: string; hits: number }>
+
+  const RECEIVED_PREFIX = 'client_only.capture_received_'
+  const DROPPED_PREFIX = 'client_only.capture_dropped_'
+  const UNPARSED_AI_FAILED_ID = 'client_only.unparsed_ai_failed'
+  const funnelByChannel = new Map<string, { received: number; dropped: number; unparsed_ai_failed: number }>()
+  const droppedReasons = new Map<string, number>()
+  let fReceived = 0
+  let fDropped = 0
+  let fUnparsed = 0
+  for (const r of ruleChannelRows) {
+    const bucket = r.rule_id.startsWith(RECEIVED_PREFIX)
+      ? 'received'
+      : r.rule_id.startsWith(DROPPED_PREFIX)
+        ? 'dropped'
+        : r.rule_id === UNPARSED_AI_FAILED_ID
+          ? 'unparsed'
+          : null
+    if (bucket === null) continue
+    const cell = funnelByChannel.get(r.channel) ?? { received: 0, dropped: 0, unparsed_ai_failed: 0 }
+    if (bucket === 'received') {
+      fReceived += r.hits
+      cell.received += r.hits
+    } else if (bucket === 'dropped') {
+      fDropped += r.hits
+      cell.dropped += r.hits
+      droppedReasons.set(r.rule_id, (droppedReasons.get(r.rule_id) ?? 0) + r.hits)
+    } else {
+      fUnparsed += r.hits
+      cell.unparsed_ai_failed += r.hits
+    }
+    funnelByChannel.set(r.channel, cell)
+  }
+  const funnel: ClientFunnel = {
+    received: fReceived,
+    dropped: fDropped,
+    unparsed_ai_failed: fUnparsed,
+    by_channel: [...funnelByChannel.entries()]
+      .map(([channel, v]) => ({ channel, ...v }))
+      .sort((a, b) => a.channel.localeCompare(b.channel)),
+    dropped_reasons: [...droppedReasons.entries()]
+      .map(([rule_id, hits]) => ({ rule_id, hits }))
+      .sort((a, b) => b.hits - a.hits),
+  }
 
   const channelRows = db
     .prepare(
@@ -254,6 +328,7 @@ export function loadFilterStats(db: Db, userId: number | null, days: number): Fi
         blocked: totalBlocked,
         block_rate: totalNotifications > 0 ? Number((totalBlocked / totalNotifications).toFixed(4)) : null,
       },
+      funnel,
     },
     server: {
       by_reason: [...reasonMap.entries()]
