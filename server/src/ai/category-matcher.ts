@@ -9,8 +9,15 @@ interface CategoryInfo {
   type: 'expense' | 'income'
 }
 
-/** 同义词映射表 */
-const SYNONYMS: Record<string, string> = {
+/**
+ * 同义词映射表
+ *
+ * ⚠️ 导出是因为它是发布期跨表判据断言的输入（ai/criterion-consistency.ts C1/C2/C3）：
+ * 极性必须显式编码在条目上，不能靠「目标分类恰好在哪个桶」隐式决定。
+ * 今天的「红包 → 人情」正因为极性缺失，已经和 quick-parser 的「红包 → 红包/income」
+ * 在服务端互相矛盾（设计 §0.6 / §3.3 C2），Step 3 改极性桶时会被断言逮住。
+ */
+export const SYNONYMS: Record<string, string> = {
   // 餐饮
   吃饭: '餐饮',
   吃的: '餐饮',

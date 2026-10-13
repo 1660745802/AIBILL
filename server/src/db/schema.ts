@@ -321,45 +321,61 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
 ('currency', 'CNY');
 `
 
+/** 种子分类定义：`[name, icon, sort_order]`（与 insertDefault*Categories 共用同一份真源） */
+export type SeedCategory = readonly [name: string, icon: string, order: number]
+
+/**
+ * 默认支出分类。**唯一的真源**——插入与发布期判据断言（ai/criterion-consistency.ts C3/C5）
+ * 都读它，不允许任何一方再抄一份分类名。
+ */
+export const SEED_EXPENSE_CATEGORIES: readonly SeedCategory[] = [
+  ['餐饮', '🍜', 1],
+  ['交通', '🚗', 2],
+  ['购物', '🛒', 3],
+  ['住房', '🏠', 4],
+  ['娱乐', '🎮', 5],
+  ['医疗', '🏥', 6],
+  ['教育', '📚', 7],
+  ['通讯', '📱', 8],
+  ['日用', '🧴', 9],
+  ['服饰', '👕', 10],
+  ['人情', '🎁', 11],
+  ['其他', '📦', 99],
+]
+
+/** 默认收入分类（「红包」是**收入分类名**，与噪声词表里的「红包」同形不同义，见设计 §0.4） */
+export const SEED_INCOME_CATEGORIES: readonly SeedCategory[] = [
+  ['工资', '💰', 1],
+  ['奖金', '🎉', 2],
+  ['理财', '📈', 3],
+  ['兼职', '💼', 4],
+  ['红包', '🧧', 5],
+  ['退款', '↩️', 6],
+  ['其他', '📦', 99],
+]
+
+/** 默认支出分类名（判据断言用；只对内置种子表断言，用户自建分类随时会改名） */
+export const SEED_EXPENSE_NAMES: readonly string[] = SEED_EXPENSE_CATEGORIES.map((c) => c[0])
+
+/** 默认收入分类名（判据断言用） */
+export const SEED_INCOME_NAMES: readonly string[] = SEED_INCOME_CATEGORIES.map((c) => c[0])
+
 /** 为新用户生成默认支出分类（参数化插入） */
 export function insertDefaultExpenseCategories(db: any, userId: number): void {
-  const categories: [string, string, number][] = [
-    ['餐饮', '🍜', 1],
-    ['交通', '🚗', 2],
-    ['购物', '🛒', 3],
-    ['住房', '🏠', 4],
-    ['娱乐', '🎮', 5],
-    ['医疗', '🏥', 6],
-    ['教育', '📚', 7],
-    ['通讯', '📱', 8],
-    ['日用', '🧴', 9],
-    ['服饰', '👕', 10],
-    ['人情', '🎁', 11],
-    ['其他', '📦', 99],
-  ]
   const stmt = db.prepare(
     'INSERT INTO categories (user_id, name, type, icon, sort_order) VALUES (?, ?, ?, ?, ?)',
   )
-  for (const [name, icon, order] of categories) {
+  for (const [name, icon, order] of SEED_EXPENSE_CATEGORIES) {
     stmt.run(userId, name, 'expense', icon, order)
   }
 }
 
 /** 为新用户生成默认收入分类（参数化插入） */
 export function insertDefaultIncomeCategories(db: any, userId: number): void {
-  const categories: [string, string, number][] = [
-    ['工资', '💰', 1],
-    ['奖金', '🎉', 2],
-    ['理财', '📈', 3],
-    ['兼职', '💼', 4],
-    ['红包', '🧧', 5],
-    ['退款', '↩️', 6],
-    ['其他', '📦', 99],
-  ]
   const stmt = db.prepare(
     'INSERT INTO categories (user_id, name, type, icon, sort_order) VALUES (?, ?, ?, ?, ?)',
   )
-  for (const [name, icon, order] of categories) {
+  for (const [name, icon, order] of SEED_INCOME_CATEGORIES) {
     stmt.run(userId, name, 'income', icon, order)
   }
 }

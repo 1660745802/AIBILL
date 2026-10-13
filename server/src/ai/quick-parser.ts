@@ -33,9 +33,17 @@ interface QuickParseContext {
   accounts: string[]
 }
 
+/** 高置信同义词条目：分类名 + 极性（极性是必填字段，不靠「目标分类恰好在哪一桶」隐式决定） */
+export interface QuickConfidenceEntry {
+  category: string
+  type: 'expense' | 'income'
+}
+
 // 高置信同义词：key 是用户可能输入的词，value 是分类名
 // 只收录"一定不会错"的映射
-const HIGH_CONFIDENCE_MAP: Record<string, { category: string; type: 'expense' | 'income' }> = {
+// ⚠️ 本表是发布期跨表判据断言的输入之一（ai/criterion-consistency.ts C2），
+// 改任何一个 key 的 type 之前先看那里的冲突报告——「红包」今天就是红的。
+export const HIGH_CONFIDENCE_MAP: Readonly<Record<string, QuickConfidenceEntry>> = {
   // 餐饮（最高频）
   早餐: { category: '餐饮', type: 'expense' },
   早饭: { category: '餐饮', type: 'expense' },

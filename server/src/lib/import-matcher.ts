@@ -37,7 +37,13 @@ interface UserCategory {
   icon: string
 }
 
-interface CategoryRule {
+/**
+ * 商户/描述关键词规则。
+ *
+ * ⚠️ 这是全仓**唯一显式写了 `types` 的词表**（设计 §0.6 指它是正确范本），
+ * 也是发布期跨表判据断言的输入之一（ai/criterion-consistency.ts C2）——保留这个性质。
+ */
+export interface ImportCategoryRule {
   /** 任一关键词命中即算；按数组顺序匹配，先命中先返回 */
   keywords: string[]
   /** 目标分类名（需存在于用户分类列表） */
@@ -50,7 +56,7 @@ interface CategoryRule {
  * 商户/描述关键词 → 分类名。
  * 顺序敏感：具体规则必须排在笼统规则之前（如“美团”在“购物”之前）。
  */
-const CATEGORY_RULES: CategoryRule[] = [
+export const CATEGORY_RULES: ImportCategoryRule[] = [
   // ---- 美团系具体业务 ----
   // 「美团」是笼统关键词（外卖→餐饮），但「美团单车」「美团会员」是别的业务：
   // 具体规则必须排在笼统规则前面，否则会被“美团→餐饮”先命中（真 bug）。
