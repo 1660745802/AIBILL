@@ -46,11 +46,20 @@ const emit = defineEmits<{
 
 const categorySelect = ref<HTMLSelectElement | null>(null)
 
-/** 归不出来 = 服务端没给任何分类依据（null / '' 都算） */
-const unclassified = computed(() => props.item.category_id === null || props.item.category_name === '')
+/** 转账：按设计就没有分类（服务端 category_id 恒为 null），**不是**「未归类」 */
+const isTransfer = computed(() => props.item.type === 'transfer')
 
-/** 标题：描述 → 分类名 → 「未归类」（**不再退化成「支出/收入」**，那行正是在假装已归类） */
-const title = computed(() => props.item.description || props.item.category_name || '未归类')
+/** 归不出来 = 服务端没给任何分类依据（null / '' 都算）。
+ *  转账必须先排除：它天生 category_id=null / category_name=''，不排除的话一行「转账」
+ *  会被渲染成「未归类」+「选分类」，而编辑面板里转账根本没有分类下拉（点了没处可选）。 */
+const unclassified = computed(
+  () => !isTransfer.value && (props.item.category_id === null || props.item.category_name === ''),
+)
+
+/** 标题：描述 → 分类名 → 转账/未归类（**不再退化成「支出/收入」**，那行正是在假装已归类） */
+const title = computed(
+  () => props.item.description || props.item.category_name || (isTransfer.value ? '转账' : '未归类'),
+)
 
 const typedCategories = computed(() => props.categories.filter((c) => c.type === props.item.type))
 
@@ -80,8 +89,12 @@ function onPickCategory() {
 <template>
   <li class="parsed-item">
     <div class="flex items-center gap-3">
-      <!-- 中性图标：未归类用 tag（「其他」的 emoji 会把「未定」说成「其他」） -->
-      <span v-if="unclassified" class="tx-icon tx-icon-empty" aria-hidden="true">
+      <!-- 转账：双向箭头（它没有分类图标，也不能借「其他」的 📦）；未归类：中性 tag
+           （「其他」的 emoji 会把「未定」说成「其他」） -->
+      <span v-if="isTransfer" class="tx-icon tx-icon-empty" aria-hidden="true">
+        <AppIcon name="switch" :size="14" />
+      </span>
+      <span v-else-if="unclassified" class="tx-icon tx-icon-empty" aria-hidden="true">
         <AppIcon name="tag" :size="14" />
       </span>
       <span v-else class="tx-icon" aria-hidden="true">{{ item.category_icon || '·' }}</span>
@@ -89,7 +102,8 @@ function onPickCategory() {
       <div class="min-w-0 flex-1">
         <p class="text-[0.8125rem] truncate" style="color: var(--color-ink-1)">{{ title }}</p>
         <p class="text-[0.6875rem] truncate" style="color: var(--color-ink-3)">
-          <template v-if="unclassified">
+          <template v-if="isTransfer">转账</template>
+          <template v-else-if="unclassified">
             <span style="color: var(--color-ink-4)">未归类</span>
             <button type="button" class="link link-quiet unclassified-link" @click="onPickCategory">
               选分类
@@ -97,7 +111,7 @@ function onPickCategory() {
           </template>
           <template v-else>{{ item.category_name }}</template>
           <template v-if="item.account_name"> · {{ item.account_name }}</template>
-          <template v-if="item.type === 'transfer' && item.target_account_name">
+          <template v-if="isTransfer && item.target_account_name">
             → {{ item.target_account_name }}
           </template>
         </p>
@@ -139,7 +153,7 @@ function onPickCategory() {
             @change="emit('update:category', ($event.target as HTMLSelectElement).value)"
           >
             <!-- 与账户的「未指定」同一范式：用户可以主动选回未归类。
-                 选它不做任何赋值（updateCategory 的 `if (cat)` 保护），语义正确。 -->
+                 选它 → applyCategoryChoice 真的清空 category_id/name/icon（不是 no-op）。 -->
             <option :value="null">未归类</option>
             <option v-for="cat in typedCategories" :key="cat.id" :value="cat.id">
               {{ cat.icon }} {{ cat.name }}

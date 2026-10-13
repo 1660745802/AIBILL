@@ -41,8 +41,10 @@ export interface QuickConfidenceEntry {
 
 // 高置信同义词：key 是用户可能输入的词，value 是分类名
 // 只收录"一定不会错"的映射
-// ⚠️ 本表是发布期跨表判据断言的输入之一（ai/criterion-consistency.ts C2），
-// 改任何一个 key 的 type 之前先看那里的冲突报告——「红包」今天就是红的。
+// ⚠️ 本表是发布期跨表判据断言的输入之一（ai/criterion-consistency.ts C2/C8），
+// 改任何一个 key 的 type 之前先看那里的冲突报告。Step 3 起「红包」已拆成极性桶
+// （income→红包，与 SYNONYMS / CATEGORY_RULES 一致），判据全绿；这里再出现红
+// 就是一次新的跨层漂移。
 export const HIGH_CONFIDENCE_MAP: Readonly<Record<string, QuickConfidenceEntry>> = {
   // 餐饮（最高频）
   早餐: { category: '餐饮', type: 'expense' },

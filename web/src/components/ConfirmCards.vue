@@ -6,6 +6,8 @@
  * ## 「归不出来」的呈现口径（产品不可违背的那条：宁可留空也不编造）
  *
  * 服务端 `category_id: null` = **没有依据能确定分类**（不是「其他」）。
+ * ⚠️ 转账（transfer）按设计也没有分类，但它**不是**「未归类」：所有「未归类」
+ *    判断都必须先排除 transfer（否则一行转账会被说成「未归类」并要求选分类）。
  * 这一层以前用「其他」分类的 emoji 图标 + 类型退化文案把它伪装成已归类；
  * 现在由 ConfirmCardRow 如实呈现
  * （中性图标 + 弱化的「未归类」+ 可点的「选分类」）。
@@ -40,9 +42,9 @@ onMounted(async () => {
 
 const sum = computed(() => editableItems.value.reduce((s, i) => s + i.amount, 0))
 const hasIncome = computed(() => editableItems.value.some((i) => i.type === 'income'))
-/** 有未归类的笔时才提示，避免每次解析都多一行噪音 */
+/** 有未归类的笔时才提示，避免每次解析都多一行噪音（转账天生无分类，不算「未归类」） */
 const hasUnclassified = computed(() =>
-  editableItems.value.some((i) => i.category_id === null || i.category_name === ''),
+  editableItems.value.some((i) => i.type !== 'transfer' && (i.category_id === null || i.category_name === '')),
 )
 
 function removeItem(index: number) {
