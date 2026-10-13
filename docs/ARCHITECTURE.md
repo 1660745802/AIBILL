@@ -230,6 +230,31 @@ env `RULES_PATH`（默认 `<cwd>/config/rules.json`）。非 Docker 部署需保
   在 `/api/admin/filter-stats` 里与侧对比。只看服务端日志会系统性低估拦截量，
   也会错过「客户端误杀真交易」（P0 级、只能用语料 `expect_txn` 判）。
 
+### 3.7.1 A11Y 摘取 profile 的发布校验（`rules.json.a11y.app_profiles`）
+
+跨端契约（schema / 语义 / 逐键回退 / 客户端）在 [API.md 附录 C §10](API.md)；这里只记**服务端实现与校验**。
+
+- `validateRules` 新增可选键（**出现即校验类型、缺失放行**，与 `list_page_*` 同款）：
+  `a11y.merchant_labels`(string[]) · `a11y.profiles_schema`(positiveInt) · `a11y.app_profiles`(Record)。
+- `validateAppProfiles`（`lib/notification-rules.ts`）逐键校验：profile 内数组键 `success_keywords` /
+  `embedded_success_keywords` / `exclude_keywords` / `merchant_labels` 必须是「元素为非空 string 的数组」
+  ——**允许空数组**（`[]` = 显式清空，见契约 §10 语义 3）；`list_page_head_chars` 正整数；
+  `amount_view_id` / `merchant_view_id` 非空 string；`amount_regex` 过 `regexSafetyError`（与全局判据
+  同一安全子集）。全局 `a11y.*` 数组仍走 `OPTIONAL_RULES_SHAPE` 的**非空**校验（两者语义不同）。
+- 包名：非空、≤ 200、不含空白；**孤儿 profile 拒绝**（包必须 ∈ `a11y.embedded_payment_apps`，
+  否则不在 `serviceInfo.packageNames`、收不到事件 = 静默空转）。
+- 上限：profile 数 ≤ 200、序列化（UTF-8）≤ 64 KiB（`APP_PROFILE_LIMITS`）；**超限拒绝发布**，
+  不静默截断（「少发几个」会让某些包静默回退内置硬编码而无任何错误）。
+- 发布路径：新键本就是 `a11y` 字段 → 自动进 `buildPublishPayload` / `content_hash`（无需改发布代码）；
+  两条发布路径（启动读文件 / `POST /api/admin/notification-rules`）都先跑 `validateRules`。
+- 护栏：`tests/lib/notification-rules.test.ts`（类型 / 安全子集 / 孤儿 / 上限 / 缺失放行 / 空数组保留 / hash 变）；
+  「正则键审计」用例放行 `app_profiles.*.amount_regex`（由 `validateAppProfiles` 覆盖）。
+
+**配套口径卫生**：客户端曾把 **HTTP 400 入参错误（空 / 超长）** 也算进 `client_only.unparsed_ai_failed`；
+服务端 `unavailable_count` 已排除入参类（`AI_INPUT_FAILURE_CODES`） → 两边不一致会让「双失败交叉核对」
+把「客户端多算」误读成「内存丢失」。客户端应把入参类单独成桶（如 `client_only.unparsed_input_invalid`），
+`unparsed_ai_failed` 只留 `outcome=unavailable`（AI 侧）。
+
 ### 3.8 App 自更新与 `versionCode` 纪律
 
 Android 客户端用 `GET /api/app/update?versionCode=` 检查更新；`app_updates` 表里激活版本的
@@ -266,6 +291,52 @@ SELECT version_code, version_name, prev FROM (
 两条 SQL 已用上述历史序列实测：① 检出 2 与 4 两组重复，② 检出 v1.1.0、v1.3.1。
 
 ---
+
+### 3.9 「不确定」的人工裁决面（`/api/admin/unparsed`）
+
+**背景**：客户端把 **AI 失败 = 不确定** 落地为「不落待审、不打扰用户，只计数 + 服务端留痕」。
+好处是消灭了「用户面对没有金额的原文没法审」的假交互；代价是**一笔真账恰好撞上 AI 挂掉的那几十秒
+就没有任何出口**——`ai_parse_logs` 里有留痕，但没人能把它变成账。本面把这批失败集中捞出，
+让人（管理员/本人）决定它是什么。
+
+**硬边界（贯穿）**：① **绝不写 `transactions`**、不碰 `POST /transactions`（不绕过「未确认不得声称已记」）；
+② **不重跑 AI**（重跑属于 `/api/ai/parse` 路径）；③ **不管「判非账」**（`status='empty'` 且
+`failure_code IS NULL` 是 AI 的正常回答，不是不确定）。
+
+**端点**（字段契约见 [API.md](API.md) admin 表；表结构见 [DATA.md §13.5](DATA.md)）：
+
+- `GET /api/admin/unparsed`（P1 只读）：只返回 `failure_code ∈ unavailable`（真源 `lib/ai-failure.ts` 的
+  `AI_UNAVAILABLE_FAILURE_CODES`，**排除 `input_empty` / `input_too_long`**）；默认**脱敏**
+  （`text_preview` 首 60 字 + `raw_input_len`），`include_raw=1` 才给全文并写审计；`summary` 按
+  failure_code/channel；`?triage=` 按**当前态**裁决过滤（候选池视图）。
+- `POST /api/admin/unparsed/:id/triage`（P2 裁决）：`{action, reason}`。
+
+| action | 语义 | 去向 | 写账？ |
+|---|---|---|---|
+| `mark_bill` | 这是真账、但没记上 | **只写裁决记录**；产品决策（2026-10，选 A）**不回推客户端、不生成待确认候选** | **否** |
+| `mark_not_bill` | 这不是账 | 判据改进样本（候选池） | 否 |
+| `mark_rule_missing` | 这类根本没判据 | 规则候选池（`rules.json` 的 `testcases` 候选） | 否 |
+
+**裁决去向**：候选**只落库待人工整理**，最终改动走 `rules.json` 发布流程（`content_hash` 变 → 客户端重拉）
+——**不允许管理面板在线改判据**（§3.7 / S-07 已收窄为此）。⚠️ **回推客户端「待确认」产品决策不做**
+（选 A）：多用户下「谁在替谁确认」无正当答案，且会重新占用用户注意力。
+
+**隐私**：`raw_input` 是用户的通知/短信正文（可能含卡号片段、余额、商户、地址）。理想是
+「自部署默认开、SaaS 默认关」，但**本仓库没有「自部署 / SaaS」模式标志** → 统一按最保守口径：
+**全局默认关原文**，`include_raw=1` 才显式取全文并写审计（与 `GET /api/admin/ai-parse-logs` 同口径）。
+判断「像不像账」通常不需要全文（`text_preview` + 结构化字段已足够）。
+
+**审计与幂等**：读原文（`include_raw=1`）写 `appLog('warn','admin', …)`；裁决写入 `admin_unparsed_triage`
+（`UNIQUE(parse_log_id, admin_id, action)`）——同动作重复 = 幂等成功，同 log 不同 action 允许、
+**当前态取最新一行**、历史不删；**绝不改 `ai_parse_logs`**（人机两份事实分开存）。删除用户时
+`purgeUserData` 先清本表（否则外键卡删用户）。
+
+**与 `parse-feedback` 的区别**：`parse-feedback` 是**用户纠正机器的输出**（对象是解析成功的 log，
+学 `ai_memories`）；本面是**人评估机器的失败**（对象是失败 log、无 `parsed_items`），只进裁决记录 +
+规则候选池，**不学用户偏好**。
+
+**分期**：P1 只读（已实现）→ P2 裁决 + 候选池（已实现）→ ~~P3 回推待确认~~（产品决策不做）。
+管理面板「自动化」分组下有「未解析裁决」tab（脱敏列表 + 三个裁决按钮 + 候选池下拉）。
 
 ## 4. 开发规范
 
@@ -440,7 +511,8 @@ initDb()   // 会建表 / 跑 migration / 写库
 |------|------|
 | 一次确认率 | > 80% |
 | 手动修正率 | < 15% |
-| 失败率 | < 5% |
+| 失败率（`unavailable_rate` = error+timeout；**「判非账」不计入**） | < 5% |
+| 重试救回率（`retry_rescued` / `retried_count`，服务端同步重试 1 次） | 可观测 |
 | 响应 P95 | < 5s |
 | 分类准确率 | > 85% |
 

@@ -15,8 +15,10 @@ import {
   validateRules,
   contentHash,
   corpusHash,
+  buildPublishPayload,
   REQUIRED_RULES_SHAPE,
   regexPaths,
+  APP_PROFILE_LIMITS,
   selfTestTestcases,
   publishRulesFromFile,
   stripTestcases,
@@ -201,6 +203,144 @@ describe('validateRules · 拒绝规则', () => {
     expect(validateRules(lm2).join('|')).toMatch(/list_page_min_amounts 若出现必须是正整数/)
   })
 
+  it('A11Y profile：缺失放行；全局 merchant_labels / profiles_schema 类型错拒绝', () => {
+    const base = loadReal()
+    delete (base.a11y as Record<string, unknown>).merchant_labels
+    delete (base.a11y as Record<string, unknown>).profiles_schema
+    expect(validateRules(base)).toEqual([]) // 缺失 = 客户端回退内置硬编码
+
+    const ml = loadReal()
+    ;(ml.a11y as Record<string, unknown>).merchant_labels = '收款方'
+    expect(validateRules(ml).join('|')).toMatch(/merchant_labels 若出现必须是非空字符串数组/)
+
+    const ml2 = loadReal()
+    ;(ml2.a11y as Record<string, unknown>).merchant_labels = []
+    expect(validateRules(ml2).join('|')).toMatch(/merchant_labels 若出现必须是非空字符串数组/)
+
+    const ps = loadReal()
+    ;(ps.a11y as Record<string, unknown>).profiles_schema = 0
+    expect(validateRules(ps).join('|')).toMatch(/profiles_schema 若出现必须是正整数/)
+  })
+
+  it('A11Y profile：app_profiles 类型 / 逐键类型拒绝', () => {
+    const notObj = loadReal()
+    ;(notObj.a11y as Record<string, unknown>).app_profiles = []
+    expect(validateRules(notObj).join('|')).toMatch(/app_profiles 若出现必须是对象/)
+
+    const badKeys = loadReal()
+    ;(badKeys.a11y as Record<string, unknown>).app_profiles = {
+      'me.ele': {
+        success_keywords: 'x',
+        list_page_head_chars: 0,
+        amount_view_id: '',
+        merchant_labels: [''], // 元素非空串才行（空数组是合法的，见下一条）
+      },
+    }
+    const errs = validateRules(badKeys).join('|')
+    expect(errs).toMatch(/success_keywords 若出现必须是字符串数组/)
+    expect(errs).toMatch(/list_page_head_chars 若出现必须是正整数/)
+    expect(errs).toMatch(/amount_view_id 若出现必须是非空字符串/)
+    expect(errs).toMatch(/merchant_labels 若出现必须是字符串数组/)
+  })
+
+  it('A11Y profile：profile 内数组允许为空（[] = 显式清空）；全局 a11y 数组仍非空', () => {
+    const clear = loadReal()
+    ;(clear.a11y as Record<string, unknown>).app_profiles = {
+      'me.ele': { exclude_keywords: [], merchant_labels: [] },
+    }
+    expect(validateRules(clear)).toEqual([]) // profile 内空数组合法
+
+    // 发布载荷必须**保留空数组**（不得被当「缺失」丢掉，否则客户端退回全局并集 = 清空失效）
+    const payload = buildPublishPayload(clear).a11y as Record<string, unknown>
+    const profile = (payload.app_profiles as Record<string, unknown>)['me.ele'] as Record<string, unknown>
+    expect('exclude_keywords' in profile).toBe(true)
+    expect(profile.exclude_keywords).toEqual([])
+
+    // 全局 `a11y.merchant_labels` 沿用非空校验（与 profile 内语义不同）
+    const globalEmpty = loadReal()
+    ;(globalEmpty.a11y as Record<string, unknown>).merchant_labels = []
+    expect(validateRules(globalEmpty).join('|')).toMatch(/merchant_labels 若出现必须是非空字符串数组/)
+  })
+
+  it('A11Y profile：amount_regex 过安全子集（裸 \\s / 变长 lookbehind 拒绝）', () => {
+    const bare = loadReal()
+    ;(bare.a11y as Record<string, unknown>).app_profiles = { 'me.ele': { amount_regex: '\\s' } }
+    expect(validateRules(bare).join('|')).toMatch(/amount_regex: .*不允许 \\s/)
+
+    const look = loadReal()
+    ;(look.a11y as Record<string, unknown>).app_profiles = { 'me.ele': { amount_regex: '(?<=a+)x' } }
+    expect(validateRules(look).join('|')).toMatch(/amount_regex: .*变长 lookaround/)
+
+    const ok = loadReal()
+    ;(ok.a11y as Record<string, unknown>).app_profiles = {
+      'me.ele': { amount_regex: '[¥￥](\\d+\\.?\\d{0,2})' },
+    }
+    expect(validateRules(ok)).toEqual([])
+  })
+
+  it('A11Y profile：孤儿 profile 拒绝（不在 embedded_payment_apps）', () => {
+    const orphan = loadReal()
+    ;(orphan.a11y as Record<string, unknown>).app_profiles = {
+      'com.unknown.app': { success_keywords: ['支付成功'] },
+    }
+    expect(validateRules(orphan).join('|')).toMatch(/孤儿 profile「com\.unknown\.app」/)
+
+    const fixed = loadReal()
+    ;((fixed.a11y as Record<string, unknown>).embedded_payment_apps as string[]).push('com.unknown.app')
+    ;(fixed.a11y as Record<string, unknown>).app_profiles = {
+      'com.unknown.app': { success_keywords: ['支付成功'] },
+    }
+    expect(validateRules(fixed)).toEqual([])
+  })
+
+  it('A11Y profile：包名非法（含空白 / 过长）拒绝', () => {
+    const ws = loadReal()
+    ;((ws.a11y as Record<string, unknown>).embedded_payment_apps as string[]).push('bad pkg')
+    ;(ws.a11y as Record<string, unknown>).app_profiles = { 'bad pkg': {} }
+    expect(validateRules(ws).join('|')).toMatch(/包名不得含空白字符/)
+
+    const long = loadReal()
+    const longPkg = 'a'.repeat(APP_PROFILE_LIMITS.maxPackageNameLen + 1)
+    ;((long.a11y as Record<string, unknown>).embedded_payment_apps as string[]).push(longPkg)
+    ;(long.a11y as Record<string, unknown>).app_profiles = { [longPkg]: {} }
+    expect(validateRules(long).join('|')).toMatch(/包名过长/)
+  })
+
+  it('A11Y profile：超过 200 个 / 超过字节上限 → 拒绝（不静默截断）', () => {
+    const many = loadReal()
+    const pkgs = Array.from({ length: APP_PROFILE_LIMITS.maxProfiles + 1 }, (_, i) => `pkg.${i}`)
+    const a11yMany = many.a11y as Record<string, unknown>
+    a11yMany.embedded_payment_apps = pkgs
+    a11yMany.app_profiles = Object.fromEntries(pkgs.map((p) => [p, {}]))
+    expect(validateRules(many).join('|')).toMatch(/最多 200 个 profile/)
+
+    const huge = loadReal()
+    ;(huge.a11y as Record<string, unknown>).app_profiles = {
+      // 类型合法，但序列化远超上限
+      'me.ele': { merchant_labels: Array.from({ length: 20000 }, () => '标签字') },
+    }
+    expect(validateRules(huge).join('|')).toMatch(/序列化超过 \d+ 字节/)
+  })
+
+  it('A11Y profile：改 profile / merchant_labels → content_hash 变（客户端自动重拉）', () => {
+    const a = loadReal() // 无 app_profiles
+    const b = loadReal()
+    ;(b.a11y as Record<string, unknown>).app_profiles = { 'me.ele': { success_keywords: ['支付成功'] } }
+    expect(contentHash(b)).not.toBe(contentHash(a))
+
+    const c = loadReal()
+    ;(c.a11y as Record<string, unknown>).app_profiles = { 'me.ele': { success_keywords: ['支付完成'] } }
+    expect(contentHash(c)).not.toBe(contentHash(b))
+
+    const d = loadReal()
+    ;(d.a11y as Record<string, unknown>).merchant_labels = ['收款方']
+    expect(contentHash(d)).not.toBe(contentHash(a))
+
+    // 载荷保留新键（真会下发，不是只进校验）
+    const payloadA11y = buildPublishPayload(b).a11y as Record<string, unknown>
+    expect(payloadA11y.app_profiles).toEqual({ 'me.ele': { success_keywords: ['支付成功'] } })
+  })
+
 
   it('审计：文件里键名含 regex 的项都被清单覆盖（不许有漏网的正则）', () => {
     const r = loadReal() as Record<string, unknown>
@@ -215,7 +355,9 @@ describe('validateRules · 拒绝规则', () => {
     }
     walk(r, '')
     const covered = new Set(regexPaths())
-    const uncovered = found.filter((p) => !covered.has(p))
+    // profile 的 amount_regex 由 validateAppProfiles 单独过安全子集（路径是动态的，不在 regexPaths 里）
+    const isProfileRegex = (p: string): boolean => /^a11y\.app_profiles\.[^.]+\.amount_regex$/.test(p)
+    const uncovered = found.filter((p) => !covered.has(p) && !isProfileRegex(p))
     expect(uncovered, `这些正则键未被安全子集校验覆盖：${uncovered.join(', ')}`).toEqual([])
   })
 

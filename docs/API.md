@@ -3,7 +3,7 @@
 > **Base URL**: `http(s)://<host>:3000/api`
 > **认证**: 除 `/health`、`/api/auth/*`、`/api/config/notification-rules`、`/api/app/update` 外均需 `Authorization: Bearer <jwt>`
 > **响应格式**: 统一 `{ code: 0, data: <T>, message: "" }`
-> **路由**: 见 `server/src/routes/*.ts`。本文档逐条枚举全部 90 个端点；
+> **路由**: 见 `server/src/routes/*.ts`。本文档逐条枚举全部 92 个端点；
 > 若与 `scripts/gen-api-docs.ts` 输出不一致，**以脚本为准**（它直接读 `routes/*.ts`）。
 
 > ⚠️ **已废弃接口（deprecated，2026-10）**：`/api/budgets/*`、`/api/goals/*`、
@@ -576,11 +576,13 @@ If-None-Match: "ab12…"
 | DELETE | `/api/admin/users/:id` | 删除用户（**硬删 + 撤销该用户所有 token**） |
 | GET | `/api/admin/settings` | 全局设置（Key 脱敏） |
 | PUT | `/api/admin/settings` | 更新白名单全局设置 |
-| GET | `/api/admin/ai-parse-stats` | AI 解析总览（成功率/修正率/P95）＋ **`prefilter` 服务端预筛块**（挡下总数/入站/出站/日均/判定耗时/按 reason 分档） |
+| GET | `/api/admin/ai-parse-stats` | AI 解析总览 ＋ **失败可观测块**（`overview.unavailable_rate` / `by_failure_code` / `by_channel` / `retried_count`·`retry_rescued`；**「判非账」不计失败**）＋ **`prefilter` 服务端预筛块**（挡下总数/入站/出站/日均/判定耗时/按 reason 分档） |
 | GET | `/api/admin/ai-parse-logs` | 解析日志分页（**返回用户原始输入 `raw_input`**，访问写审计日志） |
 | GET | `/api/admin/ai-parse-logs/:id` | 单条日志（含 `raw_input` 原文，访问写审计日志） |
 | GET | `/api/admin/logs` | 应用日志分页 |
 | GET | `/api/admin/filter-stats` | 客户端拦截计数 vs 服务端**入站** reason 对照（`?days=30`；不含用户内容；**不返回误杀率**——那要靠语料判定） |
+| GET | `/api/admin/unparsed` | 「不确定」集中裁决面 **P1 只读**（design `docs/ARCHITECTURE.md §3.9`）：列出 `failure_code ∈ unavailable` 的解析失败（**排除入参类**）；默认**脱敏**（只给 `text_preview` 首 60 字 + `raw_input_len`），`include_raw=1` 才给全文并**写审计**；`summary` 按 `failure_code`/`channel`；`?triage=` 可按当前态裁决过滤（候选池）。⚠️ 只读、不写账 |
+| POST | `/api/admin/unparsed/:id/triage` | 「不确定」**P2 人工裁决**：`{action: mark_bill\|mark_not_bill\|mark_rule_missing, reason}` → 写 `admin_unparsed_triage`（migration 023）。**幂等**（同 log+admin+action 重复不新增）；同 log 不同 action 允许、当前态取最新。**绝不写账、绝不改 `ai_parse_logs`**；产品决策：`mark_bill` 不回推客户端 |
 
 > 隐私口径：**用户之间完全隔离**。管理员默认只在管理面板做用户/系统管理；
 > 跨用户查看流水明细与解析原文属**排障用途**，服务端会写审计日志
@@ -616,7 +618,7 @@ If-None-Match: "ab12…"
 
 ## 附录 A：模块-端点索引
 
-与 `scripts/gen-api-docs.ts` 的输出**逐条对齐**（17 个模块 / 90 个端点）。
+与 `scripts/gen-api-docs.ts` 的输出**逐条对齐**（17 个模块 / 92 个端点）。
 
 | 模块 | 端点数 | 关键端点 |
 |------|--------|---------|
@@ -634,11 +636,11 @@ If-None-Match: "ab12…"
 | subscription | 6 | CRUD + cancel, renew |
 | import | 1 | CSV 预览 |
 | export | 2 | JSON, CSV |
-| admin | 18 | invites / users / settings / ai-stats / logs / **filter-stats** |
+| admin | 20 | invites / users / settings / ai-stats / logs / **filter-stats** / **unparsed** / **unparsed-triage** |
 | app-update | 3 | update, updates |
 | notification-rules | 4 | config + admin |
 
-> `/health` 直接注册在 `routes/index.ts`（不在某个路由模块文件里），故不计入上表的 90 个端点。
+> `/health` 直接注册在 `routes/index.ts`（不在某个路由模块文件里），故不计入上表的 92 个端点。
 > 上表若与 `gen-api-docs.ts` 输出不一致，**以脚本为准**（它直接读 `routes/*.ts`）。
 
 ## 附录 B：自动生成脚本
@@ -666,20 +668,23 @@ If-None-Match: "ab12…"
 | `source` | **来源应用**：`{ package_name, source_name? }`。⚠️ 不要用它表示入口，会和 `channel` 撞名 |
 
 ## 1. `POST /api/ai/parse` 响应有 8 种形态（客户端必须按形态分支）
-请求：`{ input: string(1..3000) }`（扩展见 §5）。限流 20/min。
+请求：`{ input: string(1..3000；a11y 1..8000) }`（扩展见 §5）。限流 20/min。
 
-| # | 触发 | HTTP | code | data | parse_log_id |
-|---|---|---|---|---|---|
-| 1 | 入站预筛挡下 | 200 | 0 | `{items:[], raw_input, source:'prefilter'}` | 无 |
-| 2 | 快捷正则解析 | 200 | 0 | `{items, raw_input, parse_log_id, source:'quick'}` | `data` |
-| 3 | 出站判定为噪声 | 200 | 0 | `{items:[], raw_input, source:'postfilter'}` | 无 |
-| 4 | 模型解析成功 | 200 | 0 | `{items, raw_input, parse_log_id}` | `data`（`source` 缺失，§6 补 `'ai'`） |
-| 5 | 模型空结果 | 200 | 5001 | `null`（`fallback:'manual'`） | **顶层** |
-| 6 | AI 超时 / 上游错误 | 504 / 502 | 5001 | `null`（`fallback:'manual'`） | 无 |
-| 7 | 响应格式异常 | 200 | 5002 | `null`（`fallback:'manual'`） | 无 |
-| 8 | 入参校验失败 | 400 | 2000 | `null` | 无 |
+| # | 触发 | HTTP | code | data | parse_log_id | `outcome` |
+|---|---|---|---|---|---|---|
+| 1 | 入站预筛挡下 | 200 | 0 | `{items:[], raw_input, source:'prefilter'}` | 无 | `not_a_bill` |
+| 2 | 快捷正则解析 | 200 | 0 | `{items, raw_input, parse_log_id, source:'quick'}` | `data` | — |
+| 3 | 出站判定为噪声 | 200 | 0 | `{items:[], raw_input, source:'postfilter'}` | 无 | `not_a_bill` |
+| 4 | 模型解析成功 | 200 | 0 | `{items, raw_input, parse_log_id}` | `data`（`source` 缺失，§6 补 `'ai'`） | — |
+| 5 | 模型空结果 | 200 | 5001 | `null`（`fallback:'manual'`） | **顶层** | `not_a_bill` |
+| 6 | AI 超时 / 上游错误 | 504 / 502 | 5001 | `null`（`fallback:'manual'`） | 无 | `unavailable` |
+| 7 | 响应格式异常 | 200 | 5002 | `null`（`fallback:'manual'`） | 无 | `unavailable` |
+| 8 | 入参校验失败 | 400 | 2000 | `null` | 无 | `unavailable` |
 
-- ⚠️ #1/#3/#6/#7 **没有 parse_log_id**（无 `ai_parse_logs` 行）→ **不存在可反馈对象**，不要回传；判失败要看 `code`/`fallback`，**别只看 HTTP**（#5/#7 是 200）。
+- ⚠️ #1/#3/#6/#7 **不回 `parse_log_id`** → **不存在可反馈对象**，不要回传。（#6/#7 服务端**有** `ai_parse_logs` 行——失败也要留痕、要能算失败率，只是不给 id。）判失败要看 `code`/`fallback`，**别只看 HTTP**（#5/#7 是 200）。
+- **`outcome`（022 新增，机械判别，建议客户端采用）**：`not_a_bill`（#1/#3/#5：AI/规则**判非账**，不是故障）｜`unavailable`（#6/#7/#8：AI **不可用或输出不可用**）。**不变量：`items` 为空 ⇔ 顶层有 `outcome`**（有账的两态 #2/#4 不带）。客户端把失败移出用户视野后，用它把「判非账」与「AI 挂了」的本地计数分成两个桶——**不要靠 HTTP 状态或 `parse_log_id` 有无去猜**。
+- **失败响应体恒为可解析 JSON 信封**（#6 的 502/504 也一样），`outcome` 恒在**顶层**：客户端即使把网络/传输异常当 `unavailable` 兜底，能拿到 body 时也能直接读 `outcome`。
+- **服务端有限重试（022）**：瞬时失败（超时/网络/5xx/429/JSON 格式错/非空但全不合法）由**服务端重试 1 次**（单次超时 30s，总预算 ≈61s < 客户端 90s HTTP 超时）；401/KeyMissing/4xx 不重试。→ **客户端不要再自己对 5001/5002/502/504 重试**（两端叠加会双倍烧额度，且客户端拿不到服务端的 `failure_code` 归因）。
 
 ## 2. 反馈闭环（Q1）—— 双方优先做，服务端已确认可做
 `POST /api/ai/parse-feedback`（认证）：
@@ -746,8 +751,9 @@ If-None-Match: "ab12…"
 - **幂等 = 覆盖**：同 (user, client_version, channel, 窗口, rule_id) 重复上报**改写** hits 而非累加 → 客户端可放心重试。
 - `rule_id` 只允许 `precheck.*`（可比）或 `client_only.*`（服务端无对应，不可比）；**第三个前缀 400**。回执 `{accepted, unknown_precheck_ids}`——后者是「你的清单与我当前清单不一致」的**漂移信号**（收下但标出，不拒绝）。
 - 约束：`counts` 1..200 条、`blocked <= notifications`；超限一律 400（不静默截断）。
-- **admin 对照视图**：`GET /api/admin/filter-stats?days=30` → `client.by_rule[{rule_id,namespace,comparable,hits}]` + `client.by_channel/totals(block_rate)` + `server.by_reason`（**只含入站** reason，出站不在 precheck 范围）。⚠️ **不返回「误杀率」**：它必须靠语料 `expect_txn` 判定，用计数相减算出来的是编的（视图 `note` 里明说）。
-- `client_only.*` = **客户端独有判据 + 诊断计数**（服务端无对应判据，**不可比**）；id 语义由**客户端维护**，此处为 2026-10 快照（`self_notification` 自身通知 · `duplicate_content` 5s 内容去重 · `blank_text` 空正文 · `system_group_summary` 系统分组摘要 · `summary_report` 日报/区间合计 · `promo_sentence` 促销句式 · `marketing` 营销词且无强交易特征 · `not_financial` 账务判据未过 · `ai_memory` 5min 长窗 · `ai_muted` 单包熔断 · `db_duplicate` 1s 去重 · `list_page` A11Y 账单/明细**列表页**（双条件：页面可见文本里金额节点 ≥3 **且**命中列表词）· **`precheck_unknown_expr` 漂移诊断，非拦截**）。
+- **admin 对照视图**：`GET /api/admin/filter-stats?days=30` → `client.by_rule[{rule_id,namespace,comparable,hits}]` + `client.by_channel/totals(block_rate)` + `client.funnel` + `server.by_reason`（**只含入站** reason，出站不在 precheck 范围）。⚠️ **不返回「误杀率」**：它必须靠语料 `expect_txn` 判定，用计数相减算出来的是编的（视图 `note` 里明说）。
+- **`client.funnel`（捕获层漏斗，按前缀机械归类，不新增接口）**：`received` / `dropped` / `unparsed_ai_failed` + `by_channel[]` + `dropped_reasons[]`。归类只认 `client_only.capture_received_*`（收到）、`client_only.capture_dropped_*`（捕获层早退）、`client_only.unparsed_ai_failed`（AI 失败丢弃）；**其它 `client_only.*` 不得混进漏斗**。⚠️ `received − dropped` 只是「通过捕获层」，**不等于入账数**（后面还有预筛/解析）。管理页把它与 `ai-parse-stats.by_channel[].unavailable_count` 并排做**双失败交叉核对**（客户端显著偏低 = 内存计数被进程重启清零）。⚠️ `client_only.unparsed_input_invalid`（HTTP 400 入参非法）**明确不进漏斗**——它不是 AI 失败，混进来会虚增 unparsed。
+- `client_only.*` = **客户端独有判据 + 诊断计数**（服务端无对应判据，**不可比**）；id 语义由**客户端维护**，此处为 2026-10 快照（`self_notification` 自身通知 · `duplicate_content` 5s 内容去重 · `blank_text` 空正文 · `system_group_summary` 系统分组摘要 · `summary_report` 日报/区间合计 · `promo_sentence` 促销句式 · `marketing` 营销词且无强交易特征 · `not_financial` 账务判据未过 · `ai_memory` 5min 长窗 · `ai_muted` 单包熔断 · `db_duplicate` 1s 去重 · `list_page` A11Y 账单/明细**列表页**（双条件：页面可见文本里金额节点 ≥3 **且**命中列表词）· **`precheck_unknown_expr` 漂移诊断，非拦截** · **`unparsed_ai_failed` AI 失败丢弃——**仅服务端 `outcome=unavailable`**（超时/上游错误 502·504/格式异常 5002/网络/未知；⚠️ **不含 `code=5001` 的「模型空结果=判非账」分支**），客户端处置计数而非拦截——服务端无判据，也不进 `totals`，留痕在 `ai_parse_logs`** · **`unparsed_input_invalid` HTTP 400 入参非法（input 空/超长）——客户端请求问题，非 AI 故障；与 `unparsed_ai_failed` 分桶后「双失败交叉核对」才不被多算污染；不进 `totals`**）。
   接受诊断类条目上报（否则漂移没人看得见）：服务端只搬计数，**不维护 id→语义 映射**（映射会腐）——语义真源在客户端。
 - **可选云控键**（渠道门禁调参，缺失时客户端用内置默认）：`a11y.list_page_keywords`（非空字符串数组）、
   `a11y.list_page_min_amounts`（正整数）。服务端 `validateRules` 对它们做**出现即校验类型**（缺失放行）。
@@ -761,7 +767,7 @@ If-None-Match: "ab12…"
   "title":"…", "body":"…", "received_at":"2026-10-12T23:40:00+08:00",
   "hints": {"amount_cents":3200,"merchant":"美团","account_name":"微信","direction":"expense"} }
 ```
-- `input` 仍唯一必填（向后兼容）。`title`/`body` v1 **只收 + 校验 + 落库**，**暂不参与**去噪/佐证：
+- `input` 仍唯一必填（向后兼容）。**长度：一般渠道 ≤**3000；**a11y 放宽到 8000**（整页无障碍文本天然更长）。a11y 超 8000 由服务端**头部截断**后照常解析（降级、非失败，不置 `failure_code`）；其它渠道超 3000 返回 400，但会**落一行 `failure_code='input_too_long'` 的日志**（不再是无痕黑洞）。`title`/`body` v1 **只收 + 校验 + 落库**，**暂不参与**去噪/佐证：
   body 变长会让 tier2「短句光杆数字」判据（len≤30）失效，属独立行为变更，不混做。
 - `received_at` **必须带时区偏移**：服务端取它的**北京日期**作为该请求的「今天」（跨午夜迟发不写错日期）；
   越出 [今天-7, 今天+1] 则忽略并回落今天（手机时钟护栏）；锚定值在 quickParse / prompt / 校验间保持一致。
@@ -813,3 +819,109 @@ If-None-Match: "ab12…"
     ⇒ **改语料不会换 `content_hash`**（不会因为改一条用例就让全体客户端重拉）。
   - canonical JSON = **递归按键名排序、无空白**；只含字符串/整数/数组，不含浮点，故两端可直接复现。
   - 语料变更的流程：服务端改 `rules.json` → 同一条命令算出新的 `corpus_hash` → **手动播报给对方**，对方同步 vendor 夹具即可（不需要发版）。
+
+## 9. 失败可观测与重试责任（服务端实现，migration 022）
+
+客户端把「解析失败 → 落待审列表」收紧为「失败即不打扰用户 + 只计数」后，**用户视野里再无失败**；
+于是「AI 挂了」只能由服务端指标兜住。022 起：
+
+- `ai_parse_logs` 新增两列（都可空，老行为 NULL）：
+  - `failure_code`：`lib/ai-failure.ts` 的枚举（`AI_TIMEOUT` / `AI_NETWORK_ERROR` / `AI_RATE_LIMIT` /
+    `AI_API_ERROR` / `AI_EMPTY_RESPONSE` / `AI_KEY_INVALID` / `AI_KEY_MISSING` / `parse_format` /
+    `parse_invalid` / **`input_empty` / `input_too_long`**）。**NULL = 本次没有失败**。
+  - `attempts`：本次实际调了几次模型（服务端同步重试，1 = 没重试）。
+- **「判非账」不是失败**：`status='empty'` 且 `failure_code IS NULL` = AI 回了 `[]`（明确判非账）。
+  旧口径把 `empty` 计入「非成功」，等于把「AI 正确回答『这不是账』」当故障、活埋了真正的失败信号。
+- `GET /api/admin/ai-parse-stats` 新增（既有键语义不变）：
+  - `overview.unavailable_count / unavailable_rate`（= `error` + `timeout`）
+  - `overview.not_a_bill_count / not_a_bill_rate`
+  - `overview.retried_count`（`attempts > 1` 的请求数）/ `retry_rescued`（重试后成功）
+  - `by_failure_code[{failure_code, count}]`、`by_channel[{channel, total, success_count, not_a_bill_count, unavailable_count, unavailable_rate}]`
+    （`channel` 为空的老包归 `unknown`）
+  - `recent_failures[]` 追加 `failure_code / attempts / channel`
+- **重试责任在服务端**：瞬时失败（超时/网络/5xx/429/JSON 格式错/非空但全不合法）重试 **1 次**，
+  单次超时 30s、总预算 ≈61s < 客户端 90s HTTP 超时；401/KeyMissing/4xx 立即失败（配置/请求问题，重试无意义）。
+  ⇒ **客户端不要再对 5001/5002/502/504 重试**（只需保留 IOException 重试）。
+- **`outcome` 字段**（见 §1）是给客户端的**机制判别**：`not_a_bill` vs `unavailable`。
+  服务端内部的细粒度原因看 `failure_code`，客户端只需要两桶。
+- **入参黑洞已收口**：`input` 空 / 超长此前 **400 且零日志**（客户端看到失败、服务端什么都看不到）。
+  现在：a11y 放宽/截断（见 §5），其它渠道超限也落 `failure_code='input_too_long'`、空输入落 `'input_empty'`。
+
+## 10. A11Y 摘取 profile（`rules.json.a11y`，跨端契约）
+
+把 A11Y 捕获层里**仍硬编码在客户端**的「摘取策略」变成**可下发配置**（改 `rules.json` → `content_hash`
+变 → 客户端重拉，**免发版**）。新增/改版支付 App 不再必然走客户端发版。
+
+- ✅ 只做**摘取**（选/取文本：词表、正则、标签、节点锚点）。
+- ❌ 不做**判定**——「是不是账」仍归 AI（原则 1）；profile **不得**短路判定链。
+- ❌ 不引入隐式预处理（原则 7）：profile 里的正则就是完整规格，客户端不得对其做归一化。
+
+**现状（为什么是「补」而不是「重建」）**：`a11y` 已热的 9 键 = `embedded_payment_apps` ·
+`success_keywords` · `embedded_success_keywords` · `common_exclude_keywords` ·
+`wechat_alipay_exclude_keywords` · `amount_regex` · `cooldown_minutes` · `list_page_keywords` ·
+`list_page_min_amounts`。本轮把仍冷的四类上云：① `findMerchant` 的标签；② per-App 的
+`amount_regex`/`success_keywords`（原为全局单例）；③ `viewIdResourceName` 锚点（原只打日志）；
+④ `LIST_PAGE_KEYWORD_HEAD_CHARS = 24`（原写死）。
+
+新增三个**可选**键（缺失 = 行为与今天完全一致）：
+
+| 键 | 类型 | 语义 |
+|---|---|---|
+| `profiles_schema` | positiveInt | 版本守卫：客户端不认识（缺失或 ≠1）→ **忽略整个 `app_profiles`**，退回全局键 |
+| `merchant_labels` | string[] | `findMerchant` 的标签（**原客户端硬编码 9 个标签已上云**，值/顺序不变 ⇒ 行为不变） |
+| `app_profiles` | Record\<包名, Profile\> | per-App 摘取覆盖；**逐键回退**（`profile[key]` → 全局 `a11y[key]` → 客户端内置） |
+
+`Profile` 各键（全部可选，出现才覆盖）：`success_keywords`(string[]) ·
+`embedded_success_keywords`(string[]) · `exclude_keywords`(string[]) · `amount_regex`(string) ·
+`merchant_labels`(string[]) · `list_page_head_chars`(positiveInt) · `amount_view_id`(string) ·
+`merchant_view_id`(string)。
+
+**语义（冻结）**
+
+1. **逐键回退，不是整块替换**：`profile[key]` → 全局 `a11y[key]` → 客户端内置默认。profile 只写它要覆盖的键；
+   未写的键**必须**继续从全局取（不得因出现 profile 就丢掉全局值）。
+2. **作用域**：profile 只在该 `package_name` 的事件里生效；全局键对所有白名单包生效。
+3. **`exclude_keywords` 语义**：`profile.exclude_keywords` **出现 → 完全替换**该包排除词
+   （`[]` = 该包不设排除词）。**不出现 → 用该包的全局作用域默认**：`embedded_payment_apps` 里的普通包 =
+   `common_exclude_keywords`；**微信/支付宝（两特例，不在 embedded 列表）= `common_exclude_keywords ⊕
+   wechat_alipay_exclude_keywords`**。⚠️ 这是改造前行为，**无 profile 时必须 100% 等价**。同理
+   `success_keywords` 在 embedded 普通包上还会并入 `embedded_success_keywords`（全局与 profile 各按自身
+   作用域），微信/支付宝不并入。
+4. **viewId 锚点**：与节点 `viewIdResourceName.substringAfterLast('/')` **精确相等**才命中；命中则
+   **优先于**文本/正则启发式；未命中 → 回退文本启发式（fail-open）。
+5. **fail-open / 版本协商**：客户端不认识 `profiles_schema`（缺失或 ≠1）→ **忽略整个 `app_profiles`**，
+   退回全局键（= 今天行为）。单键不合法（类型不符 / regex 编译失败）→ 该键回退全局；全局再失败 → 内置默认。
+   **任何回退都要 warn（带 package + key）**，否则「profile 没生效」不可观测。
+6. **自足**：`amount_regex` 是完整规格；语法须落在安全子集（JS/Kotlin 交集；禁裸 `\s`、变长 lookbehind、
+   命名组、`\p{}`、possessive、内联 flags；允许有界单字符类 lookaround）——服务端发布期校验，不合格拒绝发布。
+7. **不判定**：profile 只能选/取文本，不得表达「是不是账」。
+8. **hash / 幂等**：新增键进 `buildPublishPayload` → 进 `content_hash`（`GET /api/config/notification-rules`
+   的 ETag）；改 profile ⇒ hash 变 ⇒ 客户端自动重拉；回滚沿用 `notification_rules` 的激活/回滚。
+9. **前向兼容**：客户端忽略未知键（不 failOnUnknown）；服务端 `validateRules` 对新增键
+   **出现即校验类型、缺失放行**（与 `list_page_*` 同款）。
+10. **孤儿 profile 禁止**：profile 包名**必须 ∈ `embedded_payment_apps`**——否则该包不在
+    `serviceInfo.packageNames` 里、根本收不到事件，配置就是**静默空转**。服务端校验并**拒绝**孤儿 profile。
+
+> ⚠️ **profile 内数组键允许空数组**（`[]` = 显式清空，见语义 1/3）——`"出现"` 本身就是覆盖信号，
+> 否则 `exclude_keywords` 永远无法清空（默认是全局作用域默认），语义 3「出现即完全替换」直接失效。
+> **全局 `a11y.*` 数组仍沿用非空校验**（两者语义不同，不套用同一规则）。
+
+**客户端契约**：`refreshRulesIfNeeded()` 解析 `profiles_schema`（守卫）+ `app_profiles` 快照；事件里按
+`packageName` 取 profile、逐键回退（语义 1）。`findMerchant` 改用配置的 `merchant_labels`（P2 先试
+`merchant_view_id` 锚点再标签启发式）；`findAmount` P2 先试 `amount_view_id` 再 `amount_regex`；
+列表页 `list_page_head_chars` 可配（缺省 24）。DTO `A11yRulesDto` 增可选字段（缺失 = null → 内置默认）。
+
+**验收**：服务端——类型 / 安全子集 / 上限 / 包名非法 / 孤儿 → **拒绝发布**，缺失 → 放行，
+profile 变更 → `content_hash` 变；客户端——逐键回退矩阵（profile 命中 / profile 缺键 / 全局缺键 → 内置）、
+schema 不认识 → 忽略 profile、regex 编译失败 → 回退、viewId 锚点命中 / 未命中；
+**回归**——无 profile 时既有 `a11y` 全局键行为 100% 等价。
+
+**迭代闭环**：新增支付 App / 改版 → **先加 profile（热，天级）**；只有 profile 表达不了
+（canvas/WebView/纯图片、页面结构剧变）才发版（冷）。触发信号：客户端漏斗 `dropped.a11y.*` 按包分解 +
+该包 `unparsed_ai_failed` / 服务端 `not_a_bill_rate`；admin 裁决「判据缺失」→ 产出 profile/规则 diff 候选。
+
+**分期**：P1 = `merchant_labels` + `app_profiles`（不含 viewId）+ 逐键回退 + schema 守卫；
+P2 = `viewId` 锚点 + `list_page_head_chars`；P3（冷，发版）= canvas/WebView/OCR 兜底 + 陌生页面 node-tree 样本上报。
+
+**服务端校验 / 发布实现细节** → [ARCHITECTURE.md §3.7.1](ARCHITECTURE.md)（`validateRules` 的类型/上限/孤儿/安全子集、
+`buildPublishPayload` 与 `content_hash`）。

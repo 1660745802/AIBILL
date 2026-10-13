@@ -605,7 +605,7 @@ function crossCheckRows(): Array<{ channel: string; client: number; server: numb
     .sort((a, b) => a.channel.localeCompare(b.channel))
 }
 
-// === 未解析裁决（P1 列表 + P2 裁决，design: docs/UNPARSED-TRIAGE.md）===
+// === 未解析裁决（P1 列表 + P2 裁决，design: docs/ARCHITECTURE.md §3.9）===
 const triageFilter = ref({ days: '7', channel: '', action: '', includeRaw: false })
 const triageStats = ref<any>(null)
 const loadingTriage = ref(false)

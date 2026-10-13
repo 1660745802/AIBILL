@@ -131,7 +131,19 @@
       "历史",
       "月账单"
     ],
-    "list_page_min_amounts": 3
+    "list_page_min_amounts": 3,
+    "profiles_schema": 1,
+    "merchant_labels": [
+      "收款方",
+      "商户",
+      "商家",
+      "付款给",
+      "店铺",
+      "商家名",
+      "卖家",
+      "店名",
+      "商品"
+    ]
   },
   "sms": {
     "spam_keywords": [

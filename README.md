@@ -37,7 +37,7 @@
 | 📤 数据导出 | JSON 全量备份 + CSV 流水导出（Excel 兼容） |
 | 👥 多用户 | 邀请码注册，数据完全隔离，管理员不可见他人数据 |
 | 🗑️ 回收站 | 软删除可恢复，30 天后自动清理 |
-| 🔧 管理面板 | **异常优先概览**（需要处理：解析失败率/超时、判据漂移告警、规则未激活、无分发版本）、用户与邀请码、解析质量（含服务端预筛）、自动化对照（客户端上报 vs 服务端入站）、通知规则（查看/激活/回滚）、AI 设置、系统日志、App 版本分发 |
+| 🔧 管理面板 | **异常优先概览**（需要处理：AI 不可用率/失败原因、判据漂移告警、规则未激活、无分发版本）、用户与邀请码、解析质量（含服务端预筛 + 失败原因/按渠道/重试救回；**「判非账」不计失败**）、自动化对照（客户端上报 vs 服务端入站）、通知规则（查看/激活/回滚）、AI 设置、系统日志、App 版本分发 |
 
 ### 产品口径（跨端一致）
 
@@ -186,7 +186,7 @@ bill/
 │   │   ├── ai/                # AI 模块（client / parser / prompts / matcher / verify）
 │   │   ├── db/                # Schema + Migration（21 个版本）
 │   │   ├── middleware/        # JWT 鉴权（含 token_version 校验）
-│   │   ├── routes/            # 17 个路由模块（90 端点，见 docs/API.md）
+│   │   ├── routes/            # 17 个路由模块（92 端点，见 docs/API.md）
 │   │   ├── services/          # auth / logger / scheduler
 │   │   └── lib/               # 纯领域逻辑：portfolio / account-balance / precheck /
 │   │                          # quotes·fx·holdings·quote-acquisition / date
@@ -215,7 +215,7 @@ bill/
 |------|-----------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 怎么搭的 / 怎么上线：技术架构、多端契约、部署运维、**开发规范·安全·PR·测试·文档纪律** |
 | [docs/DATA.md](docs/DATA.md) | 数据模型；**余额 / 行情 / 日期口径** |
-| [docs/API.md](docs/API.md) | 全部 90 个端点契约 + **附录 C 跨端解析契约** |
+| [docs/API.md](docs/API.md) | 全部 92 个端点契约 + **附录 C 跨端解析契约** |
 | [docs/UI-DESIGN.md](docs/UI-DESIGN.md) | 前端信息架构与**口径硬规则**（视觉 token 真源在 `web/src/assets/main.css`） |
 | 本文（README） | 产品定位与原则、功能现状（**deprecated 权威表**）、取舍流程、路线图、快速开始 |
 

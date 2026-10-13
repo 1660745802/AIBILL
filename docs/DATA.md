@@ -320,6 +320,8 @@ INSERT OR IGNORE INTO settings (key, value) VALUES (...);
 | **019** | **ai_parse_input_context** | `ai_parse_logs` 加 channel/source_package/received_at/hints；`ai_parse_filters` 加 channel/source_package（解析入参上下文留档，见 §13.1） |
 | **020** | **notification_rules_content_hash** | `notification_rules` 加 `content_hash`；`version` 先去重再建 UNIQUE，`content_hash` 建 UNIQUE（ETag 绑内容，见 §13.2） |
 | **021** | **client_filter_stats** | 新建 `client_filter_stats` / `client_filter_totals`（客户端拦截计数上报，见 §13.3） |
+| **022** | **ai_failure_observability** | `ai_parse_logs` 加 `failure_code` / `attempts`（AI 失败可观测 + 服务端重试计数，见 §13.4） |
+| **023** | **admin_unparsed_triage** | 新建 `admin_unparsed_triage`（「不确定」人工裁决记录 / 规则候选池，见 §13.5） |
 
 > ⚠️ migration 012 曾被原地改写：早期版本重建过 `ai_parse_logs`（放宽 `status` CHECK 加 `filtered`），
 > 并被误应用到**生产库**（记录名 `parse_landing_tracking`）。当前代码里 012 是「新建 `ai_parse_filters`」版，
@@ -649,3 +651,49 @@ DB 只是发布载体：`notification_rules.content_hash` = 发布载荷（**剔
   `client_only.*`（客户端独有，服务端**无对应**，不参与误杀率比较）。
 - ⚠️ 这张表是**聚合计数**，与 `ai_parse_filters`（逐条事件）是两回事，**刻意不合并**：
   合并会让「服务端挡掉 53%」这个口径不可比。
+
+### 13.4 AI 失败可观测与重试计数（022）
+
+客户端把「解析失败 → 落用户待审列表」收紧为「失败即不打扰用户」后，**用户视野里再无失败**，
+「AI 挂了」只剩服务端指标能发现。`ai_parse_logs` 追加两列（**可空**；老行 NULL = 「未归类/未重试」的历史事实，
+不设 DEFAULT 伪造）：
+
+| 列 | 用途 |
+|---|---|
+| `failure_code` | 失败类型枚举（真源 `server/src/lib/ai-failure.ts`）。**NULL = 本次没有失败** |
+| `attempts` | 本次实际调了几次模型（服务端同步重试；1 = 没重试） |
+
+**关键口径：「判非账」不是失败。** `status='empty'` 且 `failure_code IS NULL` = AI 回了 `[]`（明确判非账）。
+旧统计把 `empty` 算进「非成功」，把「AI 正确回答『这不是账』」当故障 —— 真正的失败率被这种噪声活埋（022 修正）。
+
+枚举含两类「非 AI」失败，但同样要可见（否则就是黑洞）：`input_empty` / `input_too_long`
+（`input` 空 / 超长）。长度上限：一般渠道 3000，**a11y 放宽到 8000**且超长头部截断（截断是降级、不置 failure_code）。
+
+**重试责任在服务端**（原因：客户端拿不到上游可观测性；且失败后已不打扰用户）。
+瞬时故障重试 1 次，**单次超时 30s × 2 + 退避 ≈ 61s < 客户端 90s HTTP 超时**；
+401/KeyMissing/4xx 不重试。策略判据（只看错误类型/HTTP 状态码，**不看文案**）在 `lib/ai-failure.ts`，
+有单测逐条锁定；路由层的落库/重试行为在 `tests/routes/ai-parse-retry.test.ts`。
+管理面板聚合（`GET /api/admin/ai-parse-stats` 的 `unavailable_rate` / `by_failure_code` / `by_channel` / `retry_rescued`）
+见 [API.md 附录 C §9](API.md)。
+
+### 13.5 「不确定」人工裁决记录（023）
+
+产品决策（2026-10）后，客户端把 AI 失败移出用户视野 → 失败只剩服务端留痕。
+[ARCHITECTURE.md §3.9](ARCHITECTURE.md) 的 P1/P2 把它们集中成可查 + 可裁决面：
+
+```
+admin_unparsed_triage (id, parse_log_id → ai_parse_logs(id), action, reason, admin_id → users(id), created_at)
+  action ∈ mark_bill | mark_not_bill | mark_rule_missing
+  UNIQUE(parse_log_id, admin_id, action)
+```
+
+- **机器事实与人工意见分开存**：本表**绝不改 `ai_parse_logs`**、**绝不写 `transactions`**
+  （不绕过「未确认不得声称已记」）。`mark_not_bill` / `mark_rule_missing` 同时充当
+  **规则/语料候选池**（只落库待人工整理，最终改动仍走 `rules.json` 发布流程）。
+- **幂等**：同 (parse_log_id, admin_id, action) 重复提交 = 成功且不新增行；
+  同 log 不同 action **允许**（改判留历史），**当前态取最新一行**（`id` 最大），历史不删。
+- **窗口/渠道的定义在 `ai_parse_logs`**：本表只补「人工意见」，不冗余存 `channel`/`failure_code`。
+- ⚠️ **FK 与删用户**：`purgeUserData` 必须先清本表（挂在该用户解析行上的 + 该用户作为 admin 留下的），
+  否则外键约束会让「有裁决记录的用户」删不掉（见 `routes/admin.ts`）。
+
+P3（回推客户端「待确认」）**产品决策不做**；重跑 AI / 改判判非账 / 在线编辑判据也都不做。

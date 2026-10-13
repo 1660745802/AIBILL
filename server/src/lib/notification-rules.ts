@@ -229,6 +229,9 @@ function validateRequiredShape(rules: Record<string, unknown>): string[] {
 const OPTIONAL_RULES_SHAPE: readonly RulesShapeSpec[] = [
   { path: 'a11y.list_page_keywords', kind: 'string[]' },
   { path: 'a11y.list_page_min_amounts', kind: 'positiveInt' },
+  // A11Y 摘取标签（契约 docs/API.md 附录 C §10；缺失 = 客户端用内置硬编码）
+  { path: 'a11y.merchant_labels', kind: 'string[]' },
+  { path: 'a11y.profiles_schema', kind: 'positiveInt' },
 ]
 
 function validateOptionalShape(rules: Record<string, unknown>): string[] {
@@ -252,6 +255,131 @@ function validateOptionalShape(rules: Record<string, unknown>): string[] {
 /** 清单里的正则路径（正则安全子集按它校验，不再靠键名猜） */
 export function regexPaths(): string[] {
   return REQUIRED_RULES_SHAPE.filter((s) => s.kind === 'regex').map((s) => s.path)
+}
+
+/**
+ * A11Y 摘取 profile 的硬上限（契约 docs/ARCHITECTURE.md §3.7.1）。
+ *
+ * 超限**拒绝发布**，不静默截断：「少发几个 profile」会让某些包静默回到内置硬编码，
+ * 而无任何错误——这比发布失败危险得多。
+ */
+export const APP_PROFILE_LIMITS = {
+  /** profile 数上限 */
+  maxProfiles: 200,
+  /** `app_profiles` 序列化（UTF-8）字节上限 */
+  maxBytes: 64 * 1024,
+  /** 包名长度上限 */
+  maxPackageNameLen: 200,
+  /** `*_view_id` 长度上限 */
+  maxViewIdLen: 200,
+} as const
+
+/** profile 内允许的字符串数组键（出现即校验；缺失回退全局；**空数组 = 显式清空，合法**） */
+const PROFILE_ARRAY_KEYS = ['success_keywords', 'embedded_success_keywords', 'exclude_keywords', 'merchant_labels'] as const
+/** profile 内的正整数键 */
+const PROFILE_POSITIVE_INT_KEYS = ['list_page_head_chars'] as const
+/** profile 内的非空字符串键（viewId 锚点，P2） */
+const PROFILE_STRING_KEYS = ['amount_view_id', 'merchant_view_id'] as const
+
+const isNonEmptyString = (x: unknown): x is string => typeof x === 'string' && x.trim().length > 0
+
+/**
+ * 校验 `a11y.app_profiles`（契约 §4）：类型 / 安全子集 / 包名 / **孤儿** / 上限。
+ *
+ * 缺失 → 放行（客户端回退全局键，行为与今天一致）。出现即逐键校验；
+ * “孤儿 profile”（包不在 `embedded_payment_apps`）**拒绝**——那个包根本不在
+ * `serviceInfo.packageNames` 里，收不到事件，配置就是静默空转。
+ *
+ * ⚠️ profile 内数组键**允许空数组**（`[]` = 显式清空，见契约 §3.1/§3.3）；
+ * 全局 `a11y.*` 数组仍走非空校验。
+ */
+function validateAppProfiles(rules: Record<string, unknown>): string[] {
+  const errors: string[] = []
+  const a11y = pickPath(rules, 'a11y')
+  if (a11y === null || typeof a11y !== 'object' || Array.isArray(a11y)) return errors
+  const profiles = (a11y as Record<string, unknown>).app_profiles
+  if (profiles === undefined) return errors
+  if (profiles === null || typeof profiles !== 'object' || Array.isArray(profiles)) {
+    return ['a11y.app_profiles 若出现必须是对象（Record<包名, Profile>）']
+  }
+  const entries = Object.entries(profiles as Record<string, unknown>)
+  if (entries.length > APP_PROFILE_LIMITS.maxProfiles) {
+    errors.push(
+      `a11y.app_profiles 最多 ${APP_PROFILE_LIMITS.maxProfiles} 个 profile（当前 ${entries.length}）——超限拒绝发布，不静默截断`,
+    )
+  }
+  const bytes = Buffer.byteLength(JSON.stringify(profiles), 'utf8')
+  if (bytes > APP_PROFILE_LIMITS.maxBytes) {
+    errors.push(
+      `a11y.app_profiles 序列化超过 ${APP_PROFILE_LIMITS.maxBytes} 字节（当前 ${bytes}）——超限拒绝发布，不静默截断`,
+    )
+  }
+
+  // 孤儿判据的白名单；白名单本身非法时由 REQUIRED_RULES_SHAPE 报，这里不重复
+  const embedded = pickPath(rules, 'a11y.embedded_payment_apps')
+  const embeddedSet =
+    Array.isArray(embedded) && embedded.every((x) => typeof x === 'string') ? new Set(embedded as string[]) : null
+
+  for (const [pkg, raw] of entries) {
+    if (!isNonEmptyString(pkg)) {
+      errors.push('a11y.app_profiles 的包名不能为空')
+    } else {
+      if (pkg.length > APP_PROFILE_LIMITS.maxPackageNameLen) {
+        errors.push(`a11y.app_profiles 包名过长（>${APP_PROFILE_LIMITS.maxPackageNameLen}）：${pkg.slice(0, 40)}…`)
+      }
+      if (/\s/.test(pkg)) {
+        errors.push(`a11y.app_profiles 包名不得含空白字符：${JSON.stringify(pkg)}`)
+      }
+    }
+    if (embeddedSet !== null && !embeddedSet.has(pkg)) {
+      errors.push(
+        `a11y.app_profiles 出现孤儿 profile「${pkg}」：它不在 a11y.embedded_payment_apps 里，收不到事件=静默空转；请先把它加进白名单`,
+      )
+    }
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      errors.push(`a11y.app_profiles.${pkg} 必须是对象`)
+      continue
+    }
+    const p = raw as Record<string, unknown>
+    const label = `a11y.app_profiles.${pkg}`
+    for (const k of PROFILE_ARRAY_KEYS) {
+      const v = p[k]
+      if (v === undefined) continue
+      /* ⚠️ profile 内数组**允许为空**：`"出现"` 本身就是覆盖信号，`[]` = 显式清空
+         （契约 docs/API.md 附录 C §10 语义 1/3）。若这里拒空，`exclude_keywords` 就永远
+         无法清空（默认是全局并集），「出现即完全替换」直接失效。
+         全局 `a11y.*` 数组则沿用非空校验（两者语义不同，不要套用同一规则）。 */
+      if (!Array.isArray(v) || !v.every(isNonEmptyString)) {
+        errors.push(`${label}.${k} 若出现必须是字符串数组（元素非空；空数组 = 显式清空，合法）`)
+      }
+    }
+    for (const k of PROFILE_POSITIVE_INT_KEYS) {
+      const v = p[k]
+      if (v === undefined) continue
+      if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+        errors.push(`${label}.${k} 若出现必须是正整数`)
+      }
+    }
+    for (const k of PROFILE_STRING_KEYS) {
+      const v = p[k]
+      if (v === undefined) continue
+      if (!isNonEmptyString(v)) {
+        errors.push(`${label}.${k} 若出现必须是非空字符串`)
+      } else if (v.length > APP_PROFILE_LIMITS.maxViewIdLen) {
+        errors.push(`${label}.${k} 过长（>${APP_PROFILE_LIMITS.maxViewIdLen}）`)
+      }
+    }
+    const re = p.amount_regex
+    if (re !== undefined) {
+      if (!isNonEmptyString(re)) {
+        errors.push(`${label}.amount_regex 若出现必须是非空字符串`)
+      } else {
+        const e = regexSafetyError(re)
+        if (e) errors.push(`${label}.amount_regex: ${e}`)
+      }
+    }
+  }
+  return errors
 }
 
 /**
@@ -332,6 +460,8 @@ export function validateRules(rules: unknown): string[] {
   errors.push(...validateRequiredShape(obj))
   // ③' 可选形状（有则类型必须对；缺失由客户端兜底）
   errors.push(...validateOptionalShape(obj))
+  // ③'' A11Y 摘取 profile（嵌套 Record；类型/安全子集/包名/孤儿/上限，见 docs/API.md 附录 C §10）
+  errors.push(...validateAppProfiles(obj))
 
   // ④ testcases（可选；出现则逐条校验）
   const tcs = obj.testcases
