@@ -2,32 +2,34 @@
 /**
  * AI 解析结果确认卡。每条可单独改分类/账户/金额/日期或删除，
  * 删除最后一条时自动收起（emit cancel），把界面让回给输入框。
+ *
+ * ## 「归不出来」的呈现口径（产品不可违背的那条：宁可留空也不编造）
+ *
+ * 服务端 `category_id: null` = **没有依据能确定分类**（不是「其他」）。
+ * ⚠️ 转账（transfer）按设计也没有分类，但它**不是**「未归类」：所有「未归类」
+ *    判断都必须先排除 transfer（否则一行转账会被说成「未归类」并要求选分类）。
+ * 这一层以前用「其他」分类的 emoji 图标 + 类型退化文案把它伪装成已归类；
+ * 现在由 ConfirmCardRow 如实呈现
+ * （中性图标 + 弱化的「未归类」+ 可点的「选分类」）。
+ *
+ * **摩擦不许升级成填表**：不弹 ManualForm、不置灰「确认入账」、不新增必填校验、
+ * 不加二次确认。用户有权就记成未归类 —— 只在按钮下方给一行**不阻塞**的提示。
+ * （ManualForm 只在「AI 没听出账目 → failToManual」时出现，与 null 无关，不动它。）
  */
 import { ref, onMounted, computed } from 'vue'
 import api from '@/api/index'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import Money from '@/components/ui/Money.vue'
-
-interface ParsedItem {
-  type: string
-  amount: number
-  category_id: number | null
-  category_name: string
-  category_icon: string
-  description: string
-  date: string
-  account_id: number | null
-  account_name: string
-  target_account_id?: number | null
-  target_account_name?: string
-}
+import ConfirmCardRow from '@/components/ConfirmCardRow.vue'
+import type { AccountRef, CategoryRef, ParsedItem } from './confirm-card-types'
+import { applyAccountChoice, applyCategoryChoice, type ChoiceValue } from './confirm-card-choices'
 
 const props = defineProps<{ items: ParsedItem[] }>()
 const emit = defineEmits<{ confirm: [items: ParsedItem[]]; cancel: [] }>()
 
 const editableItems = ref<ParsedItem[]>(JSON.parse(JSON.stringify(props.items)))
-const categories = ref<any[]>([])
-const accounts = ref<any[]>([])
+const categories = ref<CategoryRef[]>([])
+const accounts = ref<AccountRef[]>([])
 const editingIndex = ref<number | null>(null)
 
 onMounted(async () => {
@@ -40,6 +42,10 @@ onMounted(async () => {
 
 const sum = computed(() => editableItems.value.reduce((s, i) => s + i.amount, 0))
 const hasIncome = computed(() => editableItems.value.some((i) => i.type === 'income'))
+/** 有未归类的笔时才提示，避免每次解析都多一行噪音（转账天生无分类，不算「未归类」） */
+const hasUnclassified = computed(() =>
+  editableItems.value.some((i) => i.type !== 'transfer' && (i.category_id === null || i.category_name === '')),
+)
 
 function removeItem(index: number) {
   editableItems.value.splice(index, 1)
@@ -47,16 +53,25 @@ function removeItem(index: number) {
   if (editableItems.value.length === 0) emit('cancel')
 }
 
-function updateCategory(index: number, categoryId: number) {
-  const cat = categories.value.find((c: any) => c.id === categoryId)
-  const item = editableItems.value[index]
-  if (cat && item) Object.assign(item, { category_id: cat.id, category_name: cat.name, category_icon: cat.icon })
+function toggleEdit(index: number) {
+  editingIndex.value = editingIndex.value === index ? null : index
 }
 
-function updateAccount(index: number, accountId: number) {
-  const acc = accounts.value.find((a: any) => a.id === accountId)
+/**
+ * 选「未归类」/「未指定」是**真的清空**，不是 no-op。
+ *
+ * 旧实现是 `Number(value)` + `if (cat && item)`：Vue 下 `<option :value="null">` 的
+ * DOM value 是空串 → `Number('')` = 0 → 找不到分类 → 静默不赋值，用户点了没反应。
+ * 判定逻辑抽成纯函数放在 confirm-card-choices.ts（可单测），细节见那里的注释。
+ */
+function updateCategory(index: number, choice: ChoiceValue) {
   const item = editableItems.value[index]
-  if (acc && item) Object.assign(item, { account_id: acc.id, account_name: acc.name })
+  if (item) applyCategoryChoice(item, choice, categories.value)
+}
+
+function updateAccount(index: number, choice: ChoiceValue) {
+  const item = editableItems.value[index]
+  if (item) applyAccountChoice(item, choice, accounts.value)
 }
 
 function updateAmount(index: number, value: string) {
@@ -64,8 +79,6 @@ function updateAmount(index: number, value: string) {
   const item = editableItems.value[index]
   if (cents > 0 && item) item.amount = cents
 }
-
-const TYPE_LABEL: Record<string, string> = { expense: '支出', income: '收入', transfer: '转账' }
 </script>
 
 <template>
@@ -81,91 +94,30 @@ const TYPE_LABEL: Record<string, string> = { expense: '支出', income: '收入'
     </header>
 
     <ul class="parsed-list">
-      <li v-for="(item, index) in editableItems" :key="index" class="parsed-item">
-        <div class="flex items-center gap-3">
-          <span class="tx-icon" aria-hidden="true">{{ item.category_icon || '📦' }}</span>
-          <div class="min-w-0 flex-1">
-            <p class="text-[0.8125rem] truncate" style="color: var(--color-ink-1)">
-              {{ item.description || item.category_name || TYPE_LABEL[item.type] }}
-            </p>
-            <p class="text-[0.6875rem] truncate" style="color: var(--color-ink-3)">
-              {{ item.category_name || TYPE_LABEL[item.type] }}
-              <template v-if="item.account_name"> · {{ item.account_name }}</template>
-              <template v-if="item.type === 'transfer' && item.target_account_name">
-                → {{ item.target_account_name }}
-              </template>
-            </p>
-          </div>
-          <div class="text-right shrink-0">
-            <Money
-              :value="item.amount"
-              :tone="item.type === 'income' ? 'income' : item.type === 'transfer' ? 'info' : 'expense'"
-            />
-            <p class="text-[0.625rem] amt" style="color: var(--color-ink-4)">{{ item.date }}</p>
-          </div>
-        </div>
-
-        <!-- 展开编辑 -->
-        <div v-if="editingIndex === index" class="parsed-edit">
-          <div class="grid grid-cols-2 gap-2">
-            <label class="block">
-              <span class="field-label">金额</span>
-              <input
-                :value="(item.amount / 100).toFixed(2)"
-                type="number" step="0.01" min="0.01"
-                class="field !h-8 !text-xs"
-                @change="updateAmount(index, ($event.target as HTMLInputElement).value)"
-              />
-            </label>
-            <label class="block">
-              <span class="field-label">日期</span>
-              <input v-model="item.date" type="date" class="field !h-8 !text-xs" />
-            </label>
-          </div>
-          <div class="grid grid-cols-2 gap-2">
-            <label v-if="item.type !== 'transfer'" class="block">
-              <span class="field-label">分类</span>
-              <select
-                class="field !h-8 !text-xs !px-2"
-                :value="item.category_id"
-                @change="updateCategory(index, Number(($event.target as HTMLSelectElement).value))"
-              >
-                <option
-                  v-for="cat in categories.filter((c: any) => c.type === item.type)"
-                  :key="cat.id" :value="cat.id"
-                >{{ cat.icon }} {{ cat.name }}</option>
-              </select>
-            </label>
-            <label class="block">
-              <span class="field-label">账户</span>
-              <select
-                class="field !h-8 !text-xs !px-2"
-                :value="item.account_id"
-                @change="updateAccount(index, Number(($event.target as HTMLSelectElement).value))"
-              >
-                <option :value="null">未指定</option>
-                <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
-                  {{ acc.icon }} {{ acc.name }}
-                </option>
-              </select>
-            </label>
-          </div>
-        </div>
-
-        <div class="parsed-actions">
-          <button class="act" @click="editingIndex = editingIndex === index ? null : index">
-            {{ editingIndex === index ? '收起' : '调整' }}
-          </button>
-          <button class="act act-danger" @click="removeItem(index)">移除</button>
-        </div>
-      </li>
+      <ConfirmCardRow
+        v-for="(item, index) in editableItems"
+        :key="index"
+        :item="item"
+        :categories="categories"
+        :accounts="accounts"
+        :editing="editingIndex === index"
+        @toggle="toggleEdit(index)"
+        @remove="removeItem(index)"
+        @update:category="updateCategory(index, $event)"
+        @update:account="updateAccount(index, $event)"
+        @update:amount="updateAmount(index, $event)"
+      />
     </ul>
 
     <footer class="parsed-foot">
       <button class="btn btn-outline flex-1" @click="emit('cancel')">取消</button>
-      <button class="btn btn-primary flex-[2]" @click="emit('confirm', editableItems)">
-        确认入账<template v-if="hasIncome">（含收入）</template>
-      </button>
+      <div class="flex-[2]">
+        <button class="btn btn-primary w-full" @click="emit('confirm', editableItems)">
+          确认入账<template v-if="hasIncome">（含收入）</template>
+        </button>
+        <!-- 不阻塞：不拦、不置灰、不引导去填表，只把后果说清楚 -->
+        <p v-if="hasUnclassified" class="parsed-hint">未选分类，将记为未归类</p>
+      </div>
     </footer>
   </section>
 </template>
@@ -194,27 +146,18 @@ const TYPE_LABEL: Record<string, string> = { expense: '支出', income: '收入'
   font-size: 0.75rem;
   font-weight: 600;
 }
-.parsed-item { padding: 0.6875rem 0.875rem; border-top: 1px solid var(--color-rule-faint); }
-.parsed-item:first-child { border-top: 0; }
-.parsed-edit {
-  margin-top: 0.625rem;
-  padding: 0.625rem;
-  display: grid;
-  gap: 0.5rem;
-  background: var(--color-paper-sunk);
-  border-radius: var(--radius-sm);
-}
-.parsed-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.75rem;
-  margin-top: 0.5rem;
-}
 .parsed-foot {
   display: flex;
   gap: 0.5rem;
   padding: 0.75rem 0.875rem;
   border-top: 1px solid var(--color-rule);
   background: var(--color-paper-sunk);
+}
+/* 弱提示：极弱灰，不用警示色——「没归类」不是错误 */
+.parsed-hint {
+  margin-top: 0.375rem;
+  font-size: 0.6875rem;
+  text-align: center;
+  color: var(--color-ink-4);
 }
 </style>

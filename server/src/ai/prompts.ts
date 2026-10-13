@@ -14,6 +14,33 @@ interface PromptContext {
 }
 
 /**
+ * prompt 里写死的「不是账」示例句。
+ *
+ * 抽成常量的理由不是整洁，是**可断言**（设计 §3.3 C4）：
+ * prompt 说「这个不是账」、代码说「这个是账」时，两边都在「正常运行」，
+ * 只有把例句变成程序能拿到的常量，发布期才能逐条断言
+ * `classifyNotification(text).tier === 0`（跨层语义守卫）。
+ *
+ * ⚠️ 这里只放**噪声类**例句（应当 tier 0）；「有金额、有交易动词」的正例
+ * 不进这张表——它们在设计里是「应当 tier ≥1」的另一对 fixture。
+ * 文案与下面两个模板逐字一致：模板里插的就是这些常量本身（同一来源），
+ * 「哪个例句进哪份 prompt」由 tests/ai/prompt-noise-examples.test.ts 锁住
+ * （下标错位是抽常量唯一静默失败的方式）。
+ */
+export interface PromptNoiseExample {
+  /** 稳定 id：冲突报告与快照测试靠它定位，不依赖文案 */
+  readonly id: string
+  readonly text: string
+}
+
+export const PROMPT_NOISE_EXAMPLES: readonly PromptNoiseExample[] = [
+  { id: 'coupon_expired', text: '支付宝卡包 你有淘宝闪购10元红包今晚失效' },
+  { id: 'invited_reward', text: '【缴费有惊喜】 受邀用户领5元话费红包，名额有限，点击参与>>' },
+  { id: 'recruit_reward', text: '在线寻找手游玩家 参加访谈任务，获得 200 元京东卡！' },
+  { id: 'balance_notice', text: '余额即将不足 您当前默认交通卡的余额为2.90元' },
+]
+
+/**
  * 根据输入长度选择 prompt
  */
 export function buildParsePrompt(ctx: PromptContext, inputLength: number): string {
@@ -66,11 +93,11 @@ function buildQuickPrompt(ctx: PromptContext): string {
 输入：午饭32
 输出：[{"type":"expense","amount":32,"category":"餐饮","description":"午饭","date":"${ctx.today}","account":"","target_account":""}]
 
-输入：支付宝卡包 你有淘宝闪购10元红包今晚失效
+输入：${PROMPT_NOISE_EXAMPLES[0]!.text}
 输出：[]
 （10元是**券面值**，红包今晚就要失效了，没有任何钱进账）
 
-输入：在线寻找手游玩家 参加访谈任务，获得 200 元京东卡！
+输入：${PROMPT_NOISE_EXAMPLES[2]!.text}
 输出：[]
 （这是招人广告，200元是承诺的奖励，不是已到账）
 
@@ -78,7 +105,7 @@ function buildQuickPrompt(ctx: PromptContext): string {
 输出：[{"type":"expense","amount":11.74,"category":"其他","description":"信用卡消费","date":"${ctx.today}","account":"招商银行卡","target_account":""}]
 （金额是 **11.74**，不是尾号 **1678**；原文没写商家，分类就给「其他」）
 
-输入：余额即将不足 您当前默认交通卡的余额为2.90元
+输入：${PROMPT_NOISE_EXAMPLES[3]!.text}
 输出：[]
 （2.90 是**账户余额**，不是一笔支出）
 
@@ -165,11 +192,11 @@ function buildFullPrompt(ctx: PromptContext): string {
 
 ## 示例
 
-输入：支付宝卡包 你有淘宝闪购10元红包今晚失效
+输入：${PROMPT_NOISE_EXAMPLES[0]!.text}
 输出：[]
 （券面值不是到账金额）
 
-输入：【缴费有惊喜】 受邀用户领5元话费红包，名额有限，点击参与>>
+输入：${PROMPT_NOISE_EXAMPLES[1]!.text}
 输出：[]
 （有「缴费」两个字也不代表发生了缴费）
 

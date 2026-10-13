@@ -15,7 +15,7 @@ import { chatCompletion, AiError } from '../ai/client.js'
 import { today, toDateStr, addDaysTo, beijingYearMonth } from '../lib/date.js'
 import { buildParsePrompt } from '../ai/prompts.js'
 import { extractJsonArray, validateParsedItems, ParseError, type ParsedTransaction } from '../ai/parser.js'
-import { matchCategory, isExactCategoryMatch } from '../ai/category-matcher.js'
+import { resolveCategory, type CategoryResolution } from '../ai/category-matcher.js'
 import { quickParse } from '../ai/quick-parser.js'
 import { extractParsedExtras, deriveReviewMeta } from '../lib/parse-extract.js'
 import { pickMainItem } from '../lib/main-item.js'
@@ -143,6 +143,34 @@ interface AccountRow {
   id: number
   name: string
 }
+/** transfer 没有归类判定 → 没有噪声审计 */
+function noNoiseResolution(): CategoryResolution {
+  return {
+    category_id: null, category_name: '', category_icon: '',
+    reason: 'undetermined', reason_detail: 'transfer:不参与归类', is_exact: false, noise: null,
+  }
+}
+
+/**
+ * 噪声闸审计字段（契约 §6：只追加机械字段，既有键一字不改）。
+ *
+ * **只在噪声闸真的参与过判定时才追加**——不给每一笔都塞这三个键：
+ *   · `category_reason`      —— 归类理由（取 CATEGORY_REASONS）
+ *   · `noise_term`           —— 命中哪个噪声词条（被窄语境判掉时非空）
+ *   · `noise_verdict_source` —— `narrow` = 被噪声闸判掉；`broad` = 窄语境放过、
+ *                               但 verify 的宽口径会判噪声（管理员复核对象）
+ *
+ * 审计需求由 `ai_parse_logs.parsed_items`（存整份 items JSON）满足，
+ * **无需 migration、无需新表、不改 /api/admin/* 的响应形状**；客户端可忽略这三个键。
+ */
+function noiseAuditFields(res: CategoryResolution): Record<string, unknown> {
+  if (!res.noise) return {}
+  return {
+    category_reason: res.reason,
+    noise_term: res.noise.term,
+    noise_verdict_source: res.noise.source,
+  }
+}
 
 export async function aiRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware)
@@ -265,13 +293,17 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         // 快捷解析成功，匹配分类 ID + 账户 ID
         const items = quickResult.map((item) => {
           const type = item.type === 'expense' ? 'expense' : 'income'
-          const matched = matchCategory(
-            item.category,
-            categories.map((c) => ({ id: c.id, name: c.name, type: c.type as 'expense' | 'income' })),
+          const res = resolveCategory({
+            requested: item.category,
             type,
-          )
-          // 用户该类型下一个分类都没有时 matched 为 null：给契约内合法的 null，不给 id 0
-          const catRow = matched ? categories.find((c) => c.id === matched.id) : undefined
+            categories: categories.map((c) => ({ id: c.id, name: c.name, type: c.type as 'expense' | 'income' })),
+            // 判据只许用 input（不用 title/body，与 deriveReviewMeta 同口径）
+            evidenceText: body.input,
+          })
+          // 用户该类型下一个分类都没有时 res.category_id 为 null：给契约内合法的 null，不给 id 0
+          const catRow = res.category_id === null
+            ? undefined
+            : categories.find((c) => c.id === res.category_id)
 
           let accountId: number | null = null
           let accountName = ''
@@ -283,7 +315,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           // §6：既有键一字不改，只追加机械字段
           const meta = deriveReviewMeta({
             path: 'quick',
-            categoryExact: isExactCategoryMatch(item.category, matched?.name ?? null),
+            categoryExact: res.is_exact,
             amountCents: Math.round(item.amount * 100),
             input: body.input,
           })
@@ -291,9 +323,9 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           return {
             type: item.type,
             amount: Math.round(item.amount * 100),
-            category_id: matched ? matched.id : null,
-            category_name: matched ? matched.name : '',
-            category_icon: matched ? (catRow?.icon || '📦') : '',
+            category_id: res.category_id,
+            category_name: res.category_name,
+            category_icon: catRow ? (catRow.icon || '📦') : '',
             description: item.description,
             date: item.date,
             account_id: accountId,
@@ -302,6 +334,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
             target_account_name: '',
             ...extras,
             ...meta,
+            ...noiseAuditFields(res),
           }
         })
 
@@ -481,25 +514,25 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      // 匹配分类 ID + 账户 ID
-      const result = validItems.map((item) => {
-        // 分类匹配（transfer 不需要分类）
-        let categoryId: number | null = null
-        let categoryName = ''
-        let categoryIcon = ''
-
-        if (item.type !== 'transfer') {
-          const type = item.type === 'expense' ? 'expense' : 'income'
-          const matched = matchCategory(
-            item.category,
-            categories.map((c) => ({ id: c.id, name: c.name, type: c.type as 'expense' | 'income' })),
-            type,
-          )
-          categoryId = matched ? matched.id : null
-          categoryName = matched ? matched.name : ''
-          const catRow = matched ? categories.find((c) => c.id === matched.id) : undefined
-          categoryIcon = matched ? (catRow?.icon || '📦') : ''
-        }
+      /* 匹配分类 ID + 账户 ID，并把**归类自描述结果和 item 绑在同一个结构里**。
+         出参阶段要读 resolution.is_exact 派生 needs_review（那个「不自动入账」的护栏），
+         所以两者绝不能错位。
+         ⚠️ 旧写法是另开一个 `resolutions[]` 平行数组，靠「每轮恰好 push 一次」对齐：
+         将来谁在这段 map 里加一条 early return 或第二条条件路径，`resolutions[i]`
+         就会静默错位，把 needs_review / noise_term 挂到别的笔上，而且没有任何测试会红。
+         现在 resolution 与 item 同源产出，下标对齐是**结构保证**而不是约定。 */
+      const resolved = validItems.map((item) => {
+        // 分类匹配（transfer 不需要分类）——无分支地算一次，push 不再藏在 if 里
+        const resolution: CategoryResolution | null = item.type === 'transfer' ? null : resolveCategory({
+          requested: item.category,
+          type: item.type === 'expense' ? 'expense' : 'income',
+          categories: categories.map((c) => ({ id: c.id, name: c.name, type: c.type as 'expense' | 'income' })),
+          // 判据只许用 input（不用 title/body，与 deriveReviewMeta 同口径）
+          evidenceText: body.input,
+        })
+        const catRow = resolution?.category_id == null
+          ? undefined
+          : categories.find((c) => c.id === resolution.category_id)
 
         // 账户匹配
         let accountId: number | null = null
@@ -528,19 +561,24 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         }
 
         return {
-          type: item.type,
-          amount: Math.round(item.amount * 100), // 元转分
-          category_id: categoryId,
-          category_name: categoryName,
-          category_icon: categoryIcon,
-          description: item.description,
-          date: item.date,
-          account_id: accountId,
-          account_name: accountName,
-          target_account_id: targetAccountId,
-          target_account_name: targetAccountName,
+          item: {
+            type: item.type,
+            amount: Math.round(item.amount * 100), // 元转分
+            category_id: resolution?.category_id ?? null,
+            category_name: resolution?.category_name ?? '',
+            category_icon: catRow ? (catRow.icon || '📦') : '',
+            description: item.description,
+            date: item.date,
+            account_id: accountId,
+            account_name: accountName,
+            target_account_id: targetAccountId,
+            target_account_name: targetAccountName,
+          },
+          resolution,
         }
       })
+      // 出站校验与后续所有出参都读这份纯 item 视图（resolution 不进响应，形状不变）
+      const result = resolved.map((r) => r.item)
 
       // ═══ 出站校验（方案 B）═══════════════════════════════
       // 只丢「确定是噪声」的形态，不动「看起来像真交易」的。
@@ -581,12 +619,12 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       /* §6：既有键一字不改，只追加机械字段。
          `source` 补 `'ai'`（#4 原先缺失）。needs_review/confidence 用 verifyParsed
          的**逐项**判定 + 分类是否精确命中 + classifyNotification 的 reasons。 */
-      const items = result.map((it, i) => {
+      const items = resolved.map(({ item: it, resolution }, i) => {
         const raw = validItems[i]!
         const categoryExact =
           raw.type === 'transfer'
             ? true // 转账本就不需要分类，不因此判 needs_review
-            : isExactCategoryMatch(raw.category, it.category_name || null)
+            : (resolution?.is_exact ?? false)
         const meta = deriveReviewMeta({
           path: 'ai',
           categoryExact,
@@ -595,7 +633,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           classifyReasons: classification.reasons,
           verifyVerdict: verified.perItem[i]?.verdict,
         })
-        return { ...it, ...extras, ...meta }
+        return { ...it, ...extras, ...meta, ...noiseAuditFields(resolution ?? noNoiseResolution()) }
       })
 
       const logId = insertParseLog(db, {

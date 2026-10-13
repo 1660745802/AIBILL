@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto'
 import { getDb } from '../db/index.js'
 import { classifyNotification } from '../ai/verify.js'
 import { derivePrecheck, type Precheck } from './precheck.js'
+import { assertCriterionConsistencyForRules } from '../ai/criterion-consistency.js'
 
 type Db = ReturnType<typeof getDb>
 
@@ -628,7 +629,7 @@ export interface PublishResult {
 }
 
 /**
- * 从文件发布规则：load → validate → selfTest → hash → 与激活版本比对。
+ * 从文件发布规则：load → validate → selfTest → **判据一致性断言** → hash → 与激活版本比对。
  *
  * 校验失败 → 抛错（fail-fast）。内容相同 → no-op（幂等）。
  * `content_hash` 有 UNIQUE 约束：同一份内容已作为（非激活）历史版本存在时复用它，不新插。
@@ -640,6 +641,10 @@ export function publishRulesFromFile(db: Db, path: string): PublishResult {
     throw new Error(`规则文件校验失败（${path}）：\n- ${errors.join('\n- ')}`)
   }
   selfTestTestcases(rules)
+  /* 判据一致性（C1–C8，跨层的矛盾词检查）：rules 的客户端词表与服务端判据
+     互相矛盾时**宁可起不来**，也不带着「一边拦、一边认账」的规则启动
+     —— 与 selfTestTestcases 同一级别的 fail-fast。 */
+  assertCriterionConsistencyForRules(rules)
   /* 发布载荷 = 文件（剔除 testcases） + **代码派生的 precheck**。
      在发布时注入而不是让文件里写：判据的唯一真源是 `ai/verify.ts` 的常量，
      文件里抄一份就会漂移；且 hash 覆盖 precheck → 代码改判据也会换 hash、客户端会重拉。 */
