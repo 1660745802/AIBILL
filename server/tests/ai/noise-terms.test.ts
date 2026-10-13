@@ -19,6 +19,11 @@
  */
 import { describe, it, expect } from 'vitest'
 import { NOISE_TERMS } from '../../src/ai/noise-terms.js'
+import {
+  broadContextDrift,
+  couponContextTokens,
+  couponFacevaluePattern,
+} from '../../src/ai/noise-terms-drift.js'
 
 /** 命中该词条的全部条件（term + context 同现）时，返回它 */
 function firedTerms(text: string): string[] {
@@ -71,6 +76,55 @@ describe('NOISE_TERMS 结构', () => {
   it('词条不重复（同一个 term+reason 只留一条，语境归并进 context）', () => {
     const keys = NOISE_TERMS.map((n) => `${n.term}|${n.reason}`)
     expect(new Set(keys).size).toBe(keys.length)
+  })
+})
+
+describe('防漂 · broadContext 必须与 verify 的 coupon_facevalue 语境词一致', () => {
+  /**
+   * 已登记的差异（**今天就存在**，不是断言写松了）：
+   * verify 的 alternation 里有一个复合词 `专属优惠`，我们这边用 `专属` + `优惠`
+   * 两个字分别覆盖 —— 行为等价（凡含「专属优惠」的文本必然含这两个字之一），
+   * 但**词集合**严格来说少一项。这里显式登记它，而不是把断言改成「包含」
+   * （改成包含就防不住「verify 加了词、这里没跟」这个真正的漂移方向）。
+   */
+  const KNOWN_COMPOUND_DELTA = ['专属优惠']
+
+  it('verify 侧真的能抽出语境词（抽词逻辑本身没空转）', () => {
+    const tokens = couponContextTokens(couponFacevaluePattern())
+    expect(tokens.length).toBeGreaterThan(10)
+    expect(tokens).toContain('失效')
+    expect(tokens).toContain('待领')
+    // 券名词不得被当成语境（角色判定反了就会把它们混进来）
+    expect(tokens).not.toContain('红包')
+    expect(tokens).not.toContain('京东卡')
+  })
+
+  it('两侧词集合相等（除已登记的复合词差异外）', () => {
+    const drift = broadContextDrift()
+    expect(drift.extra).toEqual([])
+    expect(drift.missing.filter((w) => !KNOWN_COMPOUND_DELTA.includes(w))).toEqual([])
+    // 今天唯一的差异必须还是那一个（防止差异悄悄变大）
+    expect(drift.missing).toEqual(KNOWN_COMPOUND_DELTA)
+  })
+
+  it('已登记的差异是行为等价的（复合词被两个字覆盖住了）', () => {
+    const re = new RegExp(NOISE_TERMS[0]!.broadContext!.source)
+    expect(re.test('恭喜获得专属优惠红包')).toBe(true)
+  })
+
+  it('反向用例：把 broadContext 改小 → 断言立刻报（证明不是永真）', () => {
+    // 少一个「失效」：verify 侧有、我们侧没有 → missing 非空
+    const shrunk = '(?:最高减|直减|领取|去领|获得|恭喜|受邀|优惠|专属|过期|作废|到期|待领|即将|名额有限|点击参与)'
+    const drift = broadContextDrift(shrunk)
+    // 两个方向都查：少了「失效」和「满减」，其余照旧
+    expect(drift.missing).toEqual(expect.arrayContaining(['失效', '满减']))
+    expect(drift.extra).toEqual([])
+  })
+
+  it('反向用例：verify 加一个词而这里没跟 → 也会报（抽的是 live 引用，不是快照）', () => {
+    const withNewWord = couponFacevaluePattern().replace('名额有限', '名额有限|已下架')
+    const drift = broadContextDrift(undefined, withNewWord)
+    expect(drift.missing).toContain('已下架')
   })
 })
 

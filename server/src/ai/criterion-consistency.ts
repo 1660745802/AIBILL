@@ -28,6 +28,7 @@ import { CATEGORY_RULES } from '../lib/import-matcher.js'
 import { SEED_EXPENSE_NAMES, SEED_INCOME_NAMES } from '../db/schema.js'
 import { PROMPT_NOISE_EXAMPLES } from './prompts.js'
 import { CRITERION_CHECKS } from './criterion-checks.js'
+import { rulesCriterionSlice } from './criterion-rules.js'
 
 /** 交易类型（极性） */
 export type TxnType = 'expense' | 'income'
@@ -156,6 +157,17 @@ export function collectCriterionConflicts(
   tables: CriterionTables = realCriterionTables(),
 ): Conflict[] {
   return CRITERION_CHECKS.flatMap((check) => check(tables))
+}
+
+/**
+ * 挂到发布路径用的入口：真实常量 + **本次发布的 rules.json 那一侧**（C6/C7）。
+ *
+ * IO 由调用方做（本模块不读文件）；两条发布路径都调它：
+ *   · `lib/notification-rules.ts` 的 `publishRulesFromFile`（启动读文件）→ 抛错 = 进程起不来
+ *   · `routes/notification-rules.ts` 的 POST /api/admin/notification-rules → 400 且不落库
+ */
+export function assertCriterionConsistencyForRules(rules: unknown): void {
+  assertCriterionConsistency({ ...realCriterionTables(), rules: rulesCriterionSlice(rules) })
 }
 
 /** 抛错消息里最多逐条列这么多条，剩下的只报总数（不静默丢） */

@@ -20,6 +20,7 @@ import {
   stripTestcases,
   type RulesFile,
 } from '../lib/notification-rules.js'
+import { assertCriterionConsistencyForRules } from '../ai/criterion-consistency.js'
 
 // 内存缓存。
 //
@@ -148,9 +149,12 @@ export async function notificationRulesAdminRoutes(app: FastifyInstance): Promis
     }
     const rules = body.rules as RulesFile
 
-    // 带 testcases 时同样自检（别把坏语料发布进历史版本）
+    /* 带 testcases 时同样自检（别把坏语料发布进历史版本），
+       紧接着跑跨层判据一致性断言（C1–C8）——同一个 try/catch、同一套 400：
+       判据矛盾一律**不落库**（不回半成品版本）。 */
     try {
       selfTestTestcases(rules)
+      assertCriterionConsistencyForRules(rules)
     } catch (err) {
       reply.code(400)
       return { code: 2000, data: null, message: (err as Error).message }
