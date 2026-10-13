@@ -872,3 +872,28 @@ CREATE TABLE IF NOT EXISTS client_filter_totals (
 CREATE INDEX IF NOT EXISTS idx_client_filter_totals_user_window
   ON client_filter_totals(user_id, window_end);
 `
+
+/**
+ * 022 — AI 失败可观测（`failure_code` + `attempts`）。
+ *
+ * 背景：客户端把「解析失败 → 落用户待审列表」收紧为「失败即不打扰用户」后，
+ * **失败率成了唯一能发现「AI 挂了」的信号**。而原来的 `status` 只有 4 个值，
+ * 且把两件不同的事混在一起：
+ *
+ *   - `status='empty'` 既是「AI 判非账」（回了 `[]`，**不是失败**），
+ *     又被当成「模型输出不可用」；
+ *   - `status='error'` 下面压着 401 / 429 / 4xx / 5xx / JSON 格式错 —— 重试策略
+ *     与排障都区分不开。
+ *
+ * 所以加两列（都是可空，老行 NULL = 「没失败」/「未重试」这个事实）：
+ *   - `failure_code`：`lib/ai-failure.ts` 的枚举（NULL = 本次没有失败）；
+ *   - `attempts`：本次解析实际调了几次模型（服务端同步重试，1 = 没重试）。
+ *
+ * 为什么仍是 `ALTER TABLE ADD COLUMN`（照 019/020/021）：线上表上千行真实解析记录，
+ * 为两列可空字段重建表风险远大于收益；`status` 的 CHECK 约束也**不动**——
+ * 「判非账」与「失败」的拆分由 `failure_code IS NULL` 表达，不靠新增枚举值。
+ */
+export const migration022 = `
+ALTER TABLE ai_parse_logs ADD COLUMN failure_code TEXT;
+ALTER TABLE ai_parse_logs ADD COLUMN attempts INTEGER;
+`

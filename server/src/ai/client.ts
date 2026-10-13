@@ -99,15 +99,24 @@ export async function chatCompletion(
       const errorText = await response.text().catch(() => '')
       console.error(`[AI] API error: status=${response.status}, body=${errorText.slice(0, 500)}`)
       if (response.status === 401) {
-        throw new AiError('AI_KEY_INVALID', 'AI API Key 无效')
+        throw new AiError('AI_KEY_INVALID', 'AI API Key 无效', { status: 401 })
       }
       if (response.status === 429) {
-        throw new AiError('AI_RATE_LIMIT', 'AI 请求频率超限，请稍后再试')
+        throw new AiError('AI_RATE_LIMIT', 'AI 请求频率超限，请稍后再试', {
+          status: 429,
+          retryAfterMs: parseRetryAfterMs(response),
+        })
       }
       /* ⚠️ 只回状态码：上游正文可能含内部信息（甚至 Key 片段），
          而 ARCHITECTURE §5.2 要求响应不暴露内部信息。
-         `errorText` 已在上面 `console.error` 完整落服务端日志，排查不受影响。 */
-      throw new AiError('AI_API_ERROR', `AI 接口错误 (${response.status})`)
+         `errorText` 已在上面 `console.error` 完整落服务端日志，排查不受影响。
+
+         `status` 必须挂到错误对象上：重试策略（lib/ai-failure.ts）用「5xx 才重试」
+         这类机械判据，而它**不看文案**——没有 status 就永远判不出 5xx。 */
+      throw new AiError('AI_API_ERROR', `AI 接口错误 (${response.status})`, {
+        status: response.status,
+        retryAfterMs: parseRetryAfterMs(response),
+      })
     }
 
     const data = (await response.json()) as ChatCompletionResponse
@@ -135,12 +144,33 @@ export async function chatCompletion(
 
 /**
  * AI 错误类
+ *
+ * `status` / `retryAfterMs` 是**给重试策略用的机械字段**（lib/ai-failure.ts）：
+ * 没有它们，「上游 5xx 重试、4xx 不重试」「429 听 Retry-After」都只能去解析文案。
  */
 export class AiError extends Error {
   type: string
-  constructor(type: string, message: string) {
+  status?: number
+  retryAfterMs?: number
+  constructor(type: string, message: string, opts?: { status?: number; retryAfterMs?: number | null }) {
     super(message)
     this.type = type
     this.name = 'AiError'
+    if (opts?.status != null) this.status = opts.status
+    if (opts?.retryAfterMs != null) this.retryAfterMs = opts.retryAfterMs
   }
+}
+
+/**
+ * 解析上游的 `Retry-After`（可选头，可能是秒数或 HTTP 日期），转成毫秒。
+ * 解析不出返回 null —— 由重试策略回落到指数退避。
+ */
+function parseRetryAfterMs(response: Response): number | null {
+  const raw = response.headers.get('retry-after')
+  if (!raw) return null
+  const seconds = Number(raw)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
+  const when = Date.parse(raw)
+  if (!Number.isNaN(when)) return Math.max(0, when - Date.now())
+  return null
 }

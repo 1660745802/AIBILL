@@ -14,7 +14,7 @@ import { getDb } from '../db/index.js'
 import { chatCompletion, AiError } from '../ai/client.js'
 import { today, toDateStr, addDaysTo, beijingYearMonth } from '../lib/date.js'
 import { buildParsePrompt } from '../ai/prompts.js'
-import { extractJsonArray, validateParsedItems, ParseError } from '../ai/parser.js'
+import { extractJsonArray, validateParsedItems, ParseError, type ParsedTransaction } from '../ai/parser.js'
 import { matchCategory, isExactCategoryMatch } from '../ai/category-matcher.js'
 import { quickParse } from '../ai/quick-parser.js'
 import { extractParsedExtras, deriveReviewMeta } from '../lib/parse-extract.js'
@@ -36,6 +36,17 @@ import {
   saveFilterReport,
 } from '../lib/filter-report.js'
 import { appLog } from '../services/logger.js'
+import {
+  failureCodeOf,
+  isRetryableFailure,
+  retryAfterMsOf,
+  retryDelayMs,
+  PARSE_MAX_ATTEMPTS,
+  PARSE_ATTEMPT_TIMEOUT_MS,
+  PARSE_INPUT_MAX_LEN,
+  PARSE_INPUT_A11Y_MAX_LEN,
+  type AiFailureCode,
+} from '../lib/ai-failure.js'
 
 /**
  * `POST /api/ai/parse` 入参（契约 docs/API.md 附录 C §5）。
@@ -51,7 +62,9 @@ import { appLog } from '../services/logger.js'
  *   tier2 的「短句光杆数字」判据失效），属于独立的行为变更，不在本轮一起做。
  */
 const parseInputSchema = z.object({
-  input: z.string().min(1, '输入不能为空').max(3000, '输入过长'),
+  /* 长度上限**不在这里卡**：按渠道判（a11y 更宽）+ 超长要留痕，见 handler 里的
+     `PARSE_INPUT_*` 与 `inputFailureCode`。schema 只保证「非空 + 是字符串」。 */
+  input: z.string().min(1, '输入不能为空'),
   channel: z.enum(['nls', 'sms', 'a11y', 'manual']).optional(),
   source: z
     .object({
@@ -140,11 +153,58 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
     { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
     async (request: FastifyRequest, reply: FastifyReply) => {
     const startTime = Date.now()
+    /* 本次请求实际调了几次模型（服务端同步重试，见 lib/ai-failure.ts）。
+       1 = 没重试；落 `ai_parse_logs.attempts`，让「重试救回了多少」可量化。 */
+    let attempts = 0
 
     try {
-      const body = parseInputSchema.parse(request.body)
+      /* ═══ 入参规范化：必须在 zod 之前 ═══
+
+         1. **a11y 整页文本**可能远超一般上限 → 保留头部**截断**后照常解析，而不是
+            400（400 会让这条账在后端**一行日志都不落**：「漏账」两端都查不到）。
+            截断是降级、不是失败，不置 `failure_code`（事实由 `raw_input` 承担）。
+         2. 其余字段原样交给 zod（未知键静默剥离，不改）。 */
+      const rawBody = (request.body && typeof request.body === 'object' ? request.body : {}) as Record<string, unknown>
+      const rawInput = typeof rawBody.input === 'string' ? rawBody.input : ''
+      let normalizedBody: unknown = request.body
+      if (rawBody.channel === 'a11y' && rawInput.length > PARSE_INPUT_A11Y_MAX_LEN) {
+        normalizedBody = { ...rawBody, input: rawInput.slice(0, PARSE_INPUT_A11Y_MAX_LEN) }
+        appLog('warn', 'ai', 'a11y 文本超长，已截断后解析', {
+          user_id: request.user!.userId,
+          original_len: rawInput.length,
+          kept_len: PARSE_INPUT_A11Y_MAX_LEN,
+        })
+      }
+
+      const body = parseInputSchema.parse(normalizedBody)
       const db = getDb()
       const userId = request.user!.userId
+
+      /* 渠道上限：非 a11y 超限也**必须留痕**（此前 400 且零日志 → 两端都查不到）。
+         a11y 在上一步已截断，不会进这里。 */
+      const maxLen = body.channel === 'a11y' ? PARSE_INPUT_A11Y_MAX_LEN : PARSE_INPUT_MAX_LEN
+      if (body.input.length > maxLen) {
+        insertParseLog(db, {
+          userId,
+          rawInput: body.input.slice(0, 200),
+          cleanedInput: null,
+          aiResponse: null,
+          parsedItems: null,
+          status: 'error',
+          errorMessage: `input_too_long: ${body.input.length} > ${maxLen}`,
+          durationMs: Date.now() - startTime,
+          failureCode: 'input_too_long',
+          attempts: 0,
+          ...readParseMeta(request.body),
+        })
+        reply.code(400)
+        return {
+          code: 2000,
+          data: null,
+          message: '输入过长',
+          outcome: 'unavailable',
+        }
+      }
 
       /* 本请求的「今天」= 通知到达日的**北京日期**（有 received_at 时），否则 today()。
          通知 23:40 到、00:05 才解析，必须落在通知当天，否则 date 会被记成隔天。 */
@@ -256,6 +316,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           status: 'success',
           errorMessage: null,
           durationMs,
+          failureCode: null,
+          attempts,
           ...logMeta,
         })
 
@@ -311,6 +373,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         return {
           code: 0,
           data: { items: [], extra_items_dropped: 0, raw_input: body.input, source: 'prefilter' },
+          // 空 items ⇔ 有 outcome（不变量，见 API.md 附录 C §1）
+          outcome: 'not_a_bill',
           message: '',
         }
       }
@@ -341,19 +405,49 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       }
 
       // 调用 LLM（user content 用 <user_input> 包裹，防止 prompt 注入）
-      const aiResponse = await chatCompletion(
-        [
-          { role: 'system', content: finalSystemPrompt },
-          { role: 'user', content: `<user_input>\n${cleanedInput}\n</user_input>` },
-        ],
-        0.1,
-        60000,
-        userId,
-      )
+      const messages: Array<{ role: 'system' | 'user'; content: string }> = [
+        { role: 'system', content: finalSystemPrompt },
+        { role: 'user', content: `<user_input>\n${cleanedInput}\n</user_input>` },
+      ]
 
-      // 解析响应
-      const rawItems = extractJsonArray(aiResponse)
-      const validItems = validateParsedItems(rawItems, anchorDate)
+      /* ═══ 模型调用 + 解析 + 校验：有限重试（重试责任在服务端） ═══
+
+         客户端不再对 5xx/超时重试（它拿不到上游可观测性），且失败后不打扰用户，
+         所以「瞬时故障救回来」这件事只能由服务端做。重试预算见 lib/ai-failure.ts：
+         单次 30s × 2 次 + 退避 ≈ 61s < 客户端 90s HTTP 超时。
+
+         重试覆盖**三步**，不只是网络：call(上游) → extractJsonArray(格式) →
+         validateParsedItems(机械校验)。只重试 isRetryableFailure 认得的类型；
+         401/KeyMissing/4xx 立即失败（配置问题，重一百次一样）。 */
+      let aiResponse = ''
+      let rawItems: ParsedTransaction[] = []
+      let validItems: ParsedTransaction[] = []
+      for (;;) {
+        attempts++
+        try {
+          aiResponse = await chatCompletion(messages, 0.1, PARSE_ATTEMPT_TIMEOUT_MS, userId)
+          rawItems = extractJsonArray(aiResponse)
+          validItems = validateParsedItems(rawItems, anchorDate)
+          /* 模型回了一个**非空**数组、却没有一条过机械校验 → 这既不是「判非账」
+             （判非账是回 `[]`），也不是网络故障，是模型输出不可用：标记 parse_invalid
+             并可重试。若混进 empty 分支，失败率里就永远看不出这种抖动。 */
+          if (rawItems.length > 0 && validItems.length === 0) {
+            throw new ParseError('模型返回的条目均不合法', 'parse_invalid')
+          }
+          break
+        } catch (err) {
+          if (attempts < PARSE_MAX_ATTEMPTS && isRetryableFailure(err)) {
+            appLog('warn', 'ai', 'AI 解析失败，即将重试', {
+              user_id: userId,
+              attempt: attempts,
+              failure_code: failureCodeOf(err),
+            })
+            await sleep(retryDelayMs(attempts, retryAfterMsOf(err)))
+            continue
+          }
+          throw err
+        }
+      }
 
       if (validItems.length === 0) {
         // Log empty result
@@ -367,6 +461,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           status: 'empty',
           errorMessage: null,
           durationMs,
+          failureCode: null,
+          attempts,
           ...logMeta,
         })
 
@@ -376,6 +472,10 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           data: null,
           message: 'AI 无法解析，请尝试手动记账',
           fallback: 'manual',
+          /* 客户端判别语义用：`not_a_bill` = AI **判非账**（不是故障）；
+             `unavailable` = AI 不可用/输出不可用（失败）。两者都不该打扰用户，
+             但客户端本地计数与「重试与否」要分开。 */
+          outcome: 'not_a_bill',
           raw_input: body.input,
           parse_log_id: logId,
         }
@@ -470,6 +570,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         return {
           code: 0,
           data: { items: [], extra_items_dropped: 0, raw_input: body.input, source: 'postfilter' },
+          outcome: 'not_a_bill',
           message: '',
         }
       }
@@ -506,6 +607,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         status: 'success',
         errorMessage: null,
         durationMs,
+        failureCode: null,
+        attempts,
         ...logMeta,
       })
 
@@ -529,8 +632,29 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       }
     } catch (err) {
       if (err instanceof z.ZodError) {
+        /* #8 入参校验失败此前**零留痕** —— `input` 为空这类真失败两端都查不到。
+           只给「输入类」失败补日志：其他字段形状错是客户端 bug，不属于解析失败。
+           判据是形状/长度（`inputFailureCode`），**不看 zod 文案**。 */
+        const failureCode = inputFailureCode(request.body)
+        if (failureCode) {
+          const raw = (request.body as { input?: unknown } | null)?.input
+          const rawInput = typeof raw === 'string' ? raw : ''
+          insertParseLog(getDb(), {
+            userId: request.user!.userId,
+            rawInput: failureCode === 'input_too_long' ? rawInput.slice(0, 200) : rawInput,
+            cleanedInput: null,
+            aiResponse: null,
+            parsedItems: null,
+            status: 'error',
+            errorMessage: `${failureCode}: ${err.errors[0]?.message ?? ''}`,
+            durationMs: Date.now() - startTime,
+            failureCode,
+            attempts: 0,
+            ...readParseMeta(request.body),
+          })
+        }
         reply.code(400)
-        return { code: 2000, data: null, message: err.errors[0].message }
+        return { code: 2000, data: null, message: err.errors[0].message, outcome: 'unavailable' }
       }
       if (err instanceof AiError) {
         // Log AI error
@@ -549,6 +673,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           status,
           errorMessage: `${err.type}: ${err.message}`,
           durationMs,
+          failureCode: failureCodeOf(err),
+          attempts,
           ...readParseMeta(request.body),
         })
 
@@ -559,6 +685,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           data: null,
           message: err.message,
           fallback: 'manual',
+          outcome: 'unavailable',
           raw_input: rawInput,
         }
       }
@@ -578,6 +705,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           status: 'error',
           errorMessage: `ParseError: ${err.message}`,
           durationMs,
+          failureCode: failureCodeOf(err),
+          attempts,
           ...readParseMeta(request.body),
         })
 
@@ -587,6 +716,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           data: null,
           message: 'AI 返回格式异常，请尝试手动记账',
           fallback: 'manual',
+          outcome: 'unavailable',
           raw_input: rawInput,
         }
       }
@@ -1064,6 +1194,20 @@ function readParseMeta(raw: unknown): {
 }
 
 /**
+ * 从**未校验**的原始 body 判断是否「输入类」失败（空 / 超长），返回 failure_code；否则 null。
+ *
+ * 判据只用**形状与长度**，不看 zod 文案——文案会改，判据不能跟着改。
+ * 上限按渠道取（a11y 更宽），与 handler 里的截断/校验共用同一对常量。
+ */
+function inputFailureCode(raw: unknown): 'input_empty' | 'input_too_long' | null {
+  const b = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const input = typeof b.input === 'string' ? b.input : ''
+  if (input.length === 0) return 'input_empty'
+  const max = b.channel === 'a11y' ? PARSE_INPUT_A11Y_MAX_LEN : PARSE_INPUT_MAX_LEN
+  return input.length > max ? 'input_too_long' : null
+}
+
+/**
  * 推出本次请求的「锚定日期」（北京口径的 YYYY-MM-DD）。
  *
  * 为什么需要它：通知 23:40 到达、客户端 00:05 才联网解析时，如果直接用今天的
@@ -1122,6 +1266,9 @@ export function computeHintsConflict(amountCents: number | undefined, rawInput: 
  *
  * `channel` / `sourcePackage` / `receivedAt` / `hints` 是 019 新增的**可空**留档列：
  * 旧调用点不传就是 NULL（不猜值），新调用点把入参上下文原样落下来。
+ *
+ * `failureCode` / `attempts` 是 022 新增的**可空**列（失败可观测，见 lib/ai-failure.ts）：
+ * `failureCode` NULL = 本次没有失败（成功，或 AI 判非账）；`attempts` = 实际调了几次模型。
  */
 function insertParseLog(
   db: ReturnType<typeof getDb>,
@@ -1138,13 +1285,15 @@ function insertParseLog(
     sourcePackage?: string | null
     receivedAt?: string | null
     hints?: string | null
+    failureCode?: AiFailureCode | null
+    attempts?: number | null
   },
 ): number {
   const result = db.prepare(
     `INSERT INTO ai_parse_logs
        (user_id, raw_input, cleaned_input, ai_response, parsed_items, status, error_message, duration_ms,
-        channel, source_package, received_at, hints)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        channel, source_package, received_at, hints, failure_code, attempts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     params.userId,
     params.rawInput,
@@ -1158,8 +1307,15 @@ function insertParseLog(
     params.sourcePackage ?? null,
     params.receivedAt ?? null,
     params.hints ?? null,
+    params.failureCode ?? null,
+    params.attempts ?? null,
   )
   return Number(result.lastInsertRowid)
+}
+
+/** 重试退避用 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /**

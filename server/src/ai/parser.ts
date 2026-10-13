@@ -159,8 +159,15 @@ function isValidDate(date: string): boolean {
 }
 
 export class ParseError extends Error {
-  constructor(message: string) {
+  /**
+   * `parse_format`：模型返回的根本不是可解析 JSON；
+   * `parse_invalid`：JSON 合法，但机械校验后**一条都不合法**（模型输出不可用）。
+   * 两者都可重试，但落库的 `failure_code` 要分开——排障时一个看提示词、一个看上游。
+   */
+  failureCode: 'parse_format' | 'parse_invalid'
+  constructor(message: string, failureCode: 'parse_format' | 'parse_invalid' = 'parse_format') {
     super(message)
     this.name = 'ParseError'
+    this.failureCode = failureCode
   }
 }
