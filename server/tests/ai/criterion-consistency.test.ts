@@ -13,9 +13,9 @@
  * 3. **合法双极性不被误报**：「红包」同时是支出（发红包 → 人情）和收入
  *    （收到红包 → 红包分类）是产品要保留的设计，断言不能把它当矛盾（设计 §3.5）。
  *
- * C8（synonyms ↔ import-matcher 的交叉一致性）在这里只验**坏表**能报；
- * 它对真实常量的断言要等同义词表有显式极性之后才有意义（那时 SYNONYMS 才真的
- * 声明了 (词, 极性)），那时再补 characterization 锁。
+ * C8（synonyms ↔ import-matcher 的交叉一致性）最初是作为 **characterization 锁**
+ * 加进来的：Step 3 之前真实常量恰好报 1 条 ('红包','income')。Step 3 把 SYNONYMS
+ * 拆成极性桶后它已转绿，这组用例现在是**真实常量的绿断言**（C1 同时转绿）。
  *
  * ⚠️ 本文件**不整体断言真实常量全绿**：C1..C7 对今天的真实常量已经是绿的，
  * 但它们对**假表**的判定能力才是这里要锁的东西（Step 7 才把断言挂到发布路径上）。
@@ -228,6 +228,37 @@ describe('判据一致性断言 · 坏表必报', () => {
     //   income  上 SYNONYMS 没声明、只拿另一极性的「人情」比（②）
     expect(conflictsOf(t, 'cross_table_word_conflict').map((c) => c.polarity).sort())
       .toEqual(['expense', 'income'])
+  })
+})
+
+describe('真实常量现状 · Step 3 之后判据全绿', () => {
+  it('C1 转绿：SYNONYMS 每条都显式带 type，不再有 synonym_polarity_missing', () => {
+    expect(realConflictsOf('synonym_polarity_missing')).toEqual([])
+  })
+
+  it('C8 转绿：红包拆成极性桶两向后，与 import-matcher 不再冲突', () => {
+    // Step 3 之前这里是 1 条 ('红包','income')：SYNONYMS 说人情 · CATEGORY_RULES 说红包
+    expect(realConflictsOf('cross_table_word_conflict')).toEqual([])
+  })
+
+  it('真实常量整体为空数组（C1..C8 全部通过）', () => {
+    expect(collectCriterionConflicts()).toEqual([])
+    expect(() => assertCriterionConsistency()).not.toThrow()
+  })
+
+  it('C1/C8 不是永真：把极性去掉 / 把目标改回人情，立刻报出来', () => {
+    // C1：缺 type
+    expect(conflictsOf(broken({ synonyms: [{ key: '吃饭', category: '餐饮' }] }), 'synonym_polarity_missing'))
+      .toHaveLength(1)
+    // C8：SYNONYMS 说人情、CATEGORY_RULES 说红包
+    const bad = broken({
+      synonyms: [{ key: '红包', category: '人情', type: 'expense' }],
+      importRules: [
+        { keywords: ['红包'], category: '人情', types: ['expense'] },
+        { keywords: ['红包'], category: '红包', types: ['income'] },
+      ],
+    })
+    expect(conflictsOf(bad, 'cross_table_word_conflict')).toHaveLength(1)
   })
 })
 

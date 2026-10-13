@@ -22,7 +22,7 @@
  */
 
 import { NOISE_TERMS } from './noise-terms.js'
-import { SYNONYMS } from './category-matcher.js'
+import { SYNONYMS } from './synonyms.js'
 import { HIGH_CONFIDENCE_MAP } from './quick-parser.js'
 import { CATEGORY_RULES } from '../lib/import-matcher.js'
 import { SEED_EXPENSE_NAMES, SEED_INCOME_NAMES } from '../db/schema.js'
@@ -134,8 +134,7 @@ export interface CriterionTables {
 /** 真实常量（发布期挂载点与 Step 3/4 的默认值用） */
 function realCriterionTables(): CriterionTables {
   return {
-    // Step 0/2 阶段 SYNONYMS 还是 Record<string,string>（极性隐式），C1 因此是红的
-    synonyms: Object.entries(SYNONYMS).map(([key, category]) => ({ key, category })),
+    synonyms: SYNONYMS.map((e) => ({ key: e.key, category: e.category, type: e.type })),
     quickConfidence: Object.entries(HIGH_CONFIDENCE_MAP).map(([key, v]) => ({
       key,
       category: v.category,
