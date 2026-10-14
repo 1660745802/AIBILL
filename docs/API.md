@@ -241,11 +241,11 @@
 | Method | Path | 说明 |
 |--------|------|------|
 | GET | `/api/memories` | 当前用户所有 memory |
-| POST | `/api/memories` | 新增（`source: manual \| ai_suggested`） |
+| POST | `/api/memories` | 新增（`source` 恒为 `manual`） |
 | PUT | `/api/memories/:id` | 更新内容/启用状态 |
 | DELETE | `/api/memories/:id` | 删除 |
 
-**注入约束**：LLM prompt 只取 `source='manual'`，排除 `ai_suggested`。
+**注入约束**：LLM prompt 只取 `source='manual'`，排除 `ai_suggested`（历史行）。⚠️ `ai_suggested` 的**写入**已随 `POST /api/ai/parse-feedback` 下线移除——现在没有任何写入方。
 
 ---
 
@@ -539,7 +539,7 @@ liability, investment, curve, accounts, empty, lastUpdated, change, previousNetW
 GET /api/config/notification-rules
 If-None-Match: "ab12…"
 ```
-返回 `{ version, content_hash, updated_at, rules: { nls, a11y, sms, source_mapping, processor, precheck } }`。
+返回 `{ version, content_hash, updated_at, rules: { nls, a11y, sms, source_mapping, processor, prefilter_policy, precheck } }`。
 - **`ETag = "<content_hash>"`**（不再绑手填的 `version`）：内容真源是仓库文件
   `server/config/rules.json`，启动时校验并发布，规则内容或代码判决据（`precheck` 由
   `ai/verify.ts` 派生注入）变化都会换 hash → 客户端凭 304 自动重拉。详见
@@ -633,7 +633,7 @@ If-None-Match: "ab12…"
 | subscription | 6 | CRUD + cancel, renew |
 | import | 1 | CSV 预览 |
 | export | 2 | JSON, CSV |
-| admin | 22 | invites / users / settings / ai-stats / logs / **filter-stats** / **unparsed** / **unparsed-triage** / **capture-samples** |
+| admin | 21 | invites / users / settings / ai-stats / logs / **filter-stats** / **unparsed** / **unparsed-triage** / **capture-samples** / **filter-samples** |
 | app-update | 3 | update, updates |
 | notification-rules | 4 | config + admin |
 
@@ -905,11 +905,13 @@ P2 = `viewId` 锚点 + `list_page_head_chars`；P3（冷，发版）= canvas/Web
 **服务端校验 / 发布实现细节** → [ARCHITECTURE.md §3.7.1](ARCHITECTURE.md)（`validateRules` 的类型/上限/孤儿/安全子集、
 `buildPublishPayload` 与 `content_hash`）。
 
-## 11. 客户端拦截内容采集与规则闭环（P1 实现中 · 归表已定）
+## 11. 客户端拦截内容采集与规则闭环（P1 已实现 · 归表已定）
 
-> 状态：**P1 实现中**。服务端已实现：`prefilter_policy` 云控归表（§11.2）、`POST /api/ai/capture-report`（§11.3）、
-> `client_capture_samples` 表 + 30 天保留（§11.4）、admin `/api/admin/capture-samples`（只读 + 标注，§11.6）。
-> **未实现**：客户端采集/转发（Android）、web 面板。端点与表已冻结，供双端对齐。
+> 状态：**P1 双端已实现**。服务端：`prefilter_policy` 云控归表（§11.2）、`POST /api/ai/capture-report`（§11.3）、
+> `client_capture_samples` 表 + 30 天保留（§11.4）、admin `/api/admin/capture-samples`（读+标注）与
+> `/api/admin/filter-samples`（forward 侧原文，§11.6）。
+> Android：归表查表（forward/sample）+ 丢弃点采样 + `capture-report` 上报；web：`AdminSamplesPanel` 两侧来源切换。
+> **P2 待硬化**：隐私开关 / 脱敏 / 保留期（§11.5）。
 > 原则（不变）：**AI 是唯一裁判**；正则是「排除 100% 不是账」的筛子，冲突以 **AI 为准**。
 >
 > **现状缺口**：客户端在本地丢掉的 A11Y 页面/通知内容，服务端**只收到聚合计数**（§4 `filter-report`），**看不到内容**。
@@ -961,7 +963,7 @@ P2 = `viewId` 锚点 + `list_page_head_chars`；P3（冷，发版）= canvas/Web
     "package": "com.tencent.mm",
     "kind": "notification|a11y_page",
     "stage": "capture|prefilter",            // 哪一层丢的
-    "blocked_by": "capture.a11y.not_whitelisted|client_only.marketing|…",
+    "blocked_by": "client_only.capture_dropped_a11y_not_whitelisted|client_only.MARKETING|…",
     "tier": 0,                                // 可选
     "received_at": "2026-10-14T12:31:00+08:00",
     "text": "…（按开关：脱敏预览 或 原文；可 null）",
@@ -978,7 +980,7 @@ P2 = `viewId` 锚点 + `list_page_head_chars`；P3（冷，发版）= canvas/Web
 
 ### 11.4 服务端存储：`client_capture_samples`
 
-`id · user_id · client_version · channel · package · kind · stage · blocked_by · tier · received_at · text · text_len · content_hash · created_at`
+`id · user_id · client_version · channel · package · kind · stage · blocked_by · tier · received_at · text · text_len · content_hash · label · created_at`
 
 - 索引 `(created_at)` / `(blocked_by)` / `(package)`；`UNIQUE(user_id, content_hash, blocked_by)`。
 - **保留期 30 天**（scheduler 清理）；与 `filter-report` 的聚合计数（`client_filter_stats`）**分开存**。
@@ -1007,9 +1009,9 @@ P2 = `viewId` 锚点 + `list_page_head_chars`；P3（冷，发版）= canvas/Web
 
 ### 11.7 双端职责
 
-- **Android**：B（弱证据改转发）· A（丢弃点采样 + opt-in 开关 + `content_hash` 去重 + per-package daily cap + 脱敏 + best-effort 窗口重发，复用 `PrefilterReportImpl` 模式）。
-- **server**：A 端点 + `client_capture_samples` 表 + 保留期清理 + admin「被拦样本」页（分组 / 标注 / 导出 `testcases`）+ 审计；B 沿用现有 `/parse` 预筛（已落 `ai_parse_filters`）。
-- **web**：仅 admin review 面（不采集）。
+- **Android**：B（弱证据改转发）· A（丢弃点采样 + `content_hash` 去重 + per-package daily cap + best-effort 窗口重发，复用 `PrefilterReportImpl` 模式）。**P1 无隐私开关、默认采原文**（§11.5）；opt-in / 脱敏是 **P2**。
+- **server**：A 端点 + `client_capture_samples` 表 + 保留期清理 + admin「被拦样本」页（分组 / 标注 / 导出 `testcases`）+ **`filter-samples`**（forward 侧原文）+ 审计；B 沿用现有 `/parse` 预筛（已落 `ai_parse_filters`）。
+- **web**：admin review 面（两侧来源切换；不采集）。
 
 ### 11.8 决策记录（P1）
 

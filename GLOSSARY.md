@@ -16,6 +16,9 @@
 | **规则真源** | 客户端预筛词表/包名/窗口参数的唯一内容真源：`server/config/rules.json`。经 `content_hash` 派生 ETag 下发，客户端凭代际重拉 | `lib/notification-rules.ts` |
 | **预筛（prefilter）** | 调模型**之前**「值不值得当一次账」的判定链。命中噪声 → 记 `ai_parse_filters`，不烧模型 | `ai/verify.ts` 的 `classifyNotification` |
 | **解析落地（parse landing）** | `/ai/parse` 的返回值与 `/transactions` 真正写进去的行之间的关联：按 `(type, amount, date)` 指纹回填 `parse_log_id` / `ai_raw_input` / `final_items` | `lib/parse-landing.ts` |
+| **归表（prefilter_policy）** | 拦截点「命中之后怎么处置」的策略：`block` 丢 / `forward` 不拦交服务端判 / `sample` 丢+采样上报。**服务端下发**（改 `rules.json` → `content_hash` 变 → 客户端重拉，免发版）；缺省 = `block` | `rules.json` + Android `domain/PrefilterPolicy` |
+| **采样上报（capture-report）** | 客户端把**本地丢掉的内容**（去重 + 每日上限）上报，供 admin review 与规则收敛；**不写账、不调 AI、不回推** | `POST /api/ai/capture-report` → `client_capture_samples` |
+| **被拦样本（capture samples）** | 被拦下内容的 review 面，两个来源：`client_capture_samples`（客户端采样）与 `ai_parse_filters`（服务端预筛，forward 侧）；标注「是账/不是账」→ 语料候选 → 调规则 | admin `capture-samples` / `filter-samples` |
 
 ## 解析装配（ParseAssembly）
 
