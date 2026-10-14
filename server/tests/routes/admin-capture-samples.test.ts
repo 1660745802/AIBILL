@@ -62,8 +62,26 @@ describe('admin/拦截样本', () => {
     })
     expect(data.summary.total).toBe(1)
     expect(data.summary.by_blocked_by).toEqual([{ key: 'capture.a11y.not_whitelisted', count: 1 }])
-    expect(data.summary.by_package).toEqual([{ key: 'com.tencent.mm', count: 1 }])
+    /* facet：`by_package` **排除 `package` 自己那一维**（否则一选中某包、下拉选项就塔缩成只剩它）。
+       所以按 `package=com.tencent.mm` 过滤后，`by_package` 仍列出窗口内**全部**包。 */
+    expect(data.summary.by_package).toEqual(
+      expect.arrayContaining([
+        { key: 'com.tencent.mm', count: 1 },
+        { key: 'com.eg.android.AlipayGphone', count: 1 },
+      ]),
+    )
     expect(data.pagination).toMatchObject({ page: 1, page_size: 20, total: 1, total_pages: 1 })
+  })
+
+  it('facet 不塔缩：按 blocked_by 过滤时 by_blocked_by 仍列出全部规则（排除自己）', async () => {
+    const data = JSON.parse((await list('?blocked_by=capture.a11y.not_whitelisted')).payload).data
+    expect(data.summary.total).toBe(1)
+    expect(data.summary.by_blocked_by).toEqual(
+      expect.arrayContaining([
+        { key: 'capture.a11y.not_whitelisted', count: 1 },
+        { key: 'client_only.marketing', count: 1 },
+      ]),
+    )
   })
 
   it('按 channel / blocked_by 过滤', async () => {
