@@ -3,7 +3,7 @@
 > **Base URL**: `http(s)://<host>:3000/api`
 > **认证**: 除 `/health`、`/api/auth/*`、`/api/config/notification-rules`、`/api/app/update` 外均需 `Authorization: Bearer <jwt>`
 > **响应格式**: 统一 `{ code: 0, data: <T>, message: "" }`
-> **路由**: 见 `server/src/routes/*.ts`。本文档逐条枚举全部 92 个端点；
+> **路由**: 见 `server/src/routes/*.ts`。本文档逐条枚举全部 94 个端点；
 > 若与 `scripts/gen-api-docs.ts` 输出不一致，**以脚本为准**（它直接读 `routes/*.ts`）。
 
 > ⚠️ **已废弃接口（deprecated，2026-10）**：`/api/budgets/*`、`/api/goals/*`、
@@ -223,9 +223,6 @@
   与 `2026-10-12 00:00:00` 是同一个键。
 - 新表 `client_filter_stats` / `client_filter_totals`（migration021），详见
   本文件附录 C §4。
-
-### POST `/api/ai/parse-feedback`
-记录用户是否修正（用于质量统计 + 自动学习）。
 
 ### POST `/api/ai/chat`
 ```json
@@ -618,7 +615,7 @@ If-None-Match: "ab12…"
 
 ## 附录 A：模块-端点索引
 
-与 `scripts/gen-api-docs.ts` 的输出**逐条对齐**（17 个模块 / 92 个端点）。
+与 `scripts/gen-api-docs.ts` 的输出**逐条对齐**（17 个模块 / 94 个端点）。
 
 | 模块 | 端点数 | 关键端点 |
 |------|--------|---------|
@@ -629,18 +626,18 @@ If-None-Match: "ab12…"
 | assets | 4 | overview, **portfolio**, snapshots, accounts（trend / snapshot 已删） |
 | investments | 5 | 持仓 CRUD + quotes/refresh |
 | stats | 5 | summary, by-category, trend, dashboard, analysis |
-| ai | 6 | parse, chat, sessions, parse-feedback, **filter-report** |
+| ai | 6 | parse, chat, sessions, **filter-report**, **capture-report** |
 | memory | 4 | CRUD |
 | budget | 4 | CRUD |
 | goals | 6 | CRUD + progress |
 | subscription | 6 | CRUD + cancel, renew |
 | import | 1 | CSV 预览 |
 | export | 2 | JSON, CSV |
-| admin | 20 | invites / users / settings / ai-stats / logs / **filter-stats** / **unparsed** / **unparsed-triage** |
+| admin | 22 | invites / users / settings / ai-stats / logs / **filter-stats** / **unparsed** / **unparsed-triage** / **capture-samples** |
 | app-update | 3 | update, updates |
 | notification-rules | 4 | config + admin |
 
-> `/health` 直接注册在 `routes/index.ts`（不在某个路由模块文件里），故不计入上表的 92 个端点。
+> `/health` 直接注册在 `routes/index.ts`（不在某个路由模块文件里），故不计入上表的 94 个端点。
 > 上表若与 `gen-api-docs.ts` 输出不一致，**以脚本为准**（它直接读 `routes/*.ts`）。
 
 ## 附录 B：自动生成脚本
@@ -685,23 +682,6 @@ If-None-Match: "ab12…"
 - **`outcome`（022 新增，机械判别，建议客户端采用）**：`not_a_bill`（#1/#3/#5：AI/规则**判非账**，不是故障）｜`unavailable`（#6/#7/#8：AI **不可用或输出不可用**）。**不变量：`items` 为空 ⇔ 顶层有 `outcome`**（有账的两态 #2/#4 不带）。客户端把失败移出用户视野后，用它把「判非账」与「AI 挂了」的本地计数分成两个桶——**不要靠 HTTP 状态或 `parse_log_id` 有无去猜**。
 - **失败响应体恒为可解析 JSON 信封**（#6 的 502/504 也一样），`outcome` 恒在**顶层**：客户端即使把网络/传输异常当 `unavailable` 兜底，能拿到 body 时也能直接读 `outcome`。
 - **服务端有限重试（022）**：瞬时失败（超时/网络/5xx/429/JSON 格式错/非空但全不合法）由**服务端重试 1 次**（单次超时 30s，总预算 ≈61s < 客户端 90s HTTP 超时）；401/KeyMissing/4xx 不重试。→ **客户端不要再自己对 5001/5002/502/504 重试**（两端叠加会双倍烧额度，且客户端拿不到服务端的 `failure_code` 归因）。
-
-## 2. 反馈闭环（Q1）—— 双方优先做，服务端已确认可做
-`POST /api/ai/parse-feedback`（认证）：
-```jsonc
-{
-  "parse_log_id": 123,      // §1 取得（data 或顶层）
-  "final_items": [ /* 用户确认后的**最终态**数组，元素同 parse items 形状 */ ],
-  "modified": true,         // 与 AI 原始是否不同（服务端只信这个布尔，不自行 diff）
-  "channel": "nls"          // 可选归因（见 §0）
-}
-```
-- **客户端传「用户改后的 items」**（最终态），不是 AI 原始、不是补丁：**删除整笔 = 该项不在 `final_items` 里**，新增 = 多出的项，改字段 = 直接是新值；`modified=false` + 传 items 也接受（语义：确认无误）。
-- 响应 `{code:0,data:null}`；记录不存在/不属于当前用户 → 404 `3002`。
-- 服务端行为：写 `ai_parse_logs.final_items / user_modified / modification_detail`；`modified=true` 时
-  尝试自动学习 `ai_memories(source='ai_suggested')`（**不会**注入 prompt，防自我污染）。
-- ⚠️ **服务端先修**：自动学习按 **index 配对**（`Math.min(original.length, final.length)`），
-  条数不等（删/增）时会**错配并学到错误记忆**。修法：条数不等时不学习。
 
 ## 3. 规则同源下发（Q2）—— ④ 与 ⑤ **必须同批做**
 - **不做映射表**（客户端已证伪）：客户端预筛是**另一套分类学**（自身通知/系统分组摘要/日报汇总/单包熔断/DB 去重），服务端是 tier 档位链；强行映射只会得到**第三种口径**。所以先做 ④（下发服务端判据），客户端命中即用**同一 `rule_id`** 计数 → ⑤ 天然同口径。
@@ -790,7 +770,6 @@ If-None-Match: "ab12…"
 | `needs_review` | boolean | **服务端用唯一阈值算**：`verifyParsed=review`／分类未精确命中／金额来自裸数字 |
 - **⚡ 取消批量记账（2026-10，产品决定）**：`POST /api/ai/parse` 的 `items` **恒 ≤ 1**——多笔时服务端按唯一标准挑一笔（① 金额有货币单位佐证 ② 信息完整度 ③ 金额降序 ④ 模型原序，实现见 `server/src/lib/main-item.ts`），把被裁条数放 `extra_items_dropped`。
   - 客户端**不要再自己挑**（此前 `maxByOrNull { aiItemScore }` 是**静默丢账**，与「失败绝不静默」冲突）→ 直接用 `items[0]`，用 `extra_items_dropped` 计数告警（`client_only.ai_extra_items`）。
-  - `parse-feedback` 的 `final_items` 长度 **0 或 1** 语义**不变**（这正是取消批量的收益：反馈闭环无需再改）。
   - `POST /transactions` 的 `items[]` 批量**保留**（CSV 导入/离线补传依赖），两处不要混为一谈。
 - **客户端请用 `needs_review` 作「不自动入账」判据，不要自己对 `confidence` 设阈值**——否则又是两套阈值（本项目顽疾）；`confidence` 仅供展示/排序。
 - `confidence` **不是模型自评**（模型根本不输出它），派生自 tier/quick/精确分类/金额佐证 → 语义稳定、可回归；**不要**用 0~1 浮点。
@@ -925,3 +904,125 @@ P2 = `viewId` 锚点 + `list_page_head_chars`；P3（冷，发版）= canvas/Web
 
 **服务端校验 / 发布实现细节** → [ARCHITECTURE.md §3.7.1](ARCHITECTURE.md)（`validateRules` 的类型/上限/孤儿/安全子集、
 `buildPublishPayload` 与 `content_hash`）。
+
+## 11. 客户端拦截内容采集与规则闭环（P1 实现中 · 归表已定）
+
+> 状态：**P1 实现中**。服务端已实现：`prefilter_policy` 云控归表（§11.2）、`POST /api/ai/capture-report`（§11.3）、
+> `client_capture_samples` 表 + 30 天保留（§11.4）、admin `/api/admin/capture-samples`（只读 + 标注，§11.6）。
+> **未实现**：客户端采集/转发（Android）、web 面板。端点与表已冻结，供双端对齐。
+> 原则（不变）：**AI 是唯一裁判**；正则是「排除 100% 不是账」的筛子，冲突以 **AI 为准**。
+>
+> **现状缺口**：客户端在本地丢掉的 A11Y 页面/通知内容，服务端**只收到聚合计数**（§4 `filter-report`），**看不到内容**。
+> 于是「哪些通知/页面可以安全排除」没有证据，规则只能盲维护。（§2 反馈闭环已随 `parse-feedback` 下线删除。）
+
+### 11.1 两条通道（判定归属）
+
+| 通道 | 谁判 | 做法 | 成本 |
+|---|---|---|---|
+| **B 转发**（沿用 `POST /api/ai/parse`，改客户端行为） | **服务端预筛** | 客户端把**弱证据拦截**改为转发；服务端预筛在调模型前挡下 → 落 `ai_parse_filters`（**含原文/包名/channel**）；回 `outcome=not_a_bill` | 不烧 AI；请求量升 |
+| **A 采样**（新端点） | 客户端（本地丢） | 对**必须本地丢/零证据**的（自身通知/空文本/系统摘要/内容去重/熔断/A11Y 防抖·白名单外）**采样上报内容** → 样本表 | 0 AI；每条一次请求 |
+
+**B 的客户端改动**：只保留「零证据快速丢」在本地；其余**有证据但不确定**的正则拦截一律转发 `/parse`。
+服务端预筛是判据真源，天然消除「两套口径」。请求量会升，**随规则收敛逐步下降**（已确认取舍）。
+
+### 11.2 归表（**策略由服务端下发**，不发版维护）
+
+**机制（一次发版引入，之后免发版）**：新增可选云控键 `prefilter_policy`：
+`Record<rule_id, 'block' | 'forward' | 'sample'>`。客户端在每个拦截点算出 `rule_id` 后查这张策略表：
+- `forward` → **把原文转发 `POST /api/ai/parse`**（服务端预筛判，落 `ai_parse_filters` 含原文）；
+- `block` → 本地丢；
+- `sample` → 本地丢 + 采样上报（§11.3）。
+
+**缺省/缺失 = `block`**（= 今天行为，旧快照/旧客户端零变化）。`content_hash` 覆盖它 ⇒ 改归表 = 改 `rules.json`
+⇒ 全体客户端重拉。服务端 `validateRules` 校验 `rule_id` 的**命名**（`precheck.*` / `client_only.*`，与 ⑤ 上报同源）
+与 `action`（三值），缺失放行；「是否属于**已知**客户端判据」由 `tests/lib/notification-rules.test.ts` 对**闭集**断言
+（写错的 id 云控会**静默不生效**，所以只校验格式不够）。
+
+**初始 `prefilter_policy`（本次定的默认值）**：
+
+| 类 | 规则（`rule_id` 示例） | 默认 action |
+|---|---|---|
+| **K** 结构/平台/去重（拿不到文本，或 100% 不是账） | 自身通知 · 空文本 · 系统分组摘要 · 内存/DB 去重 · 长窗记忆 · AI 熔断 · **云控 precheck**（服务端自己的判据） · NLS/SMS 的结构性早退 · A11Y 的 `no_root`/`root_mismatch`/`no_activity`/`no_page_token`/`debounce`/`page_dedup` | `block` |
+| **F** 有证据、不确定的**文本判断** | `summary_report`（日报） · `promo_sentence`（促销句式） · `marketing`（营销词） · `not_financial`（账务黑名单） · `list_page`（列表页） | `forward` |
+| **L** A11Y 页面级**摘取**判据（整页重，不转发） | `a11y/not_whitelisted` · `not_payment_activity` · `no_success_keyword` · `excluded` · `bad_amount` · `history_date` | `sample` |
+
+> 归表是**默认值不是硬编码**：想收紧/放宽某条（如把 `marketing` 改回 `block`），**改 `rules.json` 即可**——
+> 这就是「减少 app 发版」的落点。仅当客户端完全不认识某 `rule_id`（新判据类型）才需要发版。
+
+### 11.3 通道 A 端点：`POST /api/ai/capture-report`（认证，限流 20/min）
+
+```jsonc
+{
+  "client_version": "1.7.0",
+  "window_start": "2026-10-14 00:00:00",   // 北京墙钟，同 filter-report
+  "window_end":   "2026-10-14 23:59:59",
+  "samples": [{
+    "channel": "nls|sms|a11y",
+    "package": "com.tencent.mm",
+    "kind": "notification|a11y_page",
+    "stage": "capture|prefilter",            // 哪一层丢的
+    "blocked_by": "capture.a11y.not_whitelisted|client_only.marketing|…",
+    "tier": 0,                                // 可选
+    "received_at": "2026-10-14T12:31:00+08:00",
+    "text": "…（按开关：脱敏预览 或 原文；可 null）",
+    "text_len": 128,
+    "content_hash": "sha256:…",
+    "redacted": true
+  }]
+}
+```
+
+- 响应 `{code:0,data:{accepted,duplicates},message:''}`；字段/窗口非法 → 400 `2000`；超限 → 400。
+- **幂等**：`UNIQUE(user_id, content_hash, blocked_by)` —— 同一样本重发 = `duplicates`（best-effort **原窗口重发**安全）。
+- **上限**：`samples ≤ 50/请求`；`text ≤ 2000 字符`；`channel` ∈ 三渠道。
+
+### 11.4 服务端存储：`client_capture_samples`
+
+`id · user_id · client_version · channel · package · kind · stage · blocked_by · tier · received_at · text · text_len · content_hash · created_at`
+
+- 索引 `(created_at)` / `(blocked_by)` / `(package)`；`UNIQUE(user_id, content_hash, blocked_by)`。
+- **保留期 30 天**（scheduler 清理）；与 `filter-report` 的聚合计数（`client_filter_stats`）**分开存**。
+
+### 11.5 隐私与开关（**P1 采集期决策**）
+
+- **P1（信息收集期）：不设隐私开关，默认采集原文**（已确认取舍：先把「被拦了什么」拿到，规则收敛后再收口）。
+- ⚠️ **P2 必须回填（上线前硬化）**：opt-in 开关、`redacted`（首 N 字）、保留期、admin 读原文审计——
+  沿用 PRODUCT §6.2#1 的合规口径。本节的「默认采原文」是**阶段性**的，须在 P2 关闭。
+- 全程不变：**绝不写 `transactions`、绝不调 AI、绝不回推客户端。**
+
+### 11.6 闭环：样本 → 规则
+
+```
+丢弃点 ──A 采样──► client_capture_samples         ┌─ B 转发 ─► ai_parse_filters（服务端预筛，含原文）
+                        │                          │
+                 admin「被拦样本」review（是账/不是账，同 admin/unparsed 裁决样式）
+                        │
+             per-rule 精度（命中次数 × 标注）= 误杀率 ──► 调 rules.json / verify.ts ── 发布 ──► 客户端重拉
+                        │
+        「其实是账」──► rules.json.testcases(expect_txn=true) ──► 语料护栏防回归
+```
+
+- **采集 ≠ 找回**：采集后这笔**仍没记上**；补账要另走「候选池 → 用户确认」（`回推客户端待确认` 已明确不做）。
+- **定位**：闭环只改「规则**可见/可改**」，**不是漏账补偿**。
+
+### 11.7 双端职责
+
+- **Android**：B（弱证据改转发）· A（丢弃点采样 + opt-in 开关 + `content_hash` 去重 + per-package daily cap + 脱敏 + best-effort 窗口重发，复用 `PrefilterReportImpl` 模式）。
+- **server**：A 端点 + `client_capture_samples` 表 + 保留期清理 + admin「被拦样本」页（分组 / 标注 / 导出 `testcases`）+ 审计；B 沿用现有 `/parse` 预筛（已落 `ai_parse_filters`）。
+- **web**：仅 admin review 面（不采集）。
+
+### 11.8 决策记录（P1）
+
+| 项 | 决策 |
+|---|---|
+| **归表** | 见 §11.2；由服务端 `prefilter_policy` 下发，**免发版维护** |
+| **`prefilter_policy` 落地** | 已落 `server/config/rules.json` + `validateRules`（键必须是合法 `rule_id`、值 ∈ block/forward/sample，缺失放行）；随 `buildPublishPayload` 进 `content_hash` |
+| **B 覆盖** | F 类 5 条（日报/促销/营销词/账务黑名单/列表页）转发；K/L 不转发 |
+| **采样** | `content_hash` 去重 + 每 (package, rule) 每天 cap（20）+ 每用户每天总量 cap（200）+ fire-and-forget |
+| **A11Y 采样形态** | **不采整页**；结构摘要（节点数 / 成功词命中 / 金额候选数 / 列表词位置）+ 命中片段（前后各 ~30 字） |
+| **标注** | ① 离线用服务端分类器（必要时 AI）**预打标**（不进线上链路、不写账）；② **admin 人工裁决为准**（同 `admin/unparsed`），「是账」→ `testcases(expect_txn=true)` |
+| **隐私** | P1 不设开关、默认采原文（§11.5）；P2 硬化 |
+| **与 `filter-report`** | 并存（聚合计数 vs 样本），不合并 |
+| **老客户端 404** | 已确认安全（客户端 `catch` 404，不崩）；**不加 no-op 桩** |
+| **文档编号** | 附录 C §2（反馈闭环）已删 → 编号留空档；本 §11 暂不回填为 §2，避免与既有 §号引用冲突 |
+| **web review 面板** | 已实现：`AdminSamplesPanel`（days/channel/blocked_by/package 筛选 + Top 汇总 + 列表 + 标注 `is_bill\|not_bill`），入口在管理面板「自动化」组

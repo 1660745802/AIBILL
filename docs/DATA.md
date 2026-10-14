@@ -96,7 +96,7 @@ deleted_at:   软删除标记，30 天后可清理
 
 | Migration | 表 | 用途 |
 |-----------|----|----|
-| 002 | `ai_parse_logs` | AI 解析质量日志（含 user_modified 修正率） |
+| 002 | `ai_parse_logs` | AI 解析质量日志（`final_items` 由落地回填写入） |
 | 004 | `ai_memories` | AI 全局记忆（preference/habit/rule/context） |
 | 005 | `subscriptions` | 订阅管理（cycle + next_payment_date） |
 | 006 | `app_logs` | 应用运行日志 |
@@ -119,7 +119,7 @@ note:       自由备注
 ### 3.2 ai_memories
 ```
 category: preference | habit | rule | context
-source:   manual（用户添加） | ai_suggested（AI 自动）
+source:   manual（用户添加；唯一会被注入 prompt 的值） | ai_suggested（AI 自动；写入路径已随 parse-feedback 下线移除，历史行保留）
 ```
 **安全约束**（P0 安全加固）：注入 LLM 时只取 `source='manual'`，防止 AI 自我污染。
 
