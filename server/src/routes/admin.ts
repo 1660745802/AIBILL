@@ -30,6 +30,7 @@ const USER_SCOPED_TABLES: string[] = [
   'financial_goals',      // → accounts（goal_progress 由 ON DELETE CASCADE 连带清除）
   'investments',          // → accounts（漏了会 DELETE accounts 抛外键约束 → 有持仓的用户删不掉）
   'transactions',         // → categories / accounts
+  'client_capture_samples', // → users（ON DELETE CASCADE）；漏了会因外键删不掉用户
   'ai_conversations',
   'ai_parse_logs',
   'ai_parse_filters',     // 无外键，但同样是 user 维度数据（漏了会留下永久孤儿行）
@@ -79,6 +80,11 @@ const updateSettingsSchema = z.record(z.string(), z.string())
 const triageSchema = z.object({
   action: z.enum(['mark_bill', 'mark_not_bill', 'mark_rule_missing']),
   reason: z.string().min(1, 'reason 不能为空').max(500, 'reason 过长'),
+})
+
+/** 采样人工标注（契约 docs/API.md 附录 C §11.6：admin 裁决为准，同 admin/unparsed 口径） */
+const captureLabelSchema = z.object({
+  label: z.enum(['is_bill', 'not_bill']),
 })
 
 export async function adminRoutes(app: FastifyInstance): Promise<void> {
@@ -619,6 +625,106 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     }
   })
 
+  // GET /api/admin/capture-samples —— 客户端拦截内容采集面（契约 §11.4 / §11.6）
+  //
+  // 客户端在本地丢掉的样本在这里被 review。**只读**：不写账、不重跑 AI、不改判定链。
+  // `text` 原文**默认返回**（§11.5 的 P1 决策：先把「被拦了什么」拿到），含跨用户原文，
+  // 所以按 ARCHITECTURE §5.3 写一条读审计（同 `GET /api/admin/unparsed?include_raw=1` 口径）。
+  app.get('/api/admin/capture-samples', async (request: FastifyRequest, reply: FastifyReply) => {
+    const q = request.query as Record<string, string | undefined>
+    const rangeDays = Math.min(Math.max(Number(q.days) || 7, 1), 90)
+    const pageNum = pageParam(q.page, 1, Number.MAX_SAFE_INTEGER)
+    const size = pageParam(q.page_size, 20, 100)
+
+    if (q.channel !== undefined && !['nls', 'sms', 'a11y'].includes(q.channel)) {
+      reply.code(400)
+      return { code: 2000, data: null, message: `channel 非法：${q.channel}` }
+    }
+
+    const db = getDb()
+    const since = new Date(Date.now() - rangeDays * 86_400_000).toISOString().slice(0, 19).replace('T', ' ')
+    const conds: string[] = ['created_at >= ?']
+    const params: unknown[] = [since]
+    if (q.channel) { conds.push('channel = ?'); params.push(q.channel) }
+    if (q.blocked_by) { conds.push('blocked_by = ?'); params.push(q.blocked_by) }
+    if (q.package) { conds.push('package = ?'); params.push(q.package) }
+    const where = `WHERE ${conds.join(' AND ')}`
+
+    const total = (
+      db.prepare(`SELECT COUNT(*) AS c FROM client_capture_samples ${where}`).get(...params) as { c: number }
+    ).c
+    const byBlockedBy = db
+      .prepare(
+        `SELECT blocked_by AS key, COUNT(*) AS count FROM client_capture_samples ${where}
+          GROUP BY blocked_by ORDER BY count DESC LIMIT 50`,
+      )
+      .all(...params) as Array<{ key: string; count: number }>
+    const byPackage = db
+      .prepare(
+        `SELECT package AS key, COUNT(*) AS count FROM client_capture_samples ${where}
+          GROUP BY package ORDER BY count DESC LIMIT 50`,
+      )
+      .all(...params) as Array<{ key: string; count: number }>
+
+    if (total > 0) {
+      appLog('warn', 'admin', `查看客户端拦截样本（${total} 条，含原文）`, {
+        action: 'view_capture_samples',
+        admin_id: request.user!.userId,
+        returned: Math.min(size, total),
+      })
+    }
+
+    const items = db
+      .prepare(
+        `SELECT * FROM client_capture_samples ${where}
+          ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+      )
+      .all(...params, size, (pageNum - 1) * size)
+
+    return {
+      code: 0,
+      data: {
+        items,
+        summary: { total, by_blocked_by: byBlockedBy, by_package: byPackage },
+        pagination: { page: pageNum, page_size: size, total, total_pages: Math.ceil(total / size) },
+      },
+      message: '',
+    }
+  })
+
+  // POST /api/admin/capture-samples/:id/label —— 人工标注（契约 §11.6）
+  //
+  // 幂等：同一样本重复标注返回成功（不挡重复提交）。「是账」的后续整理（进
+  // `rules.json.testcases(expect_txn=true)`）仍走发布流程，**不允许在线改判据**。
+  app.post('/api/admin/capture-samples/:id/label', async (request: FastifyRequest, reply: FastifyReply) => {
+    let body: { label: 'is_bill' | 'not_bill' }
+    try {
+      body = captureLabelSchema.parse(request.body)
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        reply.code(400)
+        return { code: 2000, data: null, message: err.errors[0].message }
+      }
+      throw err
+    }
+
+    const id = Number((request.params as { id: string }).id)
+    if (!Number.isInteger(id) || id <= 0) {
+      reply.code(400)
+      return { code: 2000, data: null, message: 'id 非法' }
+    }
+
+    const db = getDb()
+    const row = db.prepare('SELECT id FROM client_capture_samples WHERE id = ?').get(id)
+    if (!row) {
+      reply.code(404)
+      return { code: 3002, data: null, message: '记录不存在' }
+    }
+
+    db.prepare('UPDATE client_capture_samples SET label = ? WHERE id = ?').run(body.label, id)
+    return { code: 0, data: null, message: '' }
+  })
+
   // GET /api/admin/ai-parse-stats - AI 解析质量统计
   app.get('/api/admin/ai-parse-stats', async (request: FastifyRequest) => {
     const db = getDb()
@@ -723,21 +829,6 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       )
       .all(sinceDate)
 
-    // 修改率统计（用户修改 AI 结果的比例）
-    const modificationStats = db
-      .prepare(
-        `SELECT
-          COUNT(*) as total_with_feedback,
-          SUM(CASE WHEN user_modified = 1 THEN 1 ELSE 0 END) as modified_count
-         FROM ai_parse_logs
-         WHERE created_at >= ? AND final_items IS NOT NULL`,
-      )
-      .get(sinceDate) as { total_with_feedback: number; modified_count: number }
-
-    const modificationRate = modificationStats.total_with_feedback > 0
-      ? Math.round((modificationStats.modified_count / modificationStats.total_with_feedback) * 10000) / 100
-      : 0
-
     return {
       code: 0,
       data: {
@@ -770,11 +861,6 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           }
           return recentFailures
         })(),
-        modification: {
-          total_with_feedback: modificationStats.total_with_feedback,
-          modified_count: modificationStats.modified_count,
-          modification_rate: modificationRate,
-        },
         /* 服务端**预筛**统计（入站/出站分流）：`ai_parse_logs` 里看不到「被规则挡下、根本没调模型」
            的那些（它们记在 `ai_parse_filters`）——线上实测 53% 的通知在这里就被丢了，所以
            「空结果率」类指标必须与它一起看。⚠️ 这个函数此前**无任何消费者**（死代码），
@@ -784,6 +870,15 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       message: '',
     }
   })
+
+/**
+ * 已下线字段：`user_modified` / `modification_detail` 随 `POST /api/ai/parse-feedback` 一起废弃。
+ * 列保留（禁改已应用 migration），但**不再返回**给客户端；`final_items` 保留（落地回填仍在写它）。
+ */
+function stripRetiredParseLogFields(row: Record<string, unknown>): Record<string, unknown> {
+  const { user_modified: _userModified, modification_detail: _modificationDetail, ...rest } = row
+  return rest
+}
 
   // GET /api/admin/ai-parse-logs - AI 解析日志列表（全部详细信息）
   app.get('/api/admin/ai-parse-logs', async (request: FastifyRequest) => {
@@ -850,7 +945,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return {
       code: 0,
       data: {
-        items: logs,
+        items: (logs as Array<Record<string, unknown>>).map(stripRetiredParseLogFields),
         pagination: {
           page: pageNum,
           page_size: size,
@@ -889,7 +984,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       target_user_id: (log as { user_id?: number }).user_id ?? null,
     })
 
-    return { code: 0, data: log, message: '' }
+    return { code: 0, data: stripRetiredParseLogFields(log as Record<string, unknown>), message: '' }
   })
 
   // GET /api/admin/logs - 应用日志查看

@@ -55,6 +55,55 @@ export function recordFiltered(db: Db, rec: FilterRecord): number {
   return Number(res.lastInsertRowid)
 }
 
+export interface ReasonCount {
+  reason: string
+  count: number
+}
+
+/**
+ * `ai_parse_filters.reasons` 是 JSON 数组列（一次拦截可有多条理由）。
+ * 展开成「每个 reason 被多少行提到」——**这是这张表 by-reason 读模型的唯一实现**。
+ *
+ * 此前 `filterStats`（本文件）与 `filter-report.loadFilterStats` 各写一份
+ * SQL + `JSON.parse`，同一张表的读模型两个版本（仓库反复踩的「同一个数字两套算法」）。
+ * 两者现在都调它：服务端对照用 `stage:'inbound'`，降本统计用不带 stage（全部）。
+ *
+ * @param since 只统计 `created_at >= since` 的行（与调用方同一时间口径，UTC `YYYY-MM-DD HH:MM:SS`）
+ * @param userId `null`/缺省 = 跨用户聚合（只含计数，不含任何用户内容）
+ * @param stage 可选，只统计入站/出站之一
+ */
+export function reasonsByCount(
+  db: Db,
+  opts: { since: string; userId?: number | null; stage?: 'inbound' | 'outbound' },
+): ReasonCount[] {
+  const conds = ['created_at >= ?']
+  const args: unknown[] = [opts.since]
+  if (opts.userId != null) {
+    conds.unshift('user_id = ?')
+    args.unshift(opts.userId)
+  }
+  if (opts.stage) {
+    conds.push('stage = ?')
+    args.push(opts.stage)
+  }
+  const rows = db
+    .prepare(
+      `SELECT reasons, COUNT(*) AS hits FROM ai_parse_filters
+        WHERE ${conds.join(' AND ')} GROUP BY reasons`,
+    )
+    .all(...args) as Array<{ reasons: string | null; hits: number }>
+
+  const map = new Map<string, number>()
+  for (const r of rows) {
+    let list: string[] = []
+    try { list = JSON.parse(r.reasons || '[]') } catch { list = [] }
+    for (const reason of list) map.set(reason, (map.get(reason) ?? 0) + r.hits)
+  }
+  return [...map.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count)
+}
+
 export interface FilterStats {
   /** 被挡下的总次数 */
   total: number
@@ -107,16 +156,7 @@ export function filterStats(db: Db, userId: number | null, sinceDays = 30): Filt
     .all(...args) as Array<{ d: string }>
   const dayCount = dayRows.length
 
-  const rows = db
-    .prepare(`SELECT reasons FROM ai_parse_filters ${where}`)
-    .all(...args) as Array<{ reasons: string | null }>
-
-  const byReason = new Map<string, number>()
-  for (const r of rows) {
-    let list: string[] = []
-    try { list = JSON.parse(r.reasons || '[]') } catch { list = [] }
-    for (const reason of list) byReason.set(reason, (byReason.get(reason) ?? 0) + 1)
-  }
+  const byReason = reasonsByCount(db, { since, userId })
 
   return {
     total: total.c,
@@ -124,9 +164,7 @@ export function filterStats(db: Db, userId: number | null, sinceDays = 30): Filt
     outbound,
     medianMs: durations.length ? durations[Math.floor(durations.length / 2)]! : 0,
     maxMs: durations.length ? durations[durations.length - 1]! : 0,
-    byReason: [...byReason.entries()]
-      .map(([reason, count]) => ({ reason, count }))
-      .sort((a, b) => b.count - a.count),
+    byReason,
     days: dayCount,
     perDay: dayCount ? Math.round(total.c / dayCount) : 0,
   }

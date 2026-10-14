@@ -62,4 +62,9 @@ describe('admin/ai-parse-stats 的 prefilter 块', () => {
     // 判定耗时是「纯字符串匹配」，必须是毫秒级（DATA §10.4 的口径）
     expect(after.maxMs).toBeLessThan(1000)
   })
+
+  it('已下线的「修正率」块不再返回（parse-feedback 下线，无数据来源）', async () => {
+    const data = JSON.parse((await fetchStats()).payload).data
+    expect(data).not.toHaveProperty('modification')
+  })
 })

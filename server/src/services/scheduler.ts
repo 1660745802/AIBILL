@@ -183,6 +183,7 @@ function processTrashCleanup(): void {
  * - ai_parse_logs: 保留 90 天
  * - ai_conversations: 保留 90 天
  * - ai_parse_filters: 保留 90 天（写入量最大，53% 的解析请求会落一条）
+ * - client_capture_samples: 保留 30 天（契约 docs/API.md 附录 C §11.4）
  */
 function processLogCleanup(): void {
   const db = getDb()
@@ -220,6 +221,16 @@ function processLogCleanup(): void {
     .run(parseCutoff)
   if (filterResult.changes > 0) {
     log('info', 'scheduler', `AI预筛记录清理: 删除 ${filterResult.changes} 条（>90天）`)
+  }
+
+  // client_capture_samples 保留 30 天（契约 §11.4）：采样请求量随规则收敛而下降，
+  // 但它带原文，体积比纯计数大，保留期与 app_logs 同口径（30 天）。
+  const captureCutoff = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 19).replace('T', ' ')
+  const captureResult = db
+    .prepare('DELETE FROM client_capture_samples WHERE created_at < ?')
+    .run(captureCutoff)
+  if (captureResult.changes > 0) {
+    log('info', 'scheduler', `拦截样本清理: 删除 ${captureResult.changes} 条（>30天）`)
   }
 }
 

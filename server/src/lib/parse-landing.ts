@@ -129,7 +129,8 @@ export function backfillLanding(
   if (changed.changes === 0) return false
 
   // final_items 记最终确认的那几笔。
-  // 这里先记 AI 原始输出；用户真的改了仍走 /ai/ai/parse-feedback，那条路径会覆盖它。
+  // 这里先记 AI 原始输出（`COALESCE` 保留首写值）。用户修正回写走 `parse-feedback`
+  // 的那条路径已随该接口下线移除。
   db.prepare(
     `UPDATE ai_parse_logs
         SET final_items = COALESCE(final_items, ?)

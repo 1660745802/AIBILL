@@ -941,3 +941,46 @@ CREATE TABLE IF NOT EXISTS admin_unparsed_triage (
 );
 CREATE INDEX IF NOT EXISTS idx_admin_unparsed_triage_log ON admin_unparsed_triage(parse_log_id);
 `
+
+/**
+ * 024 — 客户端拦截内容采集（契约 docs/API.md 附录 C §11.3 / §11.4）。
+ *
+ * 客户端在本地丢掉的样本（结构摘要 + 命中片段；P1 默认带原文）落这张表，供 admin review
+ * 与规则收敛。与 `client_filter_stats`（⑤ 聚合计数）**分开存**：计数回答「拦了多少」，
+ * 样本回答「拦的是什么」——后者的正文可能很长，混进聚合表会把那张表撑爆并破坏幂等键。
+ *
+ * 硬边界（§11.5）：**绝不写 `transactions`、绝不调 AI、绝不回推客户端**。
+ *
+ * `UNIQUE(user_id, content_hash, blocked_by)`：客户端 best-effort 重发同一窗口时，
+ * 同一样本只落一次（重复走路由的 `duplicates` 分支）——这是「重发安全」的唯一保障。
+ * 一条样本可能命中多条规则（`blocked_by` 不同），所以去重键含 `blocked_by`。
+ *
+ * `label`：NULL = 未裁决；`is_bill` / `not_bill` 由 admin 标注（同 `admin_unparsed_triage`
+ * 的人工意见口径）。**不加 CHECK**：将来可能新增标注取值，加 CHECK 会逼一次 migration。
+ *
+ * ⚠️ `user_id → users(id) ON DELETE CASCADE`：必须把本表加进 `routes/admin.ts` 的
+ * `USER_SCOPED_TABLES`，否则删用户时外键约束删不掉（新增带 user_id 外键的表漏加是真实事故点）。
+ */
+export const migration024 = `
+CREATE TABLE IF NOT EXISTS client_capture_samples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  client_version TEXT,
+  channel TEXT NOT NULL,
+  package TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  blocked_by TEXT NOT NULL,
+  tier INTEGER,
+  received_at TEXT,
+  text TEXT,
+  text_len INTEGER,
+  content_hash TEXT NOT NULL,
+  label TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, content_hash, blocked_by)
+);
+CREATE INDEX IF NOT EXISTS idx_client_capture_samples_created_at ON client_capture_samples(created_at);
+CREATE INDEX IF NOT EXISTS idx_client_capture_samples_blocked_by ON client_capture_samples(blocked_by);
+CREATE INDEX IF NOT EXISTS idx_client_capture_samples_package ON client_capture_samples(package);
+`

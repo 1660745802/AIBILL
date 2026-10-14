@@ -1,7 +1,6 @@
 /**
  * AI 路由 - /api/ai
  * POST /api/ai/parse - AI 记账解析
- * POST /api/ai/parse-feedback - 解析结果反馈
  * POST /api/ai/chat - AI 问答
  * GET /api/ai/sessions - 对话列表
  * DELETE /api/ai/sessions/:id - 删除对话
@@ -12,41 +11,29 @@ import crypto from 'node:crypto'
 import { authMiddleware } from '../middleware/auth.js'
 import { getDb } from '../db/index.js'
 import { chatCompletion, AiError } from '../ai/client.js'
-import { today, toDateStr, addDaysTo, beijingYearMonth } from '../lib/date.js'
-import { buildParsePrompt } from '../ai/prompts.js'
-import { extractJsonArray, validateParsedItems, ParseError, type ParsedTransaction } from '../ai/parser.js'
-import { resolveCategory, type CategoryResolution } from '../ai/category-matcher.js'
-import { quickParse } from '../ai/quick-parser.js'
-import { extractParsedExtras, deriveReviewMeta } from '../lib/parse-extract.js'
-import { pickMainItem } from '../lib/main-item.js'
-import { getSourceMapping } from '../lib/notification-rules.js'
-import {
-  classifyNotification,
-  shouldCallAi,
-  requiresCorroboration,
-  verifyParsed,
-  extractMoneyAmounts,
-} from '../ai/verify.js'
-import { rememberParse } from '../lib/parse-landing.js'
-import { recordFiltered } from '../lib/parse-filter.js'
+import { beijingYearMonth } from '../lib/date.js'
 import {
   MAX_WINDOW_DAYS,
   normalizeWindow,
   ruleNamespace,
   saveFilterReport,
 } from '../lib/filter-report.js'
+import {
+  CAPTURE_CHANNELS,
+  CAPTURE_KINDS,
+  CAPTURE_STAGES,
+  saveCaptureReport,
+} from '../lib/capture-report.js'
 import { appLog } from '../services/logger.js'
 import {
-  failureCodeOf,
-  isRetryableFailure,
-  retryAfterMsOf,
-  retryDelayMs,
-  PARSE_MAX_ATTEMPTS,
-  PARSE_ATTEMPT_TIMEOUT_MS,
   PARSE_INPUT_MAX_LEN,
   PARSE_INPUT_A11Y_MAX_LEN,
-  type AiFailureCode,
 } from '../lib/ai-failure.js'
+import {
+  runParse,
+  insertParseLog,
+  readParseMeta,
+} from '../lib/parse-pipeline.js'
 
 /**
  * `POST /api/ai/parse` 入参（契约 docs/API.md 附录 C §5）。
@@ -95,17 +82,6 @@ const parseInputSchema = z.object({
     .optional(),
 })
 
-const parseFeedbackSchema = z.object({
-  parse_log_id: z.number().int().positive(),
-  final_items: z.array(z.any()),
-  modified: z.boolean(),
-  /* 入口归因：客户端一直在发（契约 §2），此前被 zod 静默剥掉。收下并写进 modification_detail
-     （无需 migration），供「哪个渠道的解析更容易被修正」这类分析用。
-     ⚠️ 只在 `modified && parsed_items` 分支落地（modification_detail 本身就是「修正详情」字段，
-     没有修正时它本来就为 null）；非法值**故意** 400（fail-loud），客户端固定发合法值。 */
-  channel: z.enum(['nls', 'sms', 'a11y', 'manual']).optional(),
-})
-
 /**
  * 客户端拦截计数上报（契约 §4）。
  *
@@ -132,58 +108,45 @@ const filterReportSchema = z.object({
   }),
 })
 
-interface CategoryRow {
-  id: number
-  name: string
-  type: string
-  icon: string
-}
-
-interface AccountRow {
-  id: number
-  name: string
-}
-/** transfer 没有归类判定 → 没有噪声审计 */
-function noNoiseResolution(): CategoryResolution {
-  return {
-    category_id: null, category_name: '', category_icon: '',
-    reason: 'undetermined', reason_detail: 'transfer:不参与归类', is_exact: false, noise: null,
-  }
-}
-
 /**
- * 噪声闸审计字段（契约 §6：只追加机械字段，既有键一字不改）。
+ * 客户端拦截内容采集（契约 docs/API.md 附录 C §11.3）。
  *
- * **只在噪声闸真的参与过判定时才追加**——不给每一笔都塞这三个键：
- *   · `category_reason`      —— 归类理由（取 CATEGORY_REASONS）
- *   · `noise_term`           —— 命中哪个噪声词条（被窄语境判掉时非空）
- *   · `noise_verdict_source` —— `narrow` = 被噪声闸判掉；`broad` = 窄语境放过、
- *                               但 verify 的宽口径会判噪声（管理员复核对象）
- *
- * 审计需求由 `ai_parse_logs.parsed_items`（存整份 items JSON）满足，
- * **无需 migration、无需新表、不改 /api/admin/* 的响应形状**；客户端可忽略这三个键。
+ * 与 `filterReportSchema` 的区别：那条是**聚合计数**，这条是**样本内容**（P1 含原文）。
+ * 上限逐条来自 §11.3：`samples ≤ 50`、`text ≤ 2000`、`blocked_by ≤ 120`。
  */
-function noiseAuditFields(res: CategoryResolution): Record<string, unknown> {
-  if (!res.noise) return {}
-  return {
-    category_reason: res.reason,
-    noise_term: res.noise.term,
-    noise_verdict_source: res.noise.source,
-  }
-}
+const captureReportSchema = z.object({
+  client_version: z.string().min(1).max(64),
+  window_start: z.string().min(1).max(40),
+  window_end: z.string().min(1).max(40),
+  samples: z
+    .array(
+      z.object({
+        channel: z.enum(CAPTURE_CHANNELS),
+        package: z.string().min(1).max(200),
+        kind: z.enum(CAPTURE_KINDS),
+        stage: z.enum(CAPTURE_STAGES),
+        blocked_by: z.string().min(1).max(120),
+        tier: z.number().int().min(0).max(4).optional(),
+        received_at: z.string().min(1).max(40).optional(),
+        text: z.string().max(2000).optional(),
+        text_len: z.number().int().min(0).max(100_000).optional(),
+        content_hash: z.string().min(1).max(128),
+        redacted: z.boolean().optional(),
+      }),
+    )
+    .min(1, 'samples 不能为空')
+    .max(50, 'samples 过多（>50 条）'),
+})
 
 export async function aiRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware)
 
-  // POST /api/ai/parse - AI 记账解析
+  // POST /api/ai/parse - AI 记账解析（业务编排见 lib/parse-pipeline.ts）
   app.post(
     '/api/ai/parse',
     { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
     async (request: FastifyRequest, reply: FastifyReply) => {
     const startTime = Date.now()
-    /* 本次请求实际调了几次模型（服务端同步重试，见 lib/ai-failure.ts）。
-       1 = 没重试；落 `ai_parse_logs.attempts`，让「重试救回了多少」可量化。 */
-    let attempts = 0
 
     try {
       /* ═══ 入参规范化：必须在 zod 之前 ═══
@@ -205,468 +168,90 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const body = parseInputSchema.parse(normalizedBody)
-      const db = getDb()
-      const userId = request.user!.userId
 
-      /* 渠道上限：非 a11y 超限也**必须留痕**（此前 400 且零日志 → 两端都查不到）。
-         a11y 在上一步已截断，不会进这里。 */
-      const maxLen = body.channel === 'a11y' ? PARSE_INPUT_A11Y_MAX_LEN : PARSE_INPUT_MAX_LEN
-      if (body.input.length > maxLen) {
-        insertParseLog(db, {
-          userId,
-          rawInput: body.input.slice(0, 200),
-          cleanedInput: null,
-          aiResponse: null,
-          parsedItems: null,
-          status: 'error',
-          errorMessage: `input_too_long: ${body.input.length} > ${maxLen}`,
-          durationMs: Date.now() - startTime,
-          failureCode: 'input_too_long',
-          attempts: 0,
-          ...readParseMeta(request.body),
-        })
-        reply.code(400)
-        return {
-          code: 2000,
-          data: null,
-          message: '输入过长',
-          outcome: 'unavailable',
-        }
-      }
-
-      /* 本请求的「今天」= 通知到达日的**北京日期**（有 received_at 时），否则 today()。
-         通知 23:40 到、00:05 才解析，必须落在通知当天，否则 date 会被记成隔天。 */
-      const anchorDate = resolveAnchorDate(body.received_at, userId)
-
-      /* hints 只用来算 hints_conflict，**绝不拼进 prompt**：
-         hints 一旦进 prompt，模型会直接抄 hint 而不读文本，绕过金额佐证
-         （verify.ts 的 hasCorroboration）→ 客户端拿到一个「文本里根本没有的数字」，
-         也就是伪造账目。金额冲突标记是机械比对，不依赖模型，所以可以给。 */
-      const hintsConflict = computeHintsConflict(body.hints?.amount_cents, body.input)
-
-      // 入参上下文落库（仅留档，见 migration 019）
-      const logMeta = {
-        channel: body.channel ?? null,
-        sourcePackage: body.source?.package_name ?? null,
-        receivedAt: body.received_at ?? null,
-        hints: body.hints ? JSON.stringify(body.hints) : null,
-      }
-
-      /* ═══ 出参扩展（契约 §6）：机械抽取，不进 prompt ═══
-         `input` 为主，抽不到再退回 title/body（S2 已收）。
-         ⚠️ 只有**抽取**能退回 title/body；tier/佐证判据（deriveReviewMeta 的
-         `input`）**只许用 input**——title/body 暂不参与判据。 */
-      const friendlySource = body.source
-        ? getSourceMapping(db)[body.source.package_name]
-        : undefined
-      const fallbackText = [body.title, body.body]
-        .filter((s): s is string => !!s)
-        .join(' ')
-      const extras = extractParsedExtras(body.input, { fallbackText, sourceName: friendlySource })
-
-      // 获取用户的分类和账户列表
-      const categories = db
-        .prepare('SELECT id, name, type, icon FROM categories WHERE user_id = ? AND is_active = 1')
-        .all(userId) as CategoryRow[]
-
-      const accounts = db
-        .prepare('SELECT id, name FROM accounts WHERE user_id = ? AND is_active = 1')
-        .all(userId) as AccountRow[]
-
-      const expenseCategories = categories.filter((c) => c.type === 'expense')
-      const incomeCategories = categories.filter((c) => c.type === 'income')
-
-      // 构建 prompt（「今天」= 北京时间，见 lib/date.ts）
-
-      // 预清理输入文本（去除通知标题噪音）
-      const cleanedInput = cleanInput(body.input)
-
-      // === 快捷解析：简单输入直接正则匹配，毫秒级响应 ===
-      const quickResult = quickParse(cleanedInput, {
-        today: anchorDate,
-        expenseCategories: expenseCategories.map((c) => c.name),
-        incomeCategories: incomeCategories.map((c) => c.name),
-        accounts: accounts.map((a) => a.name),
+      /* 编排整段收进 lib/parse-pipeline.ts：路由不再需要知道重试预算 / 预筛 /
+         装配 / 回填。这里只把 ParseOutcome 翻译成 HTTP 响应——8 种形态与拆分前
+         **逐字节相同**，被 tests/compat/client-response-shape.test.ts 钉住。 */
+      const outcome = await runParse(getDb(), {
+        userId: request.user!.userId,
+        body,
+        rawBody: request.body,
       })
 
-      if (quickResult) {
-        // 快捷解析成功，匹配分类 ID + 账户 ID
-        const items = quickResult.map((item) => {
-          const type = item.type === 'expense' ? 'expense' : 'income'
-          const res = resolveCategory({
-            requested: item.category,
-            type,
-            categories: categories.map((c) => ({ id: c.id, name: c.name, type: c.type as 'expense' | 'income' })),
-            // 判据只许用 input（不用 title/body，与 deriveReviewMeta 同口径）
-            evidenceText: body.input,
-          })
-          // 用户该类型下一个分类都没有时 res.category_id 为 null：给契约内合法的 null，不给 id 0
-          const catRow = res.category_id === null
-            ? undefined
-            : categories.find((c) => c.id === res.category_id)
-
-          let accountId: number | null = null
-          let accountName = ''
-          if (item.account) {
-            const matchedAcc = accounts.find((a) => a.name === item.account)
-            if (matchedAcc) { accountId = matchedAcc.id; accountName = matchedAcc.name }
-          }
-
-          // §6：既有键一字不改，只追加机械字段
-          const meta = deriveReviewMeta({
-            path: 'quick',
-            categoryExact: res.is_exact,
-            amountCents: Math.round(item.amount * 100),
-            input: body.input,
-          })
-
+      switch (outcome.kind) {
+        /* #2/#4 quick 与 ai 成功：data 六键（items / extra_items_dropped /
+           raw_input / parse_log_id / source / hints_conflict） */
+        case 'parsed':
+          reply.code(200)
           return {
-            type: item.type,
-            amount: Math.round(item.amount * 100),
-            category_id: res.category_id,
-            category_name: res.category_name,
-            category_icon: catRow ? (catRow.icon || '📦') : '',
-            description: item.description,
-            date: item.date,
-            account_id: accountId,
-            account_name: accountName,
-            target_account_id: null,
-            target_account_name: '',
-            ...extras,
-            ...meta,
-            ...noiseAuditFields(res),
+            code: 0,
+            data: {
+              items: outcome.items,
+              extra_items_dropped: outcome.droppedCount,
+              raw_input: outcome.rawInput,
+              parse_log_id: outcome.logId,
+              source: outcome.source,
+              hints_conflict: outcome.hintsConflict,
+            },
+            message: '',
           }
-        })
 
-        // 记录日志（快捷解析也记录，方便对比质量）
-        const durationMs = Date.now() - startTime
-        const logId = insertParseLog(db, {
-          userId,
-          rawInput: body.input,
-          cleanedInput,
-          aiResponse: '[quick-parse]',
-          parsedItems: JSON.stringify(items),
-          status: 'success',
-          errorMessage: null,
-          durationMs,
-          failureCode: null,
-          attempts,
-          ...logMeta,
-        })
-
-        /* 一次解析只回一笔（取消批量记账，契约不变量）。全部条目已写进
-           `ai_parse_logs.parsed_items`，这里只裁响应并把裁掉的条数回给客户端。 */
-        const picked = pickMainItem(items, body.input)
-        return {
-          code: 0,
-          data: {
-            items: picked.main ? [picked.main] : [],
-            extra_items_dropped: picked.droppedCount,
-            raw_input: body.input,
-            parse_log_id: logId,
-            source: 'quick',
-            hints_conflict: hintsConflict,
-          },
-          message: '',
-        }
-      }
-
-      /* ═══ 入站分流：判断这条通知值不值得花一次模型调用 ═══
-         顺序很重要：**必须在 quickParse 之后**。
-         分流的规则是按通知形态写的（无货币单位 + 无交易动词 → 噪声），
-         而 quickParse 处理的正是「午饭32」这种手打短句——它没有货币单位、
-         也没有交易动词，先分流会把它们全丢掉。
-         （tests/routes/memories.test.ts 里的两个用例就是抓这个的。）
-
-         线上实测 1419 条通知里 759 条（53%）是纯噪声，日志的「空结果率」
-         因此基本没有诊断价值——分不清「模型不行」和「这是条广告」。
-         分流把这类记录在调模型前挡掉，写进独立表 ai_parse_filters
-         （不往 ai_parse_logs.status 里塞 'filtered'——那个字段有 CHECK 约束，
-         为它重建一张 1419 行的表不值得），于是「省了多少」是一个可数的指标。 */
-      const classifyStart = Date.now()
-      const classification = classifyNotification(body.input)
-      /* `duration_ms` 记的是**判定本身**的耗时（DATA §10.4：`分流是纯字符串匹配，应 <1ms`），
-         不是整个请求的耗时。入站就从 classify 开始量，出站（下面）只量 verifyParsed；
-         拿 `Date.now() - startTime` 会把 quickParse / 两条分类查询、尤其**整段模型调用**
-         算进去，于是 filterStats.medianMs/maxMs 这个「预筛比模型快两个数量级」的
-         指标彻底失去意义（出站那条动辄几十秒）。 */
-      const classifyMs = Date.now() - classifyStart
-      if (!shouldCallAi(classification)) {
-        recordFiltered(db, {
-          userId,
-          rawInput: body.input,
-          cleanedInput,
-          stage: 'inbound',
-          tier: classification.tier,
-          reasons: classification.reasons,
-          durationMs: classifyMs,
-          channel: body.channel ?? null,
-          sourcePackage: body.source?.package_name ?? null,
-        })
-        return {
-          code: 0,
-          data: { items: [], extra_items_dropped: 0, raw_input: body.input, source: 'prefilter' },
-          // 空 items ⇔ 有 outcome（不变量，见 API.md 附录 C §1）
-          outcome: 'not_a_bill',
-          message: '',
-        }
-      }
-
-      // === AI 解析：复杂输入走 LLM ===
-
-      // 根据输入长度选择快速/完整 prompt
-      const systemPrompt = buildParsePrompt({
-        today: anchorDate,
-        expenseCategories: expenseCategories.map((c) => c.name),
-        incomeCategories: incomeCategories.map((c) => c.name),
-        accounts: accounts.map((a) => a.name),
-      }, cleanedInput.length)
-
-      // 注入用户偏好记忆（仅 source='manual'，防 AI 自我污染）
-      let finalSystemPrompt = systemPrompt
-      const memories = db
-        .prepare(
-          `SELECT content FROM ai_memories
-           WHERE user_id = ? AND is_active = 1 AND source = 'manual'
-           ORDER BY created_at DESC LIMIT 20`,
-        )
-        .all(userId) as Array<{ content: string }>
-
-      if (memories.length > 0) {
-        const memoryLines = memories.map((m) => `- ${m.content}`).join('\n')
-        finalSystemPrompt += `\n\n## 用户偏好记忆\n${memoryLines}\n\n参考以上偏好进行解析，但用户明确指定的信息优先。`
-      }
-
-      // 调用 LLM（user content 用 <user_input> 包裹，防止 prompt 注入）
-      const messages: Array<{ role: 'system' | 'user'; content: string }> = [
-        { role: 'system', content: finalSystemPrompt },
-        { role: 'user', content: `<user_input>\n${cleanedInput}\n</user_input>` },
-      ]
-
-      /* ═══ 模型调用 + 解析 + 校验：有限重试（重试责任在服务端） ═══
-
-         客户端不再对 5xx/超时重试（它拿不到上游可观测性），且失败后不打扰用户，
-         所以「瞬时故障救回来」这件事只能由服务端做。重试预算见 lib/ai-failure.ts：
-         单次 30s × 2 次 + 退避 ≈ 61s < 客户端 90s HTTP 超时。
-
-         重试覆盖**三步**，不只是网络：call(上游) → extractJsonArray(格式) →
-         validateParsedItems(机械校验)。只重试 isRetryableFailure 认得的类型；
-         401/KeyMissing/4xx 立即失败（配置问题，重一百次一样）。 */
-      let aiResponse = ''
-      let rawItems: ParsedTransaction[] = []
-      let validItems: ParsedTransaction[] = []
-      for (;;) {
-        attempts++
-        try {
-          aiResponse = await chatCompletion(messages, 0.1, PARSE_ATTEMPT_TIMEOUT_MS, userId)
-          rawItems = extractJsonArray(aiResponse)
-          validItems = validateParsedItems(rawItems, anchorDate)
-          /* 模型回了一个**非空**数组、却没有一条过机械校验 → 这既不是「判非账」
-             （判非账是回 `[]`），也不是网络故障，是模型输出不可用：标记 parse_invalid
-             并可重试。若混进 empty 分支，失败率里就永远看不出这种抖动。 */
-          if (rawItems.length > 0 && validItems.length === 0) {
-            throw new ParseError('模型返回的条目均不合法', 'parse_invalid')
+        /* #1/#3 入站/出站预筛挡下：items 是空数组，顶层 outcome=not_a_bill */
+        case 'filtered':
+          reply.code(200)
+          return {
+            code: 0,
+            data: { items: [], extra_items_dropped: 0, raw_input: outcome.rawInput, source: outcome.source },
+            outcome: outcome.outcome,
+            message: outcome.message,
           }
-          break
-        } catch (err) {
-          if (attempts < PARSE_MAX_ATTEMPTS && isRetryableFailure(err)) {
-            appLog('warn', 'ai', 'AI 解析失败，即将重试', {
-              user_id: userId,
-              attempt: attempts,
-              failure_code: failureCodeOf(err),
-            })
-            await sleep(retryDelayMs(attempts, retryAfterMsOf(err)))
-            continue
+
+        /* #5 空结果：code 5001 + outcome=not_a_bill + parse_log_id */
+        case 'empty':
+          reply.code(outcome.httpStatus)
+          return {
+            code: 5001,
+            data: null,
+            message: outcome.message,
+            fallback: 'manual',
+            outcome: outcome.outcome,
+            raw_input: outcome.rawInput,
+            parse_log_id: outcome.logId,
           }
-          throw err
-        }
-      }
 
-      if (validItems.length === 0) {
-        // Log empty result
-        const durationMs = Date.now() - startTime
-        const logId = insertParseLog(db, {
-          userId,
-          rawInput: body.input,
-          cleanedInput,
-          aiResponse,
-          parsedItems: null,
-          status: 'empty',
-          errorMessage: null,
-          durationMs,
-          failureCode: null,
-          attempts,
-          ...logMeta,
-        })
+        /* #8 输入超渠道上限：code 2000 + 400 */
+        case 'input_too_long':
+          reply.code(outcome.httpStatus)
+          return { code: 2000, data: null, message: outcome.message, outcome: outcome.outcome }
 
-        reply.code(200)
-        return {
-          code: 5001,
-          data: null,
-          message: 'AI 无法解析，请尝试手动记账',
-          fallback: 'manual',
-          /* 客户端判别语义用：`not_a_bill` = AI **判非账**（不是故障）；
-             `unavailable` = AI 不可用/输出不可用（失败）。两者都不该打扰用户，
-             但客户端本地计数与「重试与否」要分开。 */
-          outcome: 'not_a_bill',
-          raw_input: body.input,
-          parse_log_id: logId,
-        }
-      }
-
-      /* 匹配分类 ID + 账户 ID，并把**归类自描述结果和 item 绑在同一个结构里**。
-         出参阶段要读 resolution.is_exact 派生 needs_review（那个「不自动入账」的护栏），
-         所以两者绝不能错位。
-         ⚠️ 旧写法是另开一个 `resolutions[]` 平行数组，靠「每轮恰好 push 一次」对齐：
-         将来谁在这段 map 里加一条 early return 或第二条条件路径，`resolutions[i]`
-         就会静默错位，把 needs_review / noise_term 挂到别的笔上，而且没有任何测试会红。
-         现在 resolution 与 item 同源产出，下标对齐是**结构保证**而不是约定。 */
-      const resolved = validItems.map((item) => {
-        // 分类匹配（transfer 不需要分类）——无分支地算一次，push 不再藏在 if 里
-        const resolution: CategoryResolution | null = item.type === 'transfer' ? null : resolveCategory({
-          requested: item.category,
-          type: item.type === 'expense' ? 'expense' : 'income',
-          categories: categories.map((c) => ({ id: c.id, name: c.name, type: c.type as 'expense' | 'income' })),
-          // 判据只许用 input（不用 title/body，与 deriveReviewMeta 同口径）
-          evidenceText: body.input,
-        })
-        const catRow = resolution?.category_id == null
-          ? undefined
-          : categories.find((c) => c.id === resolution.category_id)
-
-        // 账户匹配
-        let accountId: number | null = null
-        let accountName = ''
-        if (item.account) {
-          const matchedAccount = accounts.find(
-            (a) => a.name === item.account || a.name.includes(item.account) || item.account.includes(a.name),
-          )
-          if (matchedAccount) {
-            accountId = matchedAccount.id
-            accountName = matchedAccount.name
+        /* #6 AI 不可用：code 5001 + 504(超时)/502(其余) */
+        case 'ai_error':
+          reply.code(outcome.httpStatus)
+          return {
+            code: 5001,
+            data: null,
+            message: outcome.message,
+            fallback: 'manual',
+            outcome: outcome.outcome,
+            raw_input: outcome.rawInput,
           }
-        }
 
-        // 目标账户匹配（转账）
-        let targetAccountId: number | null = null
-        let targetAccountName = ''
-        if (item.type === 'transfer' && item.target_account) {
-          const matchedTarget = accounts.find(
-            (a) => a.name === item.target_account || a.name.includes(item.target_account!) || item.target_account!.includes(a.name),
-          )
-          if (matchedTarget) {
-            targetAccountId = matchedTarget.id
-            targetAccountName = matchedTarget.name
+        /* #7 模型输出不可解析：code 5002 + 200 */
+        case 'parse_error':
+          reply.code(outcome.httpStatus)
+          return {
+            code: 5002,
+            data: null,
+            message: outcome.message,
+            fallback: 'manual',
+            outcome: outcome.outcome,
+            raw_input: outcome.rawInput,
           }
-        }
 
-        return {
-          item: {
-            type: item.type,
-            amount: Math.round(item.amount * 100), // 元转分
-            category_id: resolution?.category_id ?? null,
-            category_name: resolution?.category_name ?? '',
-            category_icon: catRow ? (catRow.icon || '📦') : '',
-            description: item.description,
-            date: item.date,
-            account_id: accountId,
-            account_name: accountName,
-            target_account_id: targetAccountId,
-            target_account_name: targetAccountName,
-          },
-          resolution,
-        }
-      })
-      // 出站校验与后续所有出参都读这份纯 item 视图（resolution 不进响应，形状不变）
-      const result = resolved.map((r) => r.item)
-
-      // ═══ 出站校验（方案 B）═══════════════════════════════
-      // 只丢「确定是噪声」的形态，不动「看起来像真交易」的。
-      // 判定依据是文本形态，不是金额佐证——
-      // `订单已消费 您的订单【小铁台球】39.9…已成功消费` 里的 39.9 后面没有货币单位，
-      // 但它是一笔真实消费（线上已落地），必须放行给客户端。
-      const verifyStart = Date.now()
-      const verified = verifyParsed(
-        body.input,
-        result,
-        requiresCorroboration(classification),
-      )
-      // 同样只记「判定耗时」（纯字符串/正则），不含上游模型调用
-      const verifyMs = Date.now() - verifyStart
-      if (verified.verdict === 'drop') {
-        recordFiltered(db, {
-          userId,
-          rawInput: body.input,
-          cleanedInput,
-          stage: 'outbound',
-          tier: classification.tier,
-          reasons: [verified.reason],
-          durationMs: verifyMs,
-          channel: body.channel ?? null,
-          sourcePackage: body.source?.package_name ?? null,
-        })
-        return {
-          code: 0,
-          data: { items: [], extra_items_dropped: 0, raw_input: body.input, source: 'postfilter' },
-          outcome: 'not_a_bill',
-          message: '',
-        }
-      }
-
-      // Log success
-      const durationMs = Date.now() - startTime
-
-      /* §6：既有键一字不改，只追加机械字段。
-         `source` 补 `'ai'`（#4 原先缺失）。needs_review/confidence 用 verifyParsed
-         的**逐项**判定 + 分类是否精确命中 + classifyNotification 的 reasons。 */
-      const items = resolved.map(({ item: it, resolution }, i) => {
-        const raw = validItems[i]!
-        const categoryExact =
-          raw.type === 'transfer'
-            ? true // 转账本就不需要分类，不因此判 needs_review
-            : (resolution?.is_exact ?? false)
-        const meta = deriveReviewMeta({
-          path: 'ai',
-          categoryExact,
-          amountCents: it.amount,
-          input: body.input, // 判据只许用 input（不用 title/body）
-          classifyReasons: classification.reasons,
-          verifyVerdict: verified.perItem[i]?.verdict,
-        })
-        return { ...it, ...extras, ...meta, ...noiseAuditFields(resolution ?? noNoiseResolution()) }
-      })
-
-      const logId = insertParseLog(db, {
-        userId,
-        rawInput: body.input,
-        cleanedInput,
-        aiResponse,
-        parsedItems: JSON.stringify(items),
-        status: 'success',
-        errorMessage: null,
-        durationMs,
-        failureCode: null,
-        attempts,
-        ...logMeta,
-      })
-
-      /* 一次解析只回一笔（同上）：指纹只记**客户端真正会入账的那一笔**，
-         否则被裁掉的笔会留在指纹里，之后误关联到别的账单。 */
-      const picked = pickMainItem(items, body.input)
-
-      rememberParse(userId, logId, (picked.main ? [picked.main] : []) as any, body.input)
-
-      return {
-        code: 0,
-        data: {
-          items: picked.main ? [picked.main] : [],
-          extra_items_dropped: picked.droppedCount,
-          raw_input: body.input,
-          parse_log_id: logId,
-          source: 'ai',
-          hints_conflict: hintsConflict,
-        },
-        message: '',
+        /* 穷尽兜底：ParseOutcome 新增 kind 时这里**编译报错**，
+           而不是静默落到 switch 之后 return undefined（一个没有 reply 的空响应）。 */
+        default:
+          return assertNever(outcome)
       }
     } catch (err) {
       if (err instanceof z.ZodError) {
@@ -693,178 +278,6 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         }
         reply.code(400)
         return { code: 2000, data: null, message: err.errors[0].message, outcome: 'unavailable' }
-      }
-      if (err instanceof AiError) {
-        // Log AI error
-        const durationMs = Date.now() - startTime
-        const db = getDb()
-        const userId = request.user!.userId
-        const rawInput = (request.body as any)?.input || ''
-        const status = err.type === 'AI_TIMEOUT' ? 'timeout' : 'error'
-
-        insertParseLog(db, {
-          userId,
-          rawInput,
-          cleanedInput: null,
-          aiResponse: null,
-          parsedItems: null,
-          status,
-          errorMessage: `${err.type}: ${err.message}`,
-          durationMs,
-          failureCode: failureCodeOf(err),
-          attempts,
-          ...readParseMeta(request.body),
-        })
-
-        const statusCode = err.type === 'AI_TIMEOUT' ? 504 : 502
-        reply.code(statusCode)
-        return {
-          code: 5001,
-          data: null,
-          message: err.message,
-          fallback: 'manual',
-          outcome: 'unavailable',
-          raw_input: rawInput,
-        }
-      }
-      if (err instanceof ParseError) {
-        // Log parse error
-        const durationMs = Date.now() - startTime
-        const db = getDb()
-        const userId = request.user!.userId
-        const rawInput = (request.body as any)?.input || ''
-
-        insertParseLog(db, {
-          userId,
-          rawInput,
-          cleanedInput: null,
-          aiResponse: null,
-          parsedItems: null,
-          status: 'error',
-          errorMessage: `ParseError: ${err.message}`,
-          durationMs,
-          failureCode: failureCodeOf(err),
-          attempts,
-          ...readParseMeta(request.body),
-        })
-
-        reply.code(200)
-        return {
-          code: 5002,
-          data: null,
-          message: 'AI 返回格式异常，请尝试手动记账',
-          fallback: 'manual',
-          outcome: 'unavailable',
-          raw_input: rawInput,
-        }
-      }
-      throw err
-    }
-  })
-
-  // POST /api/ai/parse-feedback - 解析结果反馈
-  app.post('/api/ai/parse-feedback', async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const body = parseFeedbackSchema.parse(request.body)
-      const db = getDb()
-      const userId = request.user!.userId
-
-      // 验证 log 记录归属当前用户
-      const logRow = db
-        .prepare('SELECT id, parsed_items FROM ai_parse_logs WHERE id = ? AND user_id = ?')
-        .get(body.parse_log_id, userId) as { id: number; parsed_items: string | null } | undefined
-
-      if (!logRow) {
-        reply.code(404)
-        return { code: 3002, data: null, message: '解析记录不存在' }
-      }
-
-      // 计算修改详情
-      let modificationDetail: string | null = null
-      if (body.modified && logRow.parsed_items) {
-        try {
-          const original = JSON.parse(logRow.parsed_items)
-          const final = body.final_items
-
-          /* 自动从修正中学习：分类/账户被改就生成记忆。
-
-             原先按 index 配对 `original[i]`/`final[i]` 并用 `Math.min` 截断。
-             写入的记忆内容取自 final，所以错得不是「描述↔分类」配错，
-             而是**「这一项到底被改了没有」判错**：final_items 是用户确认后的
-             最终态（契约：删除 = 不在数组里、新增 = 多出来的项），条数与顺序
-             本来就是变的——一旦错位，没改的项会被当成改了（学出多余记忆）、
-             与相邻项的比较则被跳过。这些记忆会被注入 prompt，错一次就一直错。
-             现在按 `description` 配对：只在**两侧描述唯一且相同**时才比较；
-             描述重复（歧义）或找不到原始项（新增项）一律不学。 */
-          if (Array.isArray(original) && Array.isArray(final)) {
-            const descOf = (it: any): string =>
-              typeof it?.description === 'string' ? it.description.trim() : ''
-
-            const origByDesc = new Map<string, any>()
-            const ambiguous = new Set<string>()
-            for (const o of original) {
-              const desc = descOf(o)
-              if (!desc) continue
-              if (origByDesc.has(desc)) ambiguous.add(desc)
-              else origByDesc.set(desc, o)
-            }
-
-            const learn = (memContent: string): void => {
-              const existing = db
-                .prepare('SELECT id FROM ai_memories WHERE user_id = ? AND content = ?')
-                .get(userId, memContent)
-              if (existing) return
-              db.prepare(
-                `INSERT INTO ai_memories (user_id, content, category, source, source_detail) VALUES (?, ?, 'habit', 'ai_suggested', '解析修正自动学习')`,
-              ).run(userId, memContent)
-            }
-
-            for (const fin of final) {
-              const desc = descOf(fin)
-              if (!desc || ambiguous.has(desc)) continue
-              const orig = origByDesc.get(desc)
-              if (!orig) continue
-
-              // 分类被修正
-              if (orig.category_name && fin.category_name && orig.category_name !== fin.category_name) {
-                learn(`"${desc}"应该归类为"${fin.category_name}"`)
-              }
-
-              // 账户被修正
-              if (orig.account_name && fin.account_name && orig.account_name !== fin.account_name) {
-                learn(`"${desc}"一般用"${fin.account_name}"支付`)
-              }
-            }
-          }
-
-          modificationDetail = JSON.stringify({
-            original_count: Array.isArray(original) ? original.length : 0,
-            final_count: body.final_items.length,
-            changed: true,
-            ...(body.channel ? { channel: body.channel } : {}),
-          })
-        } catch {
-          modificationDetail = JSON.stringify({ changed: true })
-        }
-      }
-
-      db.prepare(
-        `UPDATE ai_parse_logs
-         SET final_items = ?, user_modified = ?, modification_detail = ?
-         WHERE id = ? AND user_id = ?`,
-      ).run(
-        JSON.stringify(body.final_items),
-        body.modified ? 1 : 0,
-        modificationDetail,
-        body.parse_log_id,
-        userId,
-      )
-
-      return { code: 0, data: null, message: '反馈已记录' }
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        reply.code(400)
-        return { code: 2000, data: null, message: err.errors[0].message }
       }
       throw err
     }
@@ -932,6 +345,55 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       return {
         code: 0,
         data: { accepted: result.accepted, unknown_precheck_ids: result.unknownPrecheckIds },
+        message: '',
+      }
+    },
+  )
+
+  // POST /api/ai/capture-report —— 客户端拦截内容采集（契约 §11.3）
+  //
+  // 与 filter-report 并列但**分开**：那条是聚合计数，这条是样本内容；同样限流 20/min。
+  // 硬边界（§11.5）：绝不写 transactions、绝不调 AI、绝不回推客户端。
+  app.post(
+    '/api/ai/capture-report',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      let parsed: z.infer<typeof captureReportSchema>
+      try {
+        parsed = captureReportSchema.parse(request.body)
+      } catch (err) {
+        if (err instanceof z.ZodError) {
+          reply.code(400)
+          return { code: 2000, data: null, message: err.errors[0].message }
+        }
+        throw err
+      }
+
+      // 窗口归一化 / 跨度校验与 filter-report 同口径（normalizeWindow：无时区按北京时间）
+      const start = normalizeWindow(parsed.window_start)
+      const end = normalizeWindow(parsed.window_end)
+      if (!start || !end) {
+        reply.code(400)
+        return { code: 2000, data: null, message: 'window_start/window_end 不是合法时间' }
+      }
+      if (start > end) {
+        reply.code(400)
+        return { code: 2000, data: null, message: 'window_start 不能晚于 window_end' }
+      }
+      if ((Date.parse(end) - Date.parse(start)) / 86_400_000 > MAX_WINDOW_DAYS) {
+        reply.code(400)
+        return { code: 2000, data: null, message: `窗口跨度不能超过 ${MAX_WINDOW_DAYS} 天` }
+      }
+
+      const result = saveCaptureReport(getDb(), {
+        userId: request.user!.userId,
+        clientVersion: parsed.client_version,
+        samples: parsed.samples,
+      })
+
+      return {
+        code: 0,
+        data: { accepted: result.accepted, duplicates: result.duplicates },
         message: '',
       }
     },
@@ -1034,8 +496,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
       // 查询用户偏好记忆
       // ⚠️ **只取 source='manual'**（与 /ai/parse 同口径；DATA §3.2 / API.md §3 / ARCHITECTURE §5.4）：
-      // ai_suggested 是 AI 自己从修正里学出来的结论，自动注入就是自我污染。
-      // 这条以前只加在 parse 路径上，chat 把全部记忆（含 ai_suggested）都塞进了 system prompt。
+      // 注入只允许来自用户自己确认的偏好。`ai_suggested`（解析修正自动学习）的**写入**路径
+      // 已随 `parse-feedback` 下线移除，但历史行仍在表里——过滤与措辞都不放宽。
       const memories = db
         .prepare(
           "SELECT content FROM ai_memories WHERE user_id = ? AND is_active = 1 AND source = 'manual' ORDER BY created_at DESC LIMIT 20",
@@ -1209,29 +671,6 @@ export function loadRecentHistory(
 }
 
 /**
- * 从**未校验**的原始 body 里宽松读出入参上下文（错误路径用）。
- *
- * 模型超时 / 响应格式异常时，zod 解析出的 `body` 已经不在作用域里，但日志仍然
- * 应该记下这条请求的入口归因。宽容读取：任何字段形状不对就当没有，**不让日志
- * 提取反过来把错误处理搞挂**。
- */
-function readParseMeta(raw: unknown): {
-  channel: string | null
-  sourcePackage: string | null
-  receivedAt: string | null
-  hints: string | null
-} {
-  const b = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
-  const src = (b.source && typeof b.source === 'object' ? b.source : {}) as Record<string, unknown>
-  return {
-    channel: typeof b.channel === 'string' ? b.channel : null,
-    sourcePackage: typeof src.package_name === 'string' ? src.package_name : null,
-    receivedAt: typeof b.received_at === 'string' ? b.received_at : null,
-    hints: b.hints && typeof b.hints === 'object' ? JSON.stringify(b.hints) : null,
-  }
-}
-
-/**
  * 从**未校验**的原始 body 判断是否「输入类」失败（空 / 超长），返回 failure_code；否则 null。
  *
  * 判据只用**形状与长度**，不看 zod 文案——文案会改，判据不能跟着改。
@@ -1246,134 +685,9 @@ function inputFailureCode(raw: unknown): 'input_empty' | 'input_too_long' | null
 }
 
 /**
- * 推出本次请求的「锚定日期」（北京口径的 YYYY-MM-DD）。
- *
- * 为什么需要它：通知 23:40 到达、客户端 00:05 才联网解析时，如果直接用今天的
- * `today()`，这笔账会被写到「明天」——用户看到日期不对。所以客户端送
- * `received_at`，服务端取它的**北京日期**作为这次请求的「今天」，并在
- * quickParse / buildPrompt / validateParsedItems 里**用同一个值**（同一请求内一致）。
- *
- * 护栏：手机时钟歪（或客户端乱填）时，锚定日期会离谱。只接受落在
- * [北京今天-7 天, 北京今天+1 天] 内的值——**+1 天保留**是因为「通知 23:40 到、
- * 用户次日凌晨才联」本来就可能晚一天入库，而「-7 天」给换机/补录留余地。
- * 越界就回落 `today()` 并打 warn，不让一个坏时间戳把整批账写到几年前。
- *
- * 导出是为了能在测试里直接锁这个窗口判据（路由层不易构造「未来日期」）。
+ * 穷尽性兜底：`ParseOutcome` 新增 kind 时，这里的实参类型不再是 `never` → 编译报错。
+ * 用来把「路由漏翻译一种结果」从运行期的静默 `return undefined` 变成编译期的失败。
  */
-export function resolveAnchorDate(receivedAt: string | undefined, userId: number): string {
-  const fallback = today()
-  if (!receivedAt) return fallback
-
-  const ts = Date.parse(receivedAt)
-  if (Number.isNaN(ts)) return fallback // 理论上 zod 已拦；防御性兼底
-
-  const anchor = toDateStr(new Date(ts))
-  const low = addDaysTo(fallback, -7)
-  const high = addDaysTo(fallback, 1)
-  if (anchor < low || anchor > high) {
-    appLog('warn', 'ai', 'received_at 超出可信窗口，按今天处理', {
-      user_id: userId,
-      received_at: receivedAt,
-      anchor_date: anchor,
-      window: [low, high],
-    })
-    return fallback
-  }
-  return anchor
-}
-
-/**
- * 机械算出「hints 金额与文本金额是否矛盾」。
- *
- * 只在三个条件都成立时才可能为 true：有 `amount_cents`、文本里能抽出带单位的金额、
- * 且 hint 金额不在该集合里。任缺其一返回 false（「没有信号」不等于「矛盾」，
- * 不能把缺依据当成冲突——否则客户端会对着一张没有金额的通知弹警告）。
- *
- * 比对是分→元的可逆换算，与 `extractMoneyAmounts` 的「元保留两位」同口径。
- */
-export function computeHintsConflict(amountCents: number | undefined, rawInput: string): boolean {
-  if (amountCents == null) return false
-  const amounts = extractMoneyAmounts(rawInput)
-  if (amounts.size === 0) return false
-  const hintYuan = Math.round(amountCents / 100 * 100) / 100
-  return !amounts.has(hintYuan)
-}
-
-/**
- * 插入 AI 解析日志
- *
- * `channel` / `sourcePackage` / `receivedAt` / `hints` 是 019 新增的**可空**留档列：
- * 旧调用点不传就是 NULL（不猜值），新调用点把入参上下文原样落下来。
- *
- * `failureCode` / `attempts` 是 022 新增的**可空**列（失败可观测，见 lib/ai-failure.ts）：
- * `failureCode` NULL = 本次没有失败（成功，或 AI 判非账）；`attempts` = 实际调了几次模型。
- */
-function insertParseLog(
-  db: ReturnType<typeof getDb>,
-  params: {
-    userId: number
-    rawInput: string
-    cleanedInput: string | null
-    aiResponse: string | null
-    parsedItems: string | null
-    status: 'success' | 'empty' | 'error' | 'timeout'
-    errorMessage: string | null
-    durationMs: number
-    channel?: string | null
-    sourcePackage?: string | null
-    receivedAt?: string | null
-    hints?: string | null
-    failureCode?: AiFailureCode | null
-    attempts?: number | null
-  },
-): number {
-  const result = db.prepare(
-    `INSERT INTO ai_parse_logs
-       (user_id, raw_input, cleaned_input, ai_response, parsed_items, status, error_message, duration_ms,
-        channel, source_package, received_at, hints, failure_code, attempts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    params.userId,
-    params.rawInput,
-    params.cleanedInput,
-    params.aiResponse,
-    params.parsedItems,
-    params.status,
-    params.errorMessage,
-    params.durationMs,
-    params.channel ?? null,
-    params.sourcePackage ?? null,
-    params.receivedAt ?? null,
-    params.hints ?? null,
-    params.failureCode ?? null,
-    params.attempts ?? null,
-  )
-  return Number(result.lastInsertRowid)
-}
-
-/** 重试退避用 */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-/**
- * 预清理输入文本，去除通知标题噪音
- */
-function cleanInput(input: string): string {
-  let text = input.trim()
-
-  // 去除通知标题前缀（如 "[3条]动账通知"、"[招商银行]"）
-  text = text.replace(/^\[?\d+条\]?\s*/g, '')
-  text = text.replace(/^[\[【].*?[\]】]\s*/g, '')
-
-  // 去除重复的标题（如 "动账通知 动账通知"）
-  text = text.replace(/^(.{2,10})\s+\1\s*/g, '$1 ')
-
-  // 去除开头的通知类关键词
-  text = text.replace(/^(动账通知|交易提醒|消费提醒|收支通知)\s*/g, '')
-
-  // 去除多余空白
-  text = text.replace(/\s+/g, ' ').trim()
-
-  return text || input.trim()
+function assertNever(x: never): never {
+  throw new Error(`未处理的 ParseOutcome: ${JSON.stringify(x)}`)
 }

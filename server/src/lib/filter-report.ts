@@ -22,14 +22,20 @@
 
 import type { getDb } from '../db/index.js'
 import { derivePrecheck } from './precheck.js'
+import { reasonsByCount } from './parse-filter.js'
 
 type Db = ReturnType<typeof getDb>
 
 export const CHANNELS = ['nls', 'sms', 'a11y', 'manual'] as const
 export type Channel = (typeof CHANNELS)[number]
 
-/** `precheck.<reason>` / `client_only.<name>`；其余前缀不接受 */
-const RULE_ID_RE = /^(precheck|client_only)\.([A-Za-z0-9_.+:-]{1,100})$/
+/**
+ * `precheck.<reason>` / `client_only.<name>`；其余前缀不接受。
+ *
+ * 导出是为了让 `prefilter_policy` 的键校验与这里**同源**：云控下发的键必须与 ⑤ 上报
+ * 用的是同一套 rule_id 命名，否则 `forward/sample` 永远对不上客户端实际拦截用的 id。
+ */
+export const RULE_ID_RE = /^(precheck|client_only)\.([A-Za-z0-9_.+:-]{1,100})$/
 
 export type RuleNamespace = 'precheck' | 'client_only'
 
@@ -300,23 +306,8 @@ export function loadFilterStats(db: Db, userId: number | null, days: number): Fi
   const totalBlocked = by_channel.reduce((s, c) => s + c.blocked, 0)
 
   // 服务端对照：只取入站（出站是模型调用之后的事，precheck 覆盖不到）
-  const reasonRows = db
-    .prepare(
-      `SELECT reasons, COUNT(*) AS hits FROM ai_parse_filters
-        WHERE created_at >= ? AND stage = 'inbound'
-        GROUP BY reasons ORDER BY hits DESC`,
-    )
-    .all(since) as Array<{ reasons: string | null; hits: number }>
-  const reasonMap = new Map<string, number>()
-  for (const r of reasonRows) {
-    let list: string[] = []
-    try {
-      list = JSON.parse(r.reasons || '[]')
-    } catch {
-      list = []
-    }
-    for (const reason of list) reasonMap.set(reason, (reasonMap.get(reason) ?? 0) + r.hits)
-  }
+  // by-reason 读模型的唯一实现在 parse-filter.ts（同一张表不再有第二份 JSON.parse）
+  const serverByReason = reasonsByCount(db, { since, stage: 'inbound' })
 
   return {
     window: { days },
@@ -331,9 +322,7 @@ export function loadFilterStats(db: Db, userId: number | null, days: number): Fi
       funnel,
     },
     server: {
-      by_reason: [...reasonMap.entries()]
-        .map(([reason, hits]) => ({ reason, hits }))
-        .sort((a, b) => b.hits - a.hits),
+      by_reason: serverByReason.map((r) => ({ reason: r.reason, hits: r.count })),
     },
     note:
       '误杀率不能由计数相减得出（要看语料 expect_txn 的 P0 断言）；client_only.* 服务端无对应判据，' +

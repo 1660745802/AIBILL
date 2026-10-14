@@ -294,3 +294,59 @@ describe('Admin Routes - 删除用户', () => {
     })
   })
 })
+
+describe('AI 解析日志不再返回已下线字段（parse-feedback 下线）', () => {
+  let app: FastifyInstance
+  let adminToken: string
+  let userId: number
+  let logId: number
+
+  beforeAll(async () => {
+    app = await buildApp()
+    adminToken = await loginAdmin(app)
+    const token = await createUser(app, 'retired_fields')
+    const me = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/auth/me', headers: authHeaders(token) })).payload,
+    ).data.user
+    userId = me.id
+    // 造一条把三个字段都写满的日志：user_modified / modification_detail 不应再返回；final_items 仍返回
+    const res = getDb()
+      .prepare(
+        `INSERT INTO ai_parse_logs (user_id, raw_input, status, final_items, user_modified, modification_detail)
+         VALUES (?, '午饭32', 'success', '[{"type":"expense"}]', 1, '{"changed":true}')`,
+      )
+      .run(userId)
+    logId = Number(res.lastInsertRowid)
+  })
+  afterAll(async () => {
+    await teardownApp(app)
+  })
+
+  it('列表：行内含 final_items，不含 user_modified / modification_detail', async () => {
+    const data = JSON.parse(
+      (await app.inject({
+        method: 'GET',
+        url: `/api/admin/ai-parse-logs?user_id=${userId}`,
+        headers: authHeaders(adminToken),
+      })).payload,
+    ).data
+    const row = (data.items as Array<Record<string, unknown>>).find((r) => r.id === logId)
+    expect(row).toBeTruthy()
+    expect(row).toHaveProperty('final_items')
+    expect(row).not.toHaveProperty('user_modified')
+    expect(row).not.toHaveProperty('modification_detail')
+  })
+
+  it('详情：同样不含 user_modified / modification_detail，final_items 保留', async () => {
+    const data = JSON.parse(
+      (await app.inject({
+        method: 'GET',
+        url: `/api/admin/ai-parse-logs/${logId}`,
+        headers: authHeaders(adminToken),
+      })).payload,
+    ).data
+    expect(data).toHaveProperty('final_items')
+    expect(data).not.toHaveProperty('user_modified')
+    expect(data).not.toHaveProperty('modification_detail')
+  })
+})
