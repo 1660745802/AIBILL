@@ -1,9 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+/**
+ * 导入账单 —— **壳**。
+ *
+ * 只做三件事：把 DOM 事件翻译成流水线动作、展示格式化、把流水线状态渲染成
+ * 「四步走」的 UI。业务逻辑（读文件 / 解析 CSV / 归类 / 分片提交 / 统计与重置）
+ * 全在 `composables/useBillImport.ts`（C4）——那条链的状态彼此耦合（`fileContent`
+ * 决定步骤、`previewItems` 决定可提交集合、`pendingItems` 决定分片数），拆成模板
+ * 只会把耦合换成 props 传递，所以按「流水线」抽而不是按 UI 组件抽。
+ */
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import api from '@/api/index'
-import { generateUUID } from '@/utils/uuid'
-import { useToast } from '@/composables/useToast'
+import { useBillImport, type PreviewItem } from '@/composables/useBillImport'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import LedgerLabel from '@/components/ui/LedgerLabel.vue'
 import Money from '@/components/ui/Money.vue'
@@ -12,100 +19,40 @@ import Meter from '@/components/ui/Meter.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 
 const router = useRouter()
-const toast = useToast()
 
-type Source = 'wechat' | 'alipay'
-
-const source = ref<Source>('wechat')
-const fileContent = ref('')
-const fileName = ref('')
-const fileSize = ref(0)
-const dragOver = ref(false)
-const loading = ref(false)
-const error = ref('')
-
-// 预览数据
-interface PreviewItem {
-  type: string
-  amount: number
-  description: string
-  date: string
-  source_detail: string
-  category_id: number | null
-  category_name: string | null
-  category_icon: string | null
-  category_auto: boolean
-  duplicate: boolean
-}
-
-interface Category {
-  id: number
-  name: string
-  type: 'expense' | 'income'
-  icon: string
-}
-
-const previewItems = ref<PreviewItem[]>([])
-const categories = ref<Category[]>([])
-const stats = ref<{ total: number; skipped: number; errors: number; duplicates: number } | null>(null)
-const imported = ref(false)
-const importLoading = ref(false)
-/** 是否把疑似重复的记录也导入（默认否，避免重复导入把金额翻倍） */
-const includeDuplicates = ref(false)
-/** 导入结果统计 */
-const importResult = ref<{ success: number; failed: number; failedItems: number[] } | null>(null)
-const progress = ref<{ done: number; total: number } | null>(null)
-
-/** 单次提交的分片大小（服务端上限 200，留出余量） */
-const CHUNK_SIZE = 100
-
-const duplicateCount = computed(() => previewItems.value.filter((i) => i.duplicate).length)
-/** 实际会提交的条目（按“包含重复”开关过滤） */
-const pendingItems = computed(() =>
-  includeDuplicates.value ? previewItems.value : previewItems.value.filter((i) => !i.duplicate),
-)
-/** 缺分类的非转账条目（无法入库，需用户补选） */
-const missingCategoryCount = computed(
-  () => pendingItems.value.filter((i) => i.type !== 'transfer' && !i.category_id).length,
-)
-
-/** 当前步骤：1 选来源 / 2 上传 / 3 预览 / 4 完成 */
-const currentStep = computed(() => {
-  if (imported.value) return 4
-  if (previewItems.value.length > 0) return 3
-  if (fileContent.value) return 2
-  return fileName.value ? 2 : 1
-})
-
-const STEP_TITLES = ['选择来源', '上传账单', '预览校对', '导入完成']
-
-/** 与当前类型匹配的分类（用于下拉框） */
-function categoriesFor(type: string): Category[] {
-  return categories.value.filter((c) => c.type === (type === 'income' ? 'income' : 'expense'))
-}
+const {
+  source,
+  fileName,
+  fileSize,
+  fileContent,
+  loading,
+  error,
+  previewItems,
+  stats,
+  imported,
+  importLoading,
+  includeDuplicates,
+  importResult,
+  progress,
+  duplicateCount,
+  pendingItems,
+  missingCategoryCount,
+  currentStep,
+  STEP_TITLES,
+  categoriesFor,
+  loadCategories,
+  readFile,
+  parse,
+  setItemCategory,
+  bulkSetCategory,
+  submit,
+  reset,
+} = useBillImport()
 
 onMounted(loadCategories)
 
-async function loadCategories() {
-  try {
-    const { data } = await api.get('/categories')
-    if (data.code === 0) categories.value = data.data.items || []
-  } catch { /* 忽略：分类加载失败不影响导入，只是无法自动分类 */ }
-}
-
-function readFile(file: File) {
-  fileName.value = file.name
-  fileSize.value = file.size
-  error.value = ''
-  const reader = new FileReader()
-  reader.onload = (e) => {
-    fileContent.value = e.target?.result as string
-  }
-  reader.onerror = () => {
-    error.value = '文件读取失败'
-  }
-  reader.readAsText(file, 'utf-8')
-}
+/** 拖拽高亮：纯展示态，不属于流水线 */
+const dragOver = ref(false)
 
 function handleFileChange(event: Event) {
   const target = event.target as HTMLInputElement
@@ -120,152 +67,22 @@ function handleDrop(event: DragEvent) {
   if (file) readFile(file)
 }
 
+/* 取值留在 view：模板里没法写 TS 断言，把 `event.target` 收窄成 select 的这一步
+   是「DOM → 领域值」的翻译，正是壳该干的事。 */
+function onItemCategoryChange(item: PreviewItem, event: Event) {
+  setItemCategory(item, (event.target as HTMLSelectElement).value)
+}
+
+function onBulkCategoryChange(event: Event) {
+  const select = event.target as HTMLSelectElement
+  bulkSetCategory(select.value)
+  select.value = ''
+}
+
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / 1024 / 1024).toFixed(1)} MB`
-}
-
-async function parseCsv() {
-  if (!fileContent.value) {
-    error.value = '请先选择文件'
-    return
-  }
-
-  loading.value = true
-  error.value = ''
-  previewItems.value = []
-  stats.value = null
-  importResult.value = null
-
-  try {
-    const { data } = await api.post('/import/csv', {
-      content: fileContent.value,
-      source: source.value,
-    })
-    if (data.code === 0) {
-      previewItems.value = data.data.parsed || []
-      stats.value = {
-        total: data.data.total ?? previewItems.value.length,
-        skipped: data.data.skipped ?? 0,
-        errors: data.data.errors ?? 0,
-        duplicates: data.data.duplicates ?? 0,
-      }
-      if (previewItems.value.length === 0) {
-        error.value = '没有解析出可导入的记录，请确认账单格式选择是否正确'
-      }
-    } else {
-      error.value = data.message || '解析失败'
-    }
-  } catch {
-    error.value = '网络错误，请重试'
-  } finally {
-    loading.value = false
-  }
-}
-
-/** 手动修改某一行的分类 */
-function setCategory(item: PreviewItem, event: Event) {
-  const value = (event.target as HTMLSelectElement).value
-  const cat = categories.value.find((c) => String(c.id) === value)
-  item.category_id = cat ? cat.id : null
-  item.category_name = cat ? cat.name : null
-  item.category_icon = cat ? cat.icon : null
-  item.category_auto = false // 用户手动选过，不再标记为自动
-}
-
-/** 批量把未分类的行归到指定分类 */
-function bulkCategory(event: Event) {
-  const value = (event.target as HTMLSelectElement).value
-  if (!value) return
-  const cat = categories.value.find((c) => String(c.id) === value)
-  if (!cat) return
-  for (const item of previewItems.value) {
-    if (item.type === 'transfer') continue
-    if (categoriesFor(item.type).some((c) => c.id === cat.id)) {
-      item.category_id = cat.id
-      item.category_name = cat.name
-      item.category_icon = cat.icon
-      item.category_auto = false
-    }
-  }
-  ;(event.target as HTMLSelectElement).value = ''
-}
-
-async function confirmImport() {
-  if (pendingItems.value.length === 0) return
-  if (missingCategoryCount.value > 0) {
-    error.value = `还有 ${missingCategoryCount.value} 条记录未选分类，请先补全或删除`
-    return
-  }
-
-  importLoading.value = true
-  error.value = ''
-  importResult.value = null
-  progress.value = { done: 0, total: pendingItems.value.length }
-
-  const toSubmit = pendingItems.value
-  let success = 0
-  let failed = 0
-  const failedIndexes: number[] = []
-
-  try {
-    // 分片提交：单批失败不影响其他批，最终汇总而不是“一错全无”
-    for (let i = 0; i < toSubmit.length; i += CHUNK_SIZE) {
-      const chunk = toSubmit.slice(i, i + CHUNK_SIZE)
-      const items = chunk.map((item) => ({
-        client_id: generateUUID(),
-        client_type: 'web' as const,
-        source: 'import_csv' as const,
-        source_detail: item.source_detail || item.description || '',
-        type: item.type,
-        amount: item.amount,
-        category_id: item.category_id || undefined,
-        description: item.description,
-        date: item.date,
-      }))
-
-      try {
-        const { data } = await api.post('/transactions', { items })
-        if (data.code === 0) {
-          success += data.data?.created?.length ?? chunk.length
-        } else {
-          failed += chunk.length
-          failedIndexes.push(...chunk.map((_, ci) => i + ci))
-        }
-      } catch (e: any) {
-        failed += chunk.length
-        failedIndexes.push(...chunk.map((_, ci) => i + ci))
-      }
-
-      progress.value = { done: Math.min(i + CHUNK_SIZE, toSubmit.length), total: toSubmit.length }
-    }
-
-    importResult.value = { success, failed, failedItems: failedIndexes }
-    if (success > 0) {
-      imported.value = true
-    }
-    if (failed > 0) {
-      toast.error(`${failed} 条导入失败，请检查后重试`)
-    } else {
-      toast.success(`成功导入 ${success} 条`)
-    }
-  } finally {
-    importLoading.value = false
-    progress.value = null
-  }
-}
-
-function reset() {
-  fileContent.value = ''
-  fileName.value = ''
-  fileSize.value = 0
-  previewItems.value = []
-  stats.value = null
-  imported.value = false
-  importResult.value = null
-  includeDuplicates.value = false
-  error.value = ''
 }
 
 function getTypeLabel(type: string): string {
@@ -395,7 +212,7 @@ function typeBadgeClass(type: string): string {
           type="button"
           class="btn btn-primary btn-block mt-3"
           :disabled="loading"
-          @click="parseCsv"
+          @click="parse"
         >
           {{ loading ? '解析中…' : '解析文件' }}
         </button>
@@ -433,7 +250,7 @@ function typeBadgeClass(type: string): string {
         <!-- 批量归类 -->
         <div class="flex items-center gap-2 mb-3">
           <span class="text-xs text-ink-3 shrink-0">批量归类</span>
-          <select class="field flex-1" @change="bulkCategory">
+          <select class="field flex-1" @change="onBulkCategoryChange">
             <option value="">选择分类（应用到所有未分类的同类记录）</option>
             <optgroup label="支出">
               <option v-for="c in categoriesFor('expense')" :key="c.id" :value="String(c.id)">
@@ -495,7 +312,7 @@ function typeBadgeClass(type: string): string {
                     :value="item.category_id ? String(item.category_id) : ''"
                     class="field field-sm max-w-[9rem]"
                     :class="item.category_id ? '' : 'import-cat-missing'"
-                    @change="setCategory(item, $event)"
+                    @change="onItemCategoryChange(item, $event)"
                   >
                     <option value="">未分类</option>
                     <option v-for="c in categoriesFor(item.type)" :key="c.id" :value="String(c.id)">
@@ -537,7 +354,7 @@ function typeBadgeClass(type: string): string {
               :value="item.category_id ? String(item.category_id) : ''"
               class="field field-sm"
               :class="item.category_id ? '' : 'import-cat-missing'"
-              @change="setCategory(item, $event)"
+              @change="onItemCategoryChange(item, $event)"
             >
               <option value="">未分类</option>
               <option v-for="c in categoriesFor(item.type)" :key="c.id" :value="String(c.id)">
@@ -566,7 +383,7 @@ function typeBadgeClass(type: string): string {
             type="button"
             class="btn btn-primary flex-1"
             :disabled="importLoading || missingCategoryCount > 0"
-            @click="confirmImport"
+            @click="submit"
           >
             <template v-if="importLoading">导入中…</template>
             <template v-else-if="missingCategoryCount > 0">还有 {{ missingCategoryCount }} 条未选分类</template>

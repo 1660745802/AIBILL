@@ -101,11 +101,19 @@ function gotoPage(p: number) {
   fetchSamples()
 }
 
-/** 切通道：清掉对面特有的筛选（`blocked_by` 只属采样、`reason` 只属预筛）再拉 */
+/**
+ * 切来源：清掉**所有随来源变化的筛选**再拉。
+ *
+ * `blocked_by` / `reason` 各自专属（采样侧是「拦截点」，预筛侧是「预筛理由」）；
+ * `package` 虽然两侧都有，但**取值域不同**——采样的 `package` 可能是 `sms:<号码>`，
+ * 预筛的 `source_package` 是包名。不过滤掉就会「下拉显示空值（选项里没有它）+ 列表按看不见的值过滤 → 假空态」，
+ * 看上去就是「切了没数据 / 切换很奇怪」。
+ */
 function switchSource(v: string) {
   source.value = (v as Source) === 'prefilter' ? 'prefilter' : 'capture'
-  if (source.value === 'capture') samplesFilter.value.reason = ''
-  else samplesFilter.value.blocked_by = ''
+  samplesFilter.value.blocked_by = ''
+  samplesFilter.value.reason = ''
+  samplesFilter.value.package = ''
   refetch()
 }
 
