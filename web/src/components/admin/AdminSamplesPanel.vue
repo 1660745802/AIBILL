@@ -204,15 +204,16 @@ function labelText(label: string | null | undefined): string {
         <option value="sms">sms</option>
         <option value="a11y">a11y</option>
       </select>
-      <select v-if="isCapture" v-model="samplesFilter.blocked_by" class="field w-auto" @change="refetch">
+      <!-- 拦截点 / 预筛理由：选项随来源与窗口变，**必须固定宽度**（否则选项多少会改变 select 宽度→整行跳） -->
+      <select v-if="isCapture" v-model="samplesFilter.blocked_by" class="field w-56 truncate" @change="refetch">
         <option value="">全部拦截点</option>
         <option v-for="r in facetRows" :key="r.key ?? 'null'" :value="r.key ?? ''">{{ r.key }}（{{ r.count }}）</option>
       </select>
-      <select v-else v-model="samplesFilter.reason" class="field w-auto" @change="refetch">
+      <select v-else v-model="samplesFilter.reason" class="field w-56 truncate" @change="refetch">
         <option value="">全部预筛理由</option>
         <option v-for="r in facetRows" :key="r.key ?? 'null'" :value="r.key ?? ''">{{ r.key }}（{{ r.count }}）</option>
       </select>
-      <select v-model="samplesFilter.package" class="field w-auto" @change="refetch">
+      <select v-model="samplesFilter.package" class="field w-56 truncate" @change="refetch">
         <option value="">全部包名</option>
         <option v-for="p in packageRows" :key="p.key ?? 'null'" :value="p.key ?? ''">
           {{ p.key ?? '未知包名' }}（{{ p.count }}）
@@ -231,7 +232,7 @@ function labelText(label: string | null | undefined): string {
     两者都 <b>不写账、不调 AI、不回推客户端</b>；「是账」= 该规则误杀，整理进 <code class="mono">rules.json</code> 仍走发布流程。
   </p>
 
-  <div v-if="loading" class="text-center py-8 text-xs text-ink-3">加载中…</div>
+  <div v-if="!stats && loading" class="text-center py-8 text-xs text-ink-3">加载中…</div>
   <EmptyState
     v-else-if="!stats"
     icon="search"
@@ -240,6 +241,9 @@ function labelText(label: string | null | undefined): string {
     compact
   />
   <template v-else>
+    <!-- 重新拉取时**保留内容**（只提示一下），不塔成「加载中…」：否则切来源/改筛选整块高度会跳 -->
+    <div v-if="loading" class="text-right text-xs text-ink-4 mb-1">更新中…</div>
+
     <!-- 汇总条：总数 + Top（点选即过滤） -->
     <section class="surface p-3 space-y-2">
       <div class="flex items-center gap-3 flex-wrap">
