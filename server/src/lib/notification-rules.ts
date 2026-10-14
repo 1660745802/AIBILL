@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto'
 import { getDb } from '../db/index.js'
 import { classifyNotification } from '../ai/verify.js'
 import { derivePrecheck, type Precheck } from './precheck.js'
+import { RULE_ID_RE } from './filter-report.js'
 import { assertCriterionConsistencyForRules } from '../ai/criterion-consistency.js'
 
 type Db = ReturnType<typeof getDb>
@@ -42,6 +43,8 @@ export interface RulesFile {
   sms?: Record<string, unknown>
   source_mapping?: Record<string, string>
   processor?: Record<string, unknown>
+  /** 云控归表：`Record<rule_id, 'block'|'forward'|'sample'>`（契约 docs/API.md 附录 C §11.2） */
+  prefilter_policy?: Record<string, PrefilterAction>
   testcases?: RuleTestcase[]
   [k: string]: unknown
 }
@@ -53,6 +56,7 @@ const ALLOWED_TOP_LEVEL_KEYS: readonly string[] = [
   'sms',
   'source_mapping',
   'processor',
+  'prefilter_policy',
   'testcases',
 ]
 
@@ -233,6 +237,8 @@ const OPTIONAL_RULES_SHAPE: readonly RulesShapeSpec[] = [
   // A11Y 摘取标签（契约 docs/API.md 附录 C §10；缺失 = 客户端用内置硬编码）
   { path: 'a11y.merchant_labels', kind: 'string[]' },
   { path: 'a11y.profiles_schema', kind: 'positiveInt' },
+  // 营销词首次出现处截断（`MarketingSuffixCleaner`）；缺失 = 客户端内置默认
+  { path: 'processor.marketing_comma_keywords', kind: 'string[]' },
 ]
 
 function validateOptionalShape(rules: Record<string, unknown>): string[] {
@@ -248,6 +254,37 @@ function validateOptionalShape(rules: Record<string, unknown>): string[] {
       if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
         errors.push(`${spec.path} 若出现必须是正整数`)
       }
+    }
+  }
+  return errors
+}
+
+/** `prefilter_policy` 的取值（契约 docs/API.md 附录 C §11.2） */
+export const PREFILTER_POLICY_ACTIONS = ['block', 'forward', 'sample'] as const
+export type PrefilterAction = (typeof PREFILTER_POLICY_ACTIONS)[number]
+
+/**
+ * `prefilter_policy`（可选云控键）：**出现即校验，缺失放行**（缺失 = 客户端所有拦截点都走缺省 `block`）。
+ *
+ * 形状：`Record<rule_id, 'block' | 'forward' | 'sample'>`。键必须是合法 rule_id
+ * （`precheck.*` / `client_only.*`，与 ⑤ 上报同源，见 `filter-report.ts` 的 `RULE_ID_RE`）——
+ * 键写错意味着下发了一条客户端永远查不到的归表，**静默不生效**，比报错更危险。
+ *
+ * 它随 `buildPublishPayload` 下发、进 `content_hash`，所以改归表 = 改 `rules.json` = 全体客户端重拉。
+ */
+function validatePrefilterPolicy(rules: Record<string, unknown>): string[] {
+  const v = rules.prefilter_policy
+  if (v === undefined) return [] // 可选：缺失 = 缺省 block
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+    return ['prefilter_policy 若出现必须是对象（Record<rule_id, block|forward|sample>）']
+  }
+  const errors: string[] = []
+  for (const [key, action] of Object.entries(v as Record<string, unknown>)) {
+    if (!RULE_ID_RE.test(key)) {
+      errors.push(`prefilter_policy 的键必须是合法 rule_id（precheck.* / client_only.*）：${key}`)
+    }
+    if (typeof action !== 'string' || !(PREFILTER_POLICY_ACTIONS as readonly string[]).includes(action)) {
+      errors.push(`prefilter_policy["${key}"] 必须是 block/forward/sample 之一：${String(action)}`)
     }
   }
   return errors
@@ -461,6 +498,8 @@ export function validateRules(rules: unknown): string[] {
   errors.push(...validateRequiredShape(obj))
   // ③' 可选形状（有则类型必须对；缺失由客户端兜底）
   errors.push(...validateOptionalShape(obj))
+  // ③'' 云控归表 prefilter_policy（有则键/值必须合法；缺失 = 全 block）
+  errors.push(...validatePrefilterPolicy(obj))
   // ③'' A11Y 摘取 profile（嵌套 Record；类型/安全子集/包名/孤儿/上限，见 docs/API.md 附录 C §10）
   errors.push(...validateAppProfiles(obj))
 

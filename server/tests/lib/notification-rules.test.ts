@@ -16,6 +16,7 @@ import {
   contentHash,
   corpusHash,
   buildPublishPayload,
+  payloadHash,
   REQUIRED_RULES_SHAPE,
   regexPaths,
   APP_PROFILE_LIMITS,
@@ -561,5 +562,69 @@ describe('publishRulesFromFile · 幂等与版本', () => {
       expect(contentHash(changed)).toBe(contentHash(rules))
       expect(corpusHash(changed.testcases)).not.toBe(corpusHash(rules.testcases))
     })
+  })
+})
+
+/* ── prefilter_policy（云控归表，契约 docs/API.md 附录 C §11.2）───────────────
+   客户端判据 id 的**闭集**（真源：AIBILL-ANDROID 的 `NotificationPrefilter.BlockReason`
+   13 个 + `CaptureDrop` 派生出的 `client_only.capture_dropped_<channel>_<slug>`）。
+   归表只允许出现这些 id —— 写错一个字云控就静默不生效，所以用测试钉住。 */
+const BLOCK_REASON_NAMES = [
+  'SELF_NOTIFICATION', 'DUPLICATE_CONTENT', 'BLANK_TEXT', 'SYSTEM_GROUP_SUMMARY',
+  'SUMMARY_REPORT', 'PROMO_SENTENCE', 'MARKETING', 'NOT_FINANCIAL', 'LIST_PAGE',
+  'AI_MEMORY', 'AI_MUTED', 'DB_DUPLICATE', 'PRECHECK',
+] as const
+const CAPTURE_DROP_SLUGS = [
+  'nls_no_package', 'nls_no_extras',
+  'sms_not_action', 'sms_no_messages', 'sms_blank_text',
+  'a11y_not_whitelisted', 'a11y_no_root', 'a11y_root_mismatch', 'a11y_no_activity',
+  'a11y_not_payment_activity', 'a11y_no_page_token', 'a11y_no_success_keyword',
+  'a11y_excluded', 'a11y_bad_amount', 'a11y_history_date', 'a11y_debounce', 'a11y_page_dedup',
+] as const
+const KNOWN_CLIENT_RULE_IDS = new Set<string>([
+  ...BLOCK_REASON_NAMES.map((n) => `client_only.${n}`),
+  ...CAPTURE_DROP_SLUGS.map((s) => `client_only.capture_dropped_${s}`),
+])
+
+describe('validateRules · prefilter_policy（云控归表）', () => {
+  it('缺失 → 放行（缺省 = 全 block，旧客户端零变化）', () => {
+    const r = loadReal()
+    delete r.prefilter_policy
+    expect(validateRules(r)).toEqual([])
+  })
+
+  it('仓库真源通过校验，且键 ⊆ 已知客户端判据 id 闭集', () => {
+    const r = loadReal()
+    expect(validateRules(r)).toEqual([])
+    const policy = r.prefilter_policy ?? {}
+    expect(Object.keys(policy).length).toBeGreaterThan(0)
+    for (const id of Object.keys(policy)) {
+      expect(KNOWN_CLIENT_RULE_IDS.has(id), `归表里出现未知客户端判据 id：${id}`).toBe(true)
+    }
+  })
+
+  it('非法键（非 precheck./client_only. 前缀）→ 拒绝', () => {
+    const r = loadReal()
+    r.prefilter_policy = { 'other.SUMMARY_REPORT': 'forward' } as never
+    expect(validateRules(r).join('|')).toMatch(/prefilter_policy 的键必须是合法 rule_id/)
+  })
+
+  it('非法值 → 拒绝；非对象 → 拒绝', () => {
+    const bad = loadReal()
+    bad.prefilter_policy = { 'client_only.MARKETING': 'drop' } as never
+    expect(validateRules(bad).join('|')).toMatch(/必须是 block\/forward\/sample/)
+
+    const notObj = loadReal()
+    notObj.prefilter_policy = ['forward'] as never
+    expect(validateRules(notObj).join('|')).toMatch(/prefilter_policy 若出现必须是对象/)
+  })
+
+  it('进发布载荷，且改归表会换 content_hash（客户端据此重拉）', () => {
+    const base = loadReal()
+    expect((buildPublishPayload(base) as { prefilter_policy?: unknown }).prefilter_policy).toBeTruthy()
+
+    const changed = loadReal()
+    changed.prefilter_policy = { ...base.prefilter_policy, 'client_only.MARKETING': 'block' } as never
+    expect(payloadHash(buildPublishPayload(changed))).not.toBe(payloadHash(buildPublishPayload(base)))
   })
 })

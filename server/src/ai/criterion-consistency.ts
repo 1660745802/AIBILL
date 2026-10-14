@@ -184,7 +184,7 @@ export function assertCriterionConsistency(tables: CriterionTables = realCriteri
     .slice(0, MAX_LISTED)
     .map((c) => `- [${c.kind}] 「${c.term}」@${c.where}：${c.hint}`)
     .join('\n')
-  const rest = conflicts.length - MAX_LISTED
+  const rest = conflicts.length > MAX_LISTED
     ? `\n…另有 ${conflicts.length - MAX_LISTED} 条同类冲突`
     : ''
   throw new Error(`判据一致性检查失败（${conflicts.length} 条）：\n${listed}${rest}`)
