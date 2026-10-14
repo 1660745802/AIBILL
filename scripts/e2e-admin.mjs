@@ -218,6 +218,28 @@ export default defineConfig({
   await wait(1800)
   ok((await page.textContent('body')).includes('当前激活版本'), '深链 release 直接渲染')
 
+  // ── 被拦样本：切来源**布局必须不跳**（曾因「筛选和标题挤一行 + `.field{width:100%}` 压过 `w-*`」→ 竖排且左移）──
+  console.log('\n【被拦样本：切换来源布局不跳】')
+  const measureSamples = () => page.evaluate(() => {
+    const g = (sel) => {
+      const el = document.querySelector(sel)
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }
+    }
+    return { src: g('[data-testid=samples-src]'), filters: g('[data-testid=samples-filters]') }
+  })
+  await page.goto(`${B}/admin?tab=samples`, { waitUntil: 'networkidle' }); await wait(1800)
+  const geoCapture = await measureSamples()
+  await page.getByRole('tab', { name: '服务端预筛挡下' }).click(); await wait(1800)
+  const geoPrefilter = await measureSamples()
+  ok(
+    JSON.stringify(geoCapture) === JSON.stringify(geoPrefilter),
+    `切来源表头不跳（几何一致：${JSON.stringify(geoCapture)}）`,
+  )
+  ok(geoCapture.filters.h <= 56, `筛选排成一行（filters.h=${geoCapture.filters.h}；竖排会 >150）`)
+  await page.getByRole('tab', { name: '客户端采样' }).click(); await wait(1200)
+
   console.log('\n════════════════════════════════')
   console.log(`  ${pass} 通过 / ${fail} 失败`)
   console.log(`  JS 报错: ${errs.length ? errs.slice(0, 5).join(' | ') : '无'}`)
