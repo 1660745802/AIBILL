@@ -208,6 +208,11 @@
 /* ═══════════════ 基础 ═══════════════ */
 * { -webkit-tap-highlight-color: transparent; }
 
+/* 预留滚动条槽：`.app-content` 是 `max-width + margin-inline:auto` 居中的，页面高度随路由变化时
+   （管理员切 tab 尤其明显）竖向滚动条会**出现/消失**，可用宽度变 ~15px → 居中内容整体平移 ~7px
+   （「切 tab 列表位置不固定」）。`stable` 让滚动条空间恒定占用，内容不再随滚动条跳。 */
+html { scrollbar-gutter: stable; }
+
 body {
   background-color: var(--color-paper);
   color: var(--color-ink-2);
