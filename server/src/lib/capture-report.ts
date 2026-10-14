@@ -34,7 +34,8 @@ export interface CaptureSample {
   package: string
   kind: CaptureKind
   stage: CaptureStage
-  /** 命中/触发的规则或丢弃点 id（如 `capture.a11y.not_whitelisted`、`client_only.marketing`） */
+  /** 命中/触发的规则或丢弃点 id，**与 ⑤ 上报同源**（`client_only.` + `CaptureFunnelStats.reportKey`），
+   * 如 `client_only.capture_dropped_a11y_not_whitelisted`、`client_only.marketing`。 */
   blocked_by: string
   tier?: number
   received_at?: string

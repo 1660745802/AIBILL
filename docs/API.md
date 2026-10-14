@@ -1025,4 +1025,5 @@ P2 = `viewId` 锚点 + `list_page_head_chars`；P3（冷，发版）= canvas/Web
 | **与 `filter-report`** | 并存（聚合计数 vs 样本），不合并 |
 | **老客户端 404** | 已确认安全（客户端 `catch` 404，不崩）；**不加 no-op 桩** |
 | **文档编号** | 附录 C §2（反馈闭环）已删 → 编号留空档；本 §11 暂不回填为 §2，避免与既有 §号引用冲突 |
-| **web review 面板** | 已实现：`AdminSamplesPanel`（days/channel/blocked_by/package 筛选 + Top 汇总 + 列表 + 标注 `is_bill\|not_bill`），入口在管理面板「自动化」组
+| **web review 面板** | 已实现：`AdminSamplesPanel`（days/channel/blocked_by/package 筛选 + Top 汇总 + 列表 + 标注 `is_bill\|not_bill`），入口在管理面板「自动化」组 |
+| **forward 通道内容可见** | admin `GET /api/admin/filter-samples`（读 `ai_parse_filters.raw_input`）：F 类改 forward 后只有计数拦不住盲改，原文必须可 review（同一 tab 的第二侧） |

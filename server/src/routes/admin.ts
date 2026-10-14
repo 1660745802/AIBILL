@@ -725,6 +725,90 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return { code: 0, data: null, message: '' }
   })
 
+  // GET /api/admin/filter-samples —— **forward 通道**（服务端预筛）拦下内容的 review
+  //
+  // 与 capture-samples 的分工：那边是客户端**本地丢**的样本，这边是客户端**转发**过来了、
+  // 但被服务端预筛（`classifyNotification` / `verifyParsed`）挡下的原文。归表（§11.2）把 F 类
+  // 5 条改成了 forward，但只看 `client_filter_stats` 的计数无法回答「拦对了吗」—— 本端点补这块。
+  // **只读**：不写账、不重跑 AI、不改判定链。`raw_input` 是用户原文且跨用户，
+  // 所以按 ARCHITECTURE §5.3 写读审计（同 `capture-samples` / `unparsed?include_raw=1`）。
+  app.get('/api/admin/filter-samples', async (request: FastifyRequest, reply: FastifyReply) => {
+    const q = request.query as Record<string, string | undefined>
+    const rangeDays = Math.min(Math.max(Number(q.days) || 7, 1), 90)
+    const pageNum = pageParam(q.page, 1, Number.MAX_SAFE_INTEGER)
+    const size = pageParam(q.page_size, 20, 100)
+
+    if (q.channel !== undefined && !['nls', 'sms', 'a11y'].includes(q.channel)) {
+      reply.code(400)
+      return { code: 2000, data: null, message: `channel 非法：${q.channel}` }
+    }
+    if (q.stage !== undefined && !['inbound', 'outbound'].includes(q.stage)) {
+      reply.code(400)
+      return { code: 2000, data: null, message: `stage 非法：${q.stage}` }
+    }
+
+    const db = getDb()
+    const since = new Date(Date.now() - rangeDays * 86_400_000).toISOString().slice(0, 19).replace('T', ' ')
+    const conds: string[] = ['created_at >= ?']
+    const params: unknown[] = [since]
+    if (q.channel) { conds.push('channel = ?'); params.push(q.channel) }
+    if (q.stage) { conds.push('stage = ?'); params.push(q.stage) }
+    if (q.package) { conds.push('source_package = ?'); params.push(q.package) }
+    /* `reasons` 是 JSON 数组：按「数组里**含**该项」过滤（json_each，与 `reasonsByCount` 同一口径，
+       不用 LIKE 做子串匹配——那会把 `money` 命中 `money_only`）。COALESCE 只是防御 NULL。 */
+    if (q.reason) {
+      conds.push('EXISTS (SELECT 1 FROM json_each(COALESCE(ai_parse_filters.reasons, \'[]\')) WHERE json_each.value = ?)')
+      params.push(q.reason)
+    }
+    const where = `WHERE ${conds.join(' AND ')}`
+
+    const total = (
+      db.prepare(`SELECT COUNT(*) AS c FROM ai_parse_filters ${where}`).get(...params) as { c: number }
+    ).c
+    const byReason = db
+      .prepare(
+        `SELECT je.value AS key, COUNT(*) AS count
+           FROM ai_parse_filters, json_each(COALESCE(ai_parse_filters.reasons, '[]')) je
+          ${where}
+          GROUP BY je.value ORDER BY count DESC LIMIT 50`,
+      )
+      .all(...params) as Array<{ key: string; count: number }>
+    const byPackage = db
+      .prepare(
+        `SELECT source_package AS key, COUNT(*) AS count FROM ai_parse_filters ${where}
+          GROUP BY source_package ORDER BY count DESC LIMIT 50`,
+      )
+      .all(...params) as Array<{ key: string | null; count: number }>
+
+    if (total > 0) {
+      appLog('warn', 'admin', `查看服务端预筛样本（${total} 条，含原文）`, {
+        action: 'view_filter_samples',
+        admin_id: request.user!.userId,
+        returned: Math.min(size, total),
+      })
+    }
+
+    const items = db
+      .prepare(
+        `SELECT id, created_at, channel, source_package, stage, tier, reasons, duration_ms,
+                raw_input, length(raw_input) AS text_len, cleaned_input
+           FROM ai_parse_filters ${where}
+          ORDER BY created_at DESC, id DESC
+          LIMIT ? OFFSET ?`,
+      )
+      .all(...params, size, (pageNum - 1) * size)
+
+    return {
+      code: 0,
+      data: {
+        items,
+        summary: { total, by_reason: byReason, by_package: byPackage },
+        pagination: { page: pageNum, page_size: size, total, total_pages: Math.ceil(total / size) },
+      },
+      message: '',
+    }
+  })
+
   // GET /api/admin/ai-parse-stats - AI 解析质量统计
   app.get('/api/admin/ai-parse-stats', async (request: FastifyRequest) => {
     const db = getDb()
