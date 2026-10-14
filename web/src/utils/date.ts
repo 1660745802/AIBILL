@@ -31,3 +31,21 @@ export function toDateStr(d: Date = new Date()): string {
 export function today(): string {
   return toDateStr()
 }
+
+/**
+ * 服务端 UTC 时间串 → 本地 `MM-DD HH:mm`。
+ *
+ * 服务端时间戳是 SQLite `datetime('now')` = UTC 且**不带 `Z`**，`new Date()` 会按
+ * 本机时区解释 → 差 8 小时。所以缺 `Z` 时补上；完全解析不了就退回原串的 `MM-DD HH:mm` 片段
+ * （宁可显示粗糙，也不显示错的时间）。
+ */
+export function formatLocalTime(utcStr: string | null | undefined): string {
+  if (!utcStr) return '-'
+  const d = new Date(utcStr.endsWith('Z') ? utcStr : utcStr + 'Z')
+  if (isNaN(d.getTime())) return utcStr.slice(5, 16)
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const h = String(d.getHours()).padStart(2, '0')
+  const min = String(d.getMinutes()).padStart(2, '0')
+  return `${m}-${day} ${h}:${min}`
+}

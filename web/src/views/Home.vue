@@ -28,8 +28,6 @@ const loading = ref(false)
 const confirming = ref(false)
 const error = ref('')
 const parsedItems = ref<any[]>([])
-const originalParsedItems = ref<any[]>([])
-const parseLogId = ref<number | null>(null)
 const showManual = ref(false)
 const todayTransactions = ref<any[]>([])
 const editing = ref<any | null>(null)
@@ -91,14 +89,11 @@ async function handleAiParse() {
   error.value = ''
   loading.value = true
   parsedItems.value = []
-  parseLogId.value = null
 
   try {
     const { data } = await api.post('/ai/parse', { input: input.value }, { timeout: 90000 })
     if (data.code === 0 && data.data.items.length > 0) {
       parsedItems.value = data.data.items
-      originalParsedItems.value = JSON.parse(JSON.stringify(data.data.items))
-      parseLogId.value = data.data.parse_log_id || null
     } else {
       failToManual(data.message || 'AI 没听出账目')
     }
@@ -118,8 +113,6 @@ function failToManual(msg: string) {
 
 function resetComposer() {
   parsedItems.value = []
-  originalParsedItems.value = []
-  parseLogId.value = null
   input.value = ''
   error.value = ''
   nextTick(() => { if (textarea.value) textarea.value.style.height = '88px' })
@@ -145,13 +138,6 @@ async function handleConfirm(items: any[]) {
     }))
 
     await api.post('/transactions', { items: payload })
-
-    if (parseLogId.value) {
-      const modified = JSON.stringify(items) !== JSON.stringify(originalParsedItems.value)
-      api.post('/ai/parse-feedback', {
-        parse_log_id: parseLogId.value, final_items: items, modified,
-      }).catch(() => {})
-    }
 
     resetComposer()
     toast.success(`已记 ${items.length} 笔`)
