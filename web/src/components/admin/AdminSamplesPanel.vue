@@ -194,30 +194,28 @@ function labelText(label: string | null | undefined): string {
       <SegmentedControl :options="SOURCE_OPTIONS" :model-value="source" size="sm" @update:model-value="switchSource" />
     </div>
     <div class="flex items-center gap-2 flex-wrap mt-3" data-testid="samples-filters">
-      <!-- ⚠️ 宽度用**内联 style**：`main.css` 的 `.field{width:100%}` 是无 layer 普通 CSS，
-           而 Tailwind 的 `w-auto`/`w-56` 在 `@layer utilities`（优先级更低）→ 会被 `.field` 盖掉。 -->
-      <select v-model="samplesFilter.days" class="field min-w-0" style="width: auto" @change="refetch">
+      <select v-model="samplesFilter.days" class="field w-auto min-w-0" @change="refetch">
         <option value="1">今天</option>
         <option value="7">近 7 天</option>
         <option value="30">近 30 天</option>
         <option value="90">近 90 天</option>
       </select>
-      <select v-model="samplesFilter.channel" class="field min-w-0" style="width: auto" @change="refetch">
+      <select v-model="samplesFilter.channel" class="field w-auto min-w-0" @change="refetch">
         <option value="">全部渠道</option>
         <option value="nls">nls</option>
         <option value="sms">sms</option>
         <option value="a11y">a11y</option>
       </select>
       <!-- 拦截点 / 预筛理由：选项随来源与窗口变，**必须固定宽度**（否则选项多少会改变 select 宽度→整行跳） -->
-      <select v-if="isCapture" v-model="samplesFilter.blocked_by" class="field min-w-0 truncate" style="width: 14rem" @change="refetch">
+      <select v-if="isCapture" v-model="samplesFilter.blocked_by" class="field w-56 min-w-0 truncate" @change="refetch">
         <option value="">全部拦截点</option>
         <option v-for="r in facetRows" :key="r.key ?? 'null'" :value="r.key ?? ''">{{ r.key }}（{{ r.count }}）</option>
       </select>
-      <select v-else v-model="samplesFilter.reason" class="field min-w-0 truncate" style="width: 14rem" @change="refetch">
+      <select v-else v-model="samplesFilter.reason" class="field w-56 min-w-0 truncate" @change="refetch">
         <option value="">全部预筛理由</option>
         <option v-for="r in facetRows" :key="r.key ?? 'null'" :value="r.key ?? ''">{{ r.key }}（{{ r.count }}）</option>
       </select>
-      <select v-model="samplesFilter.package" class="field min-w-0 truncate" style="width: 14rem" @change="refetch">
+      <select v-model="samplesFilter.package" class="field w-56 min-w-0 truncate" @change="refetch">
         <option value="">全部包名</option>
         <option v-for="p in packageRows" :key="p.key ?? 'null'" :value="p.key ?? ''">
           {{ p.key ?? '未知包名' }}（{{ p.count }}）
