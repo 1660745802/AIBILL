@@ -60,7 +60,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
     const db = getDb()
     const userId = request.user!.userId
 
-    return { code: 0, data: buildDashboard(db, userId), message: '' }
+    return { code: 0, data: buildDashboard(db, userId) }
   })
 
   // POST /api/stats/analysis - AI 财务分析

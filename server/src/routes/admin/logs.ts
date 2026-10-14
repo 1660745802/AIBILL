@@ -1,7 +1,7 @@
 /**
  * 应用运行日志（`app_logs`）查看。只读、带审计。
  */
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { getDb } from '../../db/index.js'
 import { pageParam } from '../../lib/pagination.js'
 

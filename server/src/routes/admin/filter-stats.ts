@@ -1,7 +1,7 @@
 /**
  * 客户端拦截计数 vs 服务端入站拦截原因（契约 §4）。纯读、不写任何计数。
  */
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { getDb } from '../../db/index.js'
 import { loadFilterStats } from '../../lib/filter-report.js'
 
