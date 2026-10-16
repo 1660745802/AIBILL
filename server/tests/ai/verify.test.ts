@@ -71,6 +71,13 @@ const NOISE = [
   '滴滴酒店：专属优惠到账 恭喜获得酒店最高减200元券',
   // 招募/活动广告承诺的奖励不是到账金额（真事故：记入 ¥200 虚增收入）
   '在线寻找手游玩家 参加访谈任务，获得 200 元京东卡！',
+  // 仪表盘式读数：网速/流量/下载进度。真事故：Clash 每分钟一条，24h 内 319 条
+  // 全部空结果、占当天解析日志 94%，打爆 20 次/分钟限流并打出 3 次 60s 超时 504。
+  // 它们全靠 `bare_amount`（tier2：24~30 字 + 光杆数字）漏进来的。
+  'konghonglee 916B/s↑ 430B/s↓',
+  'konghonglee 5.6KB/s↑ 60.0KB/s↓',
+  'konghonglee 0B/s↑ 48B/s↓',
+  '正在下载拼多多 迅雷正在加速 100%',
 ] as const
 
 /**
@@ -234,6 +241,15 @@ describe('classifyNotification · 噪声应被拦下', () => {
     const c = classifyNotification('在线寻找手游玩家 参加访谈任务，获得 200 元京东卡！')
     expect(shouldCallAi(c), `reasons=${c.reasons}`).toBe(false)
   })
+
+  it('网速/下载进度读数靠 traffic_meter 挡下，而不是裸掉成「无信号」（可归因）', () => {
+    // 归因要能落到 rule_id：客户端与服务端共用同一份规则才能对账
+    for (const t of ['konghonglee 916B/s↑ 430B/s↓', '正在下载拼多多 迅雷正在加速 100%']) {
+      const c = classifyNotification(t)
+      expect(shouldCallAi(c), t).toBe(false)
+      expect(c.reasons, t).toContain('traffic_meter')
+    }
+  })
 })
 
 describe('classifyNotification · 真实收入不得被新规则误杀', () => {
@@ -249,6 +265,20 @@ describe('classifyNotification · 真实收入不得被新规则误杀', () => {
       '微信支付 退款到账通知',
     ]) {
       expect(shouldCallAi(classifyNotification(t)), t).toBe(true)
+    }
+  })
+
+  it('traffic_meter 不得误杀真收入：带货币金额+动词的账照旧调 AI', () => {
+    // 这条新规则带 `↑↓` 与 `正在下载`，最担心的就是压过真账。
+    // 它挂在弱噪声位（tier1 先返回），所以这些必须原样放行：
+    for (const t of [
+      '微信支付 已支付¥32.50',
+      '扫码支付 便利店 消费 8.50元',
+      '退款到账 100 元',
+      '动账提醒 您尾号2256的储蓄账户8月1日9时58分支出人民币4.20元。',
+    ]) {
+      const c = classifyNotification(t)
+      expect(shouldCallAi(c), `tier=${c.tier} reasons=${c.reasons} text=${t}`).toBe(true)
     }
   })
 

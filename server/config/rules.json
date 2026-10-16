@@ -641,6 +641,33 @@
         "a11y_exclude",
         "balance_only"
       ]
+    },
+    {
+      "id": "nls-clash-traffic",
+      "note": "Clash 网速读数：光杆数字但不是金额（旧规则靠 bare_amount 漏进来，24h 319 条全空结果）→ tier0",
+      "channel": "nls",
+      "text": "konghonglee 916B/s↑ 430B/s↓",
+      "expect_tier": 0,
+      "expect_reason": "traffic_meter",
+      "tags": [
+        "clash",
+        "traffic",
+        "noise"
+      ],
+      "expect_txn": false
+    },
+    {
+      "id": "nls-download-progress",
+      "note": "下载进度通知：24~30 字 + 光杆百分比，同样漏过 bare_amount → tier0",
+      "channel": "nls",
+      "text": "正在下载拼多多 迅雷正在加速 100%",
+      "expect_tier": 0,
+      "expect_reason": "traffic_meter",
+      "tags": [
+        "download",
+        "noise"
+      ],
+      "expect_txn": false
     }
   ]
 }

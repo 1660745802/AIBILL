@@ -1,8 +1,8 @@
 {
   "source": "GET /api/config/notification-rules → data（rules 已含代码派生 precheck、不含 testcases；meta 原样保留）",
   "version": 1,
-  "content_hash": "7840ab87086fdf82aac81f65f3fc75a29eb2ad3703ff11196c7107132d9426b0",
-  "corpus_hash": "025e7de0a94002cead2472031b250a570865231bc18bcf8a25a11cd1e152afe6",
+  "content_hash": "ecba864a5119ea0ebac10cfd745c642ae4b87f51083836ffbf6501b3d84e40ba",
+  "corpus_hash": "ebf77d601300d71d3f276ec57972602138c0683da3e786632dd789e6ab876f3e",
   "rules": {
     "nls": {
       "payment_signal_regex": "[¥￥$]|RMB|CNY|人民币|元|支付|已付|付款|实付|付出|刷卡|收款|收入|到账|入账|转入|转出|转账|汇款|消费|交易|扣款|扣费|代扣|缴费|充值|提现|退款|退货|红包|余额|账单|还款|欠款|尾号|卡号|信用卡|储蓄卡|银行卡|收益|利息|分期|贷款|工资|薪资|报销",
@@ -492,6 +492,14 @@
           "pattern": "(?<![\\d.])(?:点赞|关注|转发|群发|朋友圈|聊天|视频通话|直播|首页|空间)(?![\\d.])",
           "flags": "",
           "desc": "弱噪声（unrelated）：仅在没有 money+verb 正向信号时才拦"
+        },
+        {
+          "id": "precheck.traffic_meter",
+          "tier": 0,
+          "type": "regex",
+          "pattern": "\\d+(?:\\.\\d+)?[ \\t\\n\\x0B\\f\\r\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*(?:[KMGTP]i?B|KB|MB|GB)[ \\t\\n\\x0B\\f\\r\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*\\/[ \\t\\n\\x0B\\f\\r\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*s|[↑↓]|进度[ \\t\\n\\x0B\\f\\r\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*\\d+[ \\t\\n\\x0B\\f\\r\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*%|正在下载|正在加速|加速中|剩余[ \\t\\n\\x0B\\f\\r\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*\\d+",
+          "flags": "i",
+          "desc": "弱噪声（traffic_meter）：仅在没有 money+verb 正向信号时才拦"
         },
         {
           "id": "precheck.money_only",
