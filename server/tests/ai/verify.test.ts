@@ -78,6 +78,12 @@ const NOISE = [
   'konghonglee 5.6KB/s↑ 60.0KB/s↓',
   'konghonglee 0B/s↑ 48B/s↓',
   '正在下载拼多多 迅雷正在加速 100%',
+  // 订单/配送状态推进：真事故是一笔外卖订单烧了 7 条 AI 调用
+  // （订单自动取消 + 商家接单 + 骑士接单 + 骑士正在配送×4），全部空结果。
+  '订单将在12:15自动取消 等待支付',
+  '预计12:33送达 商家已接单',
+  '预计12:33送达 骑士已接单',
+  '预计12:33送达 骑士正在配送',
 ] as const
 
 /**
@@ -90,6 +96,24 @@ const REAL_INCOME = [
   '你收到一个5.00元红包',
   '微信红包 收款5.00元',
   '好友给你发了一个10元红包，已存入零钱',
+] as const
+
+/**
+ * 「短句里的光杆数字」也得进 AI：线上真账全部落在这条信号上。
+ *
+ * 这组是 `bare_amount`（tier2）**当前唯一的真实用途**——它们没有货币单位、没有
+ * 标准动词，靠的就是「短 + 有数字」被捞进来。少一条就是一次静默漏账，所以任何
+ * 收紧 `bare_amount` 的改动都必须让这组继续通过（见 §classifyNotification 的
+ * 「按 channel 收紧」讨论：104 条靠它进来的记录里，15 条 success 全是这类手动短句，
+ * 而 89 条通知侧噪声一条真账都没有）。
+ */
+const BARE_AMOUNT_REAL = [
+  '工资50',
+  '吃饭花了456',
+  '电费99.5',
+  '午饭22',
+  '饭卡充值500',
+  '妹11.07 [转账] 已被接收',
 ] as const
 
 describe('extractMoneyAmounts', () => {
@@ -187,6 +211,10 @@ describe('classifyNotification · 真交易不得被误杀', () => {
    漏挡真账比误挡严重得多（用户会以为记上了）。
    ══════════════════════════════════════════════════════════ */
 describe('classifyNotification · 手打短句（无货币单位）不得在预筛被丢', () => {
+  it.each(BARE_AMOUNT_REAL)('「%s」应继续调 AI（bare_amount 是它唯一的入口）', (text) => {
+    const c = classifyNotification(text)
+    expect(shouldCallAi(c), `tier=${c.tier} reasons=${c.reasons}`).toBe(true)
+  })
   it.each(['肯德基45', '小米商城299', '房租5000', '报销500', '房款600000'])(
     '「%s」应放行给 AI（tier2，出站还要过佐证）',
     (text) => {
@@ -250,6 +278,14 @@ describe('classifyNotification · 噪声应被拦下', () => {
       expect(c.reasons, t).toContain('traffic_meter')
     }
   })
+
+  it('订单状态推进同样要落到 order_state（不是 bare_amount）', () => {
+    for (const t of ['订单将在12:15自动取消 等待支付', '预计12:33送达 骑士正在配送']) {
+      const c = classifyNotification(t)
+      expect(shouldCallAi(c), t).toBe(false)
+      expect(c.reasons, t).toContain('order_state')
+    }
+  })
 })
 
 describe('classifyNotification · 真实收入不得被新规则误杀', () => {
@@ -276,6 +312,7 @@ describe('classifyNotification · 真实收入不得被新规则误杀', () => {
       '扫码支付 便利店 消费 8.50元',
       '退款到账 100 元',
       '动账提醒 您尾号2256的储蓄账户8月1日9时58分支出人民币4.20元。',
+      '交易提醒 你有一笔13.00元的支出，',
     ]) {
       const c = classifyNotification(t)
       expect(shouldCallAi(c), `tier=${c.tier} reasons=${c.reasons} text=${t}`).toBe(true)

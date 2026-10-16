@@ -668,6 +668,33 @@
         "noise"
       ],
       "expect_txn": false
+    },
+    {
+      "id": "nls-order-state-delivery",
+      "note": "订单状态推进：一笔外卖产生 7 条 AI 调用全部空结果 → tier0",
+      "channel": "nls",
+      "text": "预计12:33送达 骑士正在配送",
+      "expect_tier": 0,
+      "expect_reason": "order_state",
+      "tags": [
+        "order",
+        "delivery",
+        "noise"
+      ],
+      "expect_txn": false
+    },
+    {
+      "id": "nls-order-state-auto-cancel",
+      "note": "订单自动取消 + 等待支付：12 被 bare_amount 捞成 tier2 → tier0",
+      "channel": "nls",
+      "text": "订单将在12:15自动取消 等待支付",
+      "expect_tier": 0,
+      "expect_reason": "order_state",
+      "tags": [
+        "order",
+        "noise"
+      ],
+      "expect_txn": false
     }
   ]
 }
