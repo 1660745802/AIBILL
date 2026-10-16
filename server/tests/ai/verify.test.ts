@@ -87,6 +87,21 @@ const NOISE = [
 ] as const
 
 /**
+ * 「送达」类裸词会误杀账单提醒（真事故：上线当天就抓到）。
+ *
+ * `【9月话费账单已送达】便民服务，一键查询上月账户消费情况` 被裸词 `已送达` 判成
+ * 订单状态丢弃 —— 话费账单不是订单配送，它是账单（且这条本身不含金额，丢弃没造成
+ * 漏账，但同形态的「账单已送达」若带金额就会连真账一起丢）。
+ *
+ * 所以配送类词条一律要求配送主语，这条组钉住它们：主语不在表内就别拦。
+ */
+const NOT_ORDER_STATE = [
+  '【9月话费账单已送达】 便民服务，一键查询上月账户消费情况',
+  '您的9月电费账单已送达，请及时查收',
+  '本期账单已出账，点击查看',
+] as const
+
+/**
  * 「出现红包/券」不等于噪声——真实收红包必须放行。
  * 这条比「拦住多少」更重要：拦错一条就是丢收入。
  * coupon_facevalue 的判据刻意是**券的状态动词**（失效/过期/待领取/去领），
@@ -338,6 +353,11 @@ describe('classifyNotification · 噪声应被拦下', () => {
       expect(shouldCallAi(c), t).toBe(false)
       expect(c.reasons, t).toContain('order_state')
     }
+  })
+
+  it.each(NOT_ORDER_STATE)('账单提醒「%s」不得被订单状态词条误杀', (text) => {
+    const c = classifyNotification(text, 'nls')
+    expect(c.reasons, `tier=${c.tier}`).not.toContain('order_state')
   })
 })
 
