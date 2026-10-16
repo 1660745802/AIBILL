@@ -39,7 +39,8 @@ describe('precheck 下发端到端（文件 → DB → GET）', () => {
     const pre = body.data.rules.precheck
     expect(pre.schema).toBe(1)
     expect(pre.derived_from).toBe('src/ai/verify.ts')
-    expect(pre.channel_agnostic).toBe(true)
+    expect(pre.channel_agnostic).toBe(false)
+    expect(pre.signals.bare_amount.channels).toEqual(['manual'])
     expect(pre.rules.length).toBeGreaterThan(5)
     expect(pre.rules.some((r: { id: string }) => r.id === 'precheck.money+verb')).toBe(true)
     expect(pre.rules.every((r: { desc?: string }) => (r.desc ?? '').length > 0)).toBe(true)

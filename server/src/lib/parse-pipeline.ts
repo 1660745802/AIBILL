@@ -461,7 +461,10 @@ export async function runParse(db: Db, args: RunParseArgs): Promise<ParseOutcome
        （不往 ai_parse_logs.status 里塞 'filtered'——那个字段有 CHECK 约束，
        为它重建一张 1419 行的表不值得），于是「省了多少」是一个可数的指标。 */
     const classifyStart = Date.now()
-    const classification = classifyNotification(body.input)
+    // **必须传 channel**：bare_amount 是唯一一条带入口约束的信号（notify 入口不吃它），
+    // 不传就会退回 manual 口径，群聊/来电/订单状态又会被当成金额信号放去调模型。
+    // 读不到 channel 的历史请求一律当 manual —— 宁可多调一次模型，也不能默默放掉真账。
+    const classification = classifyNotification(body.input, body.channel ?? 'manual')
     /* `duration_ms` 记的是**判定本身**的耗时（DATA §10.4：`分流是纯字符串匹配，应 <1ms`），
        不是整个请求的耗时。入站就从 classify 开始量，出站（下面）只量 verifyParsed；
        拿 `Date.now() - startTime` 会把 quickParse / 两条分类查询、尤其**整段模型调用**

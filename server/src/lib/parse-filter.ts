@@ -27,7 +27,11 @@ export interface FilterRecord {
   durationMs: number
   /**
    * 入口归因（契约 §0）：`nls`｜`sms`｜`a11y`｜`manual`，客户端可送、可缺省。
-   * 只做统计维度，**不参与任何判据**——预筛的行为不能因为入口不同而不同。
+   *
+   * ⚠️ 2026-10-16 起**有一个例外**：`bare_amount` 信号带入口约束
+   * （`BARE_AMOUNT_CHANNELS = ['manual']`，见 `ai/verify.ts` 的事故说明）。
+   * 「预筛行为不因入口而异」这条老原则仍然成立——变的是**某条信号在哪些入口成立**，
+   * 而不是同一段文本在不同入口得到不同判据。除此之外 channel 仍只是统计维度。
    */
   channel?: string | null
   /** 来源应用包名（契约 §0 的 `source.package_name`），同样只留档 */

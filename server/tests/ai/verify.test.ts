@@ -214,6 +214,8 @@ describe('classifyNotification · 手打短句（无货币单位）不得在预�
   it.each(BARE_AMOUNT_REAL)('「%s」应继续调 AI（bare_amount 是它唯一的入口）', (text) => {
     const c = classifyNotification(text)
     expect(shouldCallAi(c), `tier=${c.tier} reasons=${c.reasons}`).toBe(true)
+    // 且必须是因为 bare_amount 而不是碰巧有别的信号（否则这条护栏是假绿）
+    expect(classifyNotification(text, 'manual').reasons).toContain('bare_amount')
   })
   it.each(['肯德基45', '小米商城299', '房租5000', '报销500', '房款600000'])(
     '「%s」应放行给 AI（tier2，出站还要过佐证）',
@@ -246,6 +248,57 @@ describe('classifyNotification · 手打短句（无货币单位）不得在预�
 
   it('1 位数字不算金额信号（「买了1个」）', () => {
     expect(classifyNotification('买了1个').tier).toBe(4)
+  })
+})
+
+describe('classifyNotification · bare_amount 只在 manual 入口成立', () => {
+  /**
+   * 事故（2026-10-16）：`bare_amount` 是为手打短句设计的，却在通知侧 100% 只产噪声。
+   * 全表 104 条唯一靠它进来的记录：15 条 success 全是手动短句，89 条通知侧全是空结果。
+   * 形态是群编号 / 手机号 / 时间 / 百分比 —— 当天 26/29 次空结果由它放行。
+   *
+   * 这组是那次事故的**下界与上界**，两条方向都要钉住：
+   * 手动短句一条不丢、通知噪声一条不放。
+   */
+  const NOTIFY_NOISE = [
+    '209[嗨] 转转: 招小米之家店长来了',        // 群编号
+    '209[嗨](2条新消息) 太越林拱火背锅型: 哟西',
+    '18504204877 辽宁大连 中国联通',          // 手机号
+    '18400772409 来电',
+    '富人区 雷佳宾: 950的高点拉升到了900！',    // 微信群聊
+    '富人区 [3条]陈培根: 170g一周全清',
+    '90%的用户已更新这4款应用 米家、相册、设备互联、超级小爱',
+  ]
+
+  it.each(NOTIFY_NOISE)('通知通道的「%s」不得再调 AI', (text) => {
+    for (const ch of ['nls', 'sms', 'a11y']) {
+      const c = classifyNotification(text, ch)
+      expect(shouldCallAi(c), `ch=${ch} tier=${c.tier} reasons=${c.reasons}`).toBe(false)
+      expect(c.reasons, `ch=${ch}`).not.toContain('bare_amount')
+    }
+  })
+
+  it('同一段文本在 manual 通道仍然放行 —— 判据是入口，不是文本本身', () => {
+    expect(classifyNotification('午饭22', 'manual').reasons).toContain('bare_amount')
+    expect(classifyNotification('午饭22', 'nls').reasons).not.toContain('bare_amount')
+  })
+
+  it('带货币单位或交易动词的文本不受入口影响（真账在哪个通道都得调 AI）', () => {
+    for (const t of [
+      '微信支付 已支付¥32.50',
+      '招商银行 信用卡通知：您尾号1678的招行信用卡消费13.00人民币。',
+      '订单支付成功 等待商家接单 实付 ¥128.00',
+      '报销',
+      '退货到账',
+    ]) {
+      for (const ch of ['manual', 'nls', 'a11y']) {
+        expect(shouldCallAi(classifyNotification(t, ch)), `${t} @${ch}`).toBe(true)
+      }
+    }
+  })
+
+  it('缺省 channel 按 manual 处理（老调用点不传也不许漏掉手打短句）', () => {
+    expect(classifyNotification('工资3000').reasons).toContain('bare_amount')
   })
 })
 

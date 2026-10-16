@@ -149,12 +149,25 @@ const PAYMENT_VERB = verb(
  * 取消预筛（线上 53% 的收益）。而手打输入都在 30 字以内——
  * 这个阈值直接沿用 quick-parser 自己的分界（`> 30 字 → 交给 AI`）。
  *
- * 代价诚实说明：短而带数字的通知（如「您的话费余额为12.5」）也会多调一次模型，
- * 但那只是**多一次调用**（模型按 prompt 里的「余额不是支出」例子回 []），
- * 而漏挡的代价是用户以为记上了。tier 2 出站还要过佐证，不会自动入账。
+ * ⚠️ **这条信号只在 manual 通道成立**（线上事故 2026-10-16）。
+ *
+ * 它是为「手打短句」设计的，但通知侧 100% 只产噪声：全表 104 条**唯一**靠它进来的
+ * 记录里，15 条 success 全是手动短句（`工资50`/`吃饭花了456`/`电费99.5`/`午饭22`/
+ * `饭卡充值500`/`妹11.07 [转账]`），89 条通知侧全是空结果，**一条真账都没有**——
+ * 形态是群编号 `209[嗨]`、手机号 `18504204877`、`预计12:33送达` 的 `12`、
+ * `90%的用户已更新` 的 `90`。当天的 26/29 次空结果全是它放行的。
+ *
+ * 所以它不再是「一条不分来源的信号」，而是**带 channel 约束的信号**：
+ * `BARE_AMOUNT_CHANNELS = ['manual']`。nls/sms/a11y 一律不吃它，
+ * 手动短句一条不丢（那 15 条 success 就是下界护栏）。
+ *
+ * 这也让「channel 只做统计维度、不参与任何判据」这句老话第一次有了例外，
+ * 原因是它对：判据必须知道这条信号是为哪个入口设计的，否则就是拿手打规则去筛通知。
  */
 const BARE_AMOUNT_RE = /(?<![\d.])\d{2,}(?:\.\d{1,2})?(?![\d.])/
 const BARE_AMOUNT_MAX_LEN = 30
+/** `bare_amount` 成立的入口。`manual` 之外的通道都不认这条信号。 */
+export const BARE_AMOUNT_CHANNELS = ['manual'] as const
 
 /**
  * 强噪声：命中即丢，不看有没有金额。
@@ -280,7 +293,20 @@ const WEAK_NOISE: { name: string; re: RegExp }[] = [
 export const INBOUND_SIGNAL_SOURCES = {
   money: { pattern: MONEY_RE.source, flags: MONEY_RE.flags },
   verb: { pattern: PAYMENT_VERB.source, flags: PAYMENT_VERB.flags },
-  bare_amount: { pattern: BARE_AMOUNT_RE.source, flags: BARE_AMOUNT_RE.flags },
+  bare_amount: {
+    pattern: BARE_AMOUNT_RE.source,
+    flags: BARE_AMOUNT_RE.flags,
+    /**
+     * 这条信号**只在这些入口成立**（本次新增，客户端要跟着认）。
+     *
+     * `manual` 的意思不是「用户手打的字面量」，而是「这个信号是为手打短句设计的」：
+     * nls / sms / a11y 三个通知入口不吃它（见 `BARE_AMOUNT_CHANNELS` 的事故说明）。
+     *
+     * 不下发这个字段的老客户端会**忽略**它、继续在通知侧用 bare_amount 放行——
+     * 那是安全方向（多调模型，不会误杀）。所以这个字段可以随服务端先发，客户端后跟。
+     */
+    channels: [...BARE_AMOUNT_CHANNELS],
+  },
   bare_amount_max_len: BARE_AMOUNT_MAX_LEN,
 } as const
 
@@ -307,8 +333,13 @@ export const WEAK_NOISE_RULES: ReadonlyArray<{ name: string; pattern: string; fl
  *
  * 顺序很重要：**正向信号优先于弱噪声**。理由见 WEAK_NOISE 注释。
  * 光杆数字那条排在弱噪声**之后**：短广告（`双11 5折`）仍先被营销词挡下。
+ *
+ * @param channel 入口。**只影响 `bare_amount` 一条信号**（见 `BARE_AMOUNT_CHANNELS`）：
+ *   通知入口（nls/sms/a11y）不吃它，因为它的 104 条线上记录里 89 条通知侧全是噪声、
+ *   15 条真账全是手打短句。缺省按 `manual` 处理——老调用点不传 channel 时行为不变，
+ *   宁可多调一次模型（安全方向），也不能默默放掉一条手打短句。
  */
-export function classifyNotification(rawInput: string): ClassifyResult {
+export function classifyNotification(rawInput: string, channel: string = 'manual'): ClassifyResult {
   const text = rawInput || ''
 
   const strong = STRONG_NOISE.find((r) => r.re.test(text))
@@ -323,8 +354,13 @@ export function classifyNotification(rawInput: string): ClassifyResult {
   if (weak) return { tier: 0, reasons: [weak.name] }
 
   if (hasMoney) return { tier: 2, reasons: ['money_only'] }
-  // 短句里的光杆数字：也当金额信号（tier 2 = 调模型，但出结果要过佐证）
-  if (text.trim().length <= BARE_AMOUNT_MAX_LEN && BARE_AMOUNT_RE.test(text)) {
+  // 短句里的光杆数字：也当金额信号（tier 2 = 调模型，但出结果要过佐证）。
+  // 仅限手动入口：通知里的光杆数字是群编号、手机号、时间、百分比（见上）。
+  if (
+    (BARE_AMOUNT_CHANNELS as readonly string[]).includes(channel)
+    && text.trim().length <= BARE_AMOUNT_MAX_LEN
+    && BARE_AMOUNT_RE.test(text)
+  ) {
     return { tier: 2, reasons: ['bare_amount'] }
   }
   if (hasVerb) return { tier: 3, reasons: ['verb_only'] }

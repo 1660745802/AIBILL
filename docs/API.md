@@ -697,8 +697,12 @@ If-None-Match: "ab12…"
 | `precheck.bare_amount` | 2 | 短句（≤30 字）光杆数字（「午饭32」） |
 | `precheck.verb_only` | 3 | 只有交易动词 |
 | `precheck.no_signal` | 4 | 无任何信号 → 不调模型（兜底，排最后） |
-- **已实现**（本地）：payload = `precheck{schema:1, derived_from, channel_agnostic, signals{money{pattern,flags},verb{pattern,flags},bare_amount{pattern,flags},bare_amount_max_len:30}, rules[14 条], should_call_ai:"tier in (1,2,3)", corroboration_required:"tier in (2,3)"}`；`schema` 不认识 → 整体忽略并降级用本地词表。**`rule_id = 'precheck.' + 服务端 reason`（逐字拼接，`+` 也不改名）**→ ⑤ 对账是机械前缀剥离，不是映射表。
+- **已实现**（本地）：payload = `precheck{schema:1, derived_from, channel_agnostic:**false**, signals{money{pattern,flags},verb{pattern,flags},bare_amount{pattern,flags,**channels:["manual"]**},bare_amount_max_len:30}, rules[15 条], should_call_ai:"tier in (1,2,3)", corroboration_required:"tier in (2,3)"}`；`schema` 不认识 → 整体忽略并降级用本地词表。**`rule_id = 'precheck.' + 服务端 reason`（逐字拼接，`+` 也不改名）**→ ⑤ 对账是机械前缀剥离，不是映射表。
 - **拦不拦怎么判（客户端勿猜）**：按 `rules[]` **顺序取第一条命中**，只看它的 `tier`：`tier ∈ {1,2,3}` = 放行去调模型（即 `should_call_ai`），`tier ∈ {0,4}` = 拦。⚠️ **没有 `tier:null` 的条目**（早期草案里的 `precheck.payment_verb` 已删除）；`type:'predicate'` 用 `expr` 引用 `signals`，`type:'fallback'` 是兜底（排最后）。`pattern` 是**不含分隔符的正则源码**，必须与同条 `flags` 一起编译（仅允许 `g`/`i`/`m`；**`money` 是 `gi`**——丢了会让 `rmb 100` 两端不一致）。
+- ⚠️ **`channel_agnostic` 已从 `true` 翻成 `false`（2026-10-16）**：`bare_amount` 这条信号带入口约束 —— `signals.bare_amount.channels = ["manual"]`。事故依据：它 104 条线上记录里 89 条通知侧全是噪声（群编号 `209[嗨]` / 手机号 / `预计12:33` 的时间 / `90%的用户`），15 条真账全是手打短句（`工资50`/`午饭22`/`饭卡充值500`）。
+  - **客户端必须做的事**：读到 `channel_agnostic === false` 时，逐条看 `signals.*.channels`，求值某条 `predicate` 规则前先确认当前 `channel` 在该信号的 `channels` 内，不在就当这条信号为 **false** 继续往下走（不是直接 tier 0 —— 还要看后面有没有别的信号命中）。
+  - **不读这个字段的老客户端行为不变**（忽略未知字段、继续在通知侧用 bare_amount 放行）——那是**安全方向**（多调模型，不会误杀）。所以该字段可以随服务端先发、客户端后跟。
+  - `channels` 里的 `manual` 指「手打短句这一类入口」，不是字面量来源；nls / sms / a11y 三通道都不吃它。
 - **`bare_amount_max_len` 精确定义**：取客户端发来的 `input` **原串**（不是 title/body），`input.trim().length <= 30`；长度按 **UTF-16 code unit** 计（中文=1、emoji=2）——**Kotlin `String.length` 同口径**，直接可比。
 - **`expr` 语法边界（客户端按封闭小语法实现，不要写表达式解析器）**：只允许三种形态——`signal`、`signal && signal`、`len<=<int> && signal`（`signal` 必须是 `signals` 的键；分隔符统一为**前后各一个空格**的 ` && `）。服务端用回归用例保证只产出上述三种（并校验引用的 signal 存在）；将来要扩形态必须**先改本契约并播报**。
 - **判据不可用时怎么处置（按客户端实现定）**：任一 `signal` / 规则**编译失败**、或 `expr` 形态不认识 → **整链判据不可用 → 降级放行（fail-open）**；不可用的 `rule_id` 列表（`unusableRuleIds`）只用于**诊断与上报**。

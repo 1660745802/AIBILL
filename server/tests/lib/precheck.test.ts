@@ -37,9 +37,19 @@ describe('derivePrecheck · 形状与链序', () => {
   it('元信息：schema / 派生来源 / channel 无关 / 调用与佐证口径', () => {
     expect(p.schema).toBe(1)
     expect(p.derived_from).toBe('src/ai/verify.ts')
-    expect(p.channel_agnostic).toBe(true)
+    // 自 schema 1 起从 true 翻成 false：bare_amount 带入口约束（见 verify.ts 事故说明）
+    expect(p.channel_agnostic).toBe(false)
     expect(p.should_call_ai).toBe('tier in (1,2,3)')
     expect(p.corroboration_required).toBe('tier in (2,3)')
+  })
+
+  it('bare_amount 信号的入口约束要随载荷下发（客户端靠它区分新旧口径）', () => {
+    expect(p.channel_agnostic).toBe(false)
+    expect(p.signals.bare_amount.channels).toEqual(['manual'])
+    // 约束必须落在信号上而不是规则上：规则 expr 是封闭语法，客户端按 signals 求值
+    const rule = p.rules.find((r) => r.id === 'precheck.bare_amount')
+    expect(rule, 'precheck.bare_amount 规则必须在').toBeDefined()
+    expect(rule!.tier).toBe(2)
   })
 
   it('信号正则齐全（客户端照此复现同一链）', () => {

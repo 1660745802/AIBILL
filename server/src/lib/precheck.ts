@@ -65,13 +65,31 @@ export interface Precheck {
   schema: number
   /** 派生来源（改判据要改这里，不是改 rules.json） */
   derived_from: string
-  /** 服务端判据不区分渠道；渠道门禁属客户端（`client_only.*`） */
-  channel_agnostic: true
+  /**
+   * 「判据本身是否吃 channel」。
+   *
+   * ⚠️ **从 schema 1 的 `true` 变成 `false`**：`bare_amount` 这条信号带入口约束
+   * （`signals.bare_amount.channels = ['manual']`）。事故依据：它的 104 条线上记录里
+   * 89 条通知侧全是噪声（群编号 / 手机号 / 时间 / 百分比），15 条真账全是手打短句。
+   *
+   * 这条 flag 的存在意义就是让客户端**可判别**：读到 `channel_agnostic: true` 就按老口径
+   * 跑（忽略 `signals.*.channels`），读到 `false` 就必须逐条看 `channels`。
+   * 两个字段同时下发，老客户端行为不变（多调模型，安全方向）。
+   */
+  channel_agnostic: false
   /** 链所依赖的信号正则：客户端照此复现同一链（顺序即 rules 的顺序） */
   signals: {
     money: PrecheckSignal
     verb: PrecheckSignal
-    bare_amount: PrecheckSignal
+    bare_amount: PrecheckSignal & {
+      /**
+       * 这条信号**只在这些入口成立**（本次新增）。不在表内 → 该入口直接跳过这条信号。
+       *
+       * `manual` 指「手打短句」这一类入口，不是字面量来源。nls / sms / a11y 三个通知
+       * 入口都不吃它。客户端：读 `channel_agnostic === false` 时必须逐条看这个字段。
+       */
+      channels?: readonly string[]
+    }
     /** 短句「光杆数字」的长度阈值：判据是 `input.trim().length <= 该值` */
     bare_amount_max_len: number
   }
@@ -128,7 +146,9 @@ export function derivePrecheck(): Precheck {
       tier: 2,
       type: 'predicate',
       expr: `len<=${maxLen} && bare_amount`,
-      desc: `短句（≤${maxLen} 字）光杆数字 → 调模型，出站需金额佐证`,
+      desc: `短句（≤${maxLen} 字）光杆数字 → 调模型，出站需金额佐证`
+        + `（仅 ${INBOUND_SIGNAL_SOURCES.bare_amount.channels?.join('/')} 入口成立；`
+        + `通知入口不吃这条信号——线上 89 条通知侧噪声 vs 0 条真账）`,
     },
     // ⑥ 只有动词
     { id: 'precheck.verb_only', tier: 3, type: 'predicate', expr: 'verb', desc: '只有交易动词 → 调模型' },
@@ -139,7 +159,7 @@ export function derivePrecheck(): Precheck {
   return {
     schema: SCHEMA,
     derived_from: 'src/ai/verify.ts',
-    channel_agnostic: true,
+    channel_agnostic: false,
     signals: { ...INBOUND_SIGNAL_SOURCES },
     rules,
     should_call_ai: 'tier in (1,2,3)',
