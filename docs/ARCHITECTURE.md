@@ -319,7 +319,7 @@ Android 客户端用 `GET /api/app/update?versionCode=` 检查更新；`app_upda
 |------|-----|
 | **最低安全版本**（含「转账 `category_id` 可空」修复 `9e318a2`） | **`versionCode = 2`（v1.0.0）** |
 | **客户端支持基线** | **Android ≥ 1.5.0 = `versionCode ≥ 7`**；更老的包不做专门兼容（原 v0.4 垫片已撤除） |
-| 记录本文时的 HEAD | `versionCode = 29` / `1.6.5` |
+| 记录本文时的 HEAD | `versionCode = 30` / `1.6.6` |
 
 **发布检查单（发版前跑一遍）：`versionCode` 必须唯一且严格递增。**
 
