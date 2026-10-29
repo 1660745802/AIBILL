@@ -14,9 +14,12 @@
  * 需要行情的测试请 mock `src/lib/quotes.js`（见 `tests/offline-quotes.ts`），
  * 需要外部 HTTP 的测试（AI、汇率兜底源）照旧自己 `vi.stubGlobal('fetch', ...)`。
  */
-import { afterEach } from 'vitest'
+import { afterEach, vi } from 'vitest'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+
+// 测试只用下面的隔离配置，不读取工作树中的真实 .env（包括其中的密钥）。
+vi.mock('dotenv', () => ({ default: { config: vi.fn(() => ({ parsed: {} })) } }))
 
 // Override config before any app code loads
 process.env.JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long'

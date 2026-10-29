@@ -19,6 +19,7 @@ const updateCategorySchema = z.object({
   icon: z.string().max(10).optional(),
   sort_order: z.number().int().min(0).optional(),
   is_active: z.number().int().min(0).max(1).optional(),
+  parent_id: z.number().int().positive().nullable().optional(),
 })
 
 export async function categoryRoutes(app: FastifyInstance): Promise<void> {
@@ -55,6 +56,16 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
       const body = createCategorySchema.parse(request.body)
       const db = getDb()
       const userId = request.user!.userId
+
+      if (body.parent_id !== undefined) {
+        const parent = db.prepare(
+          'SELECT id FROM categories WHERE id = ? AND user_id = ? AND type = ? AND is_active = 1',
+        ).get(body.parent_id, userId, body.type)
+        if (!parent) {
+          reply.code(400)
+          return { code: 2003, data: null, message: '父分类不存在或不可用' }
+        }
+      }
 
       const result = db
         .prepare(
@@ -95,11 +106,16 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
 
       // 确认归属
       const existing = db
-        .prepare('SELECT id FROM categories WHERE id = ? AND user_id = ?')
-        .get(Number(id), userId)
+        .prepare('SELECT id, parent_id FROM categories WHERE id = ? AND user_id = ?')
+        .get(Number(id), userId) as { id: number; parent_id: number | null } | undefined
       if (!existing) {
         reply.code(404)
         return { code: 3002, data: null, message: '分类不存在' }
+      }
+      // 不允许改挂父分类；原值原样回传不报错，避免整对象提交被无故拒绝。
+      if (body.parent_id !== undefined && body.parent_id !== existing.parent_id) {
+        reply.code(400)
+        return { code: 2003, data: null, message: '不支持修改父分类' }
       }
 
       const updates: string[] = []

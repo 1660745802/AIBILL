@@ -293,6 +293,50 @@ describe('Import Routes', () => {
       expect(foodRow).toBeDefined()
       expect(foodRow.total).toBe(4000)
     })
+
+    it.each(['expense', 'income'])('%s 未分类也计入排行，合计/笔数与 summary 一致', async (type) => {
+      const username = `uncat_${type}`
+      const token = await createUser(app, username)
+      const db = getDb()
+      const { id: userId } = db.prepare('SELECT id FROM users WHERE username = ?').get(username) as { id: number }
+      const { id: categoryId } = db.prepare('SELECT id FROM categories WHERE user_id = ? AND type = ? LIMIT 1').get(userId, type) as { id: number }
+      const categoriesBefore = db.prepare('SELECT * FROM categories WHERE user_id = ?').all(userId)
+      const insert = db.prepare(`INSERT INTO transactions (user_id, type, amount, category_id, date, status, deleted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      insert.run(userId, type, 3000, categoryId, '2026-09-01', 'confirmed', null)
+      insert.run(userId, type, 1000, null, '2026-09-05', 'confirmed', null)
+      insert.run(userId, type, 2000, null, '2026-09-30', 'confirmed', null)
+      insert.run(userId, type, 9000, null, '2026-09-05', 'pending', null)
+      insert.run(userId, type, 9000, null, '2026-09-05', 'confirmed', '2026-09-06')
+      insert.run(userId, type, 9000, null, '2026-10-01', 'confirmed', null)
+      insert.run(userId, type, 9000, null, '2026-08-31', 'confirmed', null)
+      insert.run(userId, 'transfer', 9000, null, '2026-09-05', 'confirmed', null)
+      const otherId = (db.prepare('SELECT id FROM users WHERE username = ?').get('importer') as { id: number }).id
+      insert.run(otherId, type, 9000, null, '2026-09-05', 'confirmed', null)
+
+      const get = async (url: string) => {
+        const res = await app.inject({ method: 'GET', url, headers: authHeaders(token) })
+        expect(res.statusCode).toBe(200)
+        return JSON.parse(res.payload).data
+      }
+      const result = await get(`/api/stats/by-category?year=2026&month=9&type=${type}`)
+      const summary = await get('/api/stats/summary?year=2026&month=9')
+      expect(result.total).toBe(6000)
+      expect(result.total).toBe(summary[type])
+      expect(result.items.reduce((n: number, r: any) => n + r.count, 0)).toBe(summary[`${type}_count`])
+      expect(result.items).toHaveLength(2)
+      expect(result.items.find((r: any) => r.id === 0)).toEqual({
+        id: 0, name: '未分类', icon: expect.any(String), total: 3000, count: 2, percent: 50,
+      })
+      for (const r of result.items) {
+        // Android CategoryStatDto 的字段均为非空；虚拟分组也维持原响应形状。
+        for (const k of ['id', 'total', 'count', 'percent']) expect(typeof r[k]).toBe('number')
+        for (const k of ['name', 'icon']) expect(typeof r[k]).toBe('string')
+        expect(r.percent).toBe(50)
+      }
+      expect(db.prepare('SELECT * FROM categories WHERE user_id = ?').all(userId)).toEqual(categoriesBefore)
+      expect((await get(`/api/stats/by-category?year=2020&month=1&type=${type}`)).items).toEqual([])
+    })
   })
 
   it('参数校验失败应返回 2000 而非 code:1', async () => {
@@ -315,6 +359,57 @@ describe('Import Routes', () => {
     for (const r of rows) {
       expect(ownerIds.has(r.category_id)).toBe(true)
     }
+  })
+
+  describe('支付宝状态与真实导出列', () => {
+    const header = '交易号,商家订单号,交易创建时间,付款时间,最近修改时间,交易来源地,类型,交易对方,商品名称,金额（元）,收/支,交易状态,服务费（元）,成功退款（元）,备注,资金状态'
+    const row = (id: number, status: string, direction = '支出', refund = '0.00') =>
+      `${id}\t,order-${id}\t,2026-09-05 12:30:00,2026-09-05 12:31:00,2026-09-05 13:00:00,支付宝,即时到账,商户,"商品,${id}",100.00,${direction}, ${status} ,0.00,${refund},,已支出`
+
+    it('未付款、等待付款和交易关闭不进入可入账预览', async () => {
+      const statuses = ['未付款', '等待付款', '等待买家付款', '交易关闭', '交易取消', '支付失败']
+      const { body } = await parseCsv([header, ...statuses.map((s, i) => row(i, s)), row(9, '交易成功')].join('\n'), 'alipay')
+      expect(body.data.parsed).toHaveLength(1)
+      expect(body.data.parsed[0]).toMatchObject({ description: '商品,9', type: 'expense', amount: 10000 })
+      expect(body.data).toMatchObject({ total: 7, skipped: 6, errors: 0 })
+    })
+
+    it('不按“退款”字样或退款金额删有效交易，也不自动净额化', async () => {
+      const { body } = await parseCsv([
+        header,
+        row(1, '交易成功', '支出', '20.00'),
+        row(2, '交易成功', '支出', '100.00'),
+        row(3, '退款成功', '收入', '100.00'),
+        row(4, '交易成功', '不计收支', '100.00'),
+      ].join('\n'), 'alipay')
+      expect(body.data.parsed.map((r: any) => [r.type, r.amount])).toEqual([
+        ['expense', 10000], ['expense', 10000], ['income', 10000],
+      ])
+      expect(body.data).toMatchObject({ total: 4, skipped: 1, errors: 0 })
+    })
+
+    it('移动端“交易时间”开头、不同列位置的导出同样按状态过滤', async () => {
+      const { body } = await parseCsv([
+        '支付宝交易明细',
+        '交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注',
+        '2026-09-05 12:30:00,餐饮美食,美团,商户账号,午餐,支出,32.50,余额,交易关闭,id1,m1,',
+        '2026-09-05 12:35:00,餐饮美食,美团,商户账号,晚餐,支出,40.00,余额,交易成功,id2,m2,',
+        '2026-09-05 13:00:00,退款,美团,商户账号,退款到账,收入,10.00,余额,退款成功,id3,m3,',
+      ].join('\n'), 'alipay')
+      expect(body.data).toMatchObject({ total: 3, skipped: 1, errors: 0 })
+      expect(body.data.parsed.map((r: any) => [r.description, r.type, r.amount])).toEqual([
+        ['晚餐', 'expense', 4000], ['退款到账', 'income', 1000],
+      ])
+    })
+
+    it('没有状态列的旧 CSV 保持兼容', async () => {
+      const { body } = await parseCsv([
+        '账务流水号,交易时间,交易对方,商品说明,金额（元）,收/支',
+        'old1,2026-09-05 12:30:00,商户,旧账单,32.50,支出',
+      ].join('\n'), 'alipay')
+      expect(body.data).toMatchObject({ total: 1, skipped: 0, errors: 0 })
+      expect(body.data.parsed[0]).toMatchObject({ type: 'expense', amount: 3250 })
+    })
   })
 
   describe('日期与金额边界（预览必须与 POST /transactions 的校验一致）', () => {

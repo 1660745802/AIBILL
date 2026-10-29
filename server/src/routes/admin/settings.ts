@@ -41,6 +41,16 @@ export async function adminSettingsRoutes(app: FastifyInstance): Promise<void> {
       const body = updateSettingsSchema.parse(request.body)
       const db = getDb()
 
+      if (body.ai_api_key) {
+        const current = db.prepare('SELECT value FROM settings WHERE key = ?')
+          .get('ai_api_key') as { value: string } | undefined
+        // 只拒绝当前 GET 实际返回的 mask；合法密钥中出现 *** 不应被吞掉。
+        if (current?.value && body.ai_api_key === current.value.slice(0, 8) + '***') {
+          reply.code(400)
+          return { code: 2000, data: null, message: '请填写完整 API Key，不能保存脱敏提示值' }
+        }
+      }
+
       const allowedKeys = [
         'ai_base_url',
         'ai_api_key',

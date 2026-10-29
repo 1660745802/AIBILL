@@ -4,8 +4,11 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import type { FastifyInstance } from 'fastify'
+import bcrypt from 'bcryptjs'
 import { buildApp, teardownApp, loginAdmin, createUser, authHeaders } from '../helpers.js'
 import { getDb } from '../../src/db/index.js'
+import { config } from '../../src/config.js'
+import { ensureAdminUser, register, changePassword, adminResetPassword } from '../../src/services/auth.service.js'
 
 describe('Auth Routes', () => {
   let app: FastifyInstance
@@ -137,6 +140,124 @@ describe('Auth Routes', () => {
         payload: { username: 'ab', password: 'test123456', invite_code: 'X' },
       })
       expect(res.statusCode).toBe(400)
+    })
+  })
+
+  describe('新密码的 bcrypt UTF-8 字节边界', () => {
+    const prefix = '汉'.repeat(24)
+    const overlong = [`${prefix}A`, `${prefix}B`]
+    const error = { code: 2000, data: null, message: '密码的 UTF-8 编码不能超过72字节' }
+
+    it('24汉字+A/B 会被 bcrypt 截断为同一密码，注册必须均拒绝且不消耗邀请码', async () => {
+      expect(Buffer.byteLength(prefix, 'utf8')).toBe(72)
+      expect(bcrypt.compareSync(overlong[1], bcrypt.hashSync(overlong[0], 4))).toBe(true)
+      const adminToken = await loginAdmin(app)
+      const code = (await app.inject({
+        method: 'POST', url: '/api/admin/invite-codes', headers: authHeaders(adminToken), payload: { max_uses: 2 },
+      })).json().data.code
+      for (const [i, password] of overlong.entries()) {
+        const username = `byte_reject_${i}`
+        const res = await app.inject({
+          method: 'POST', url: '/api/auth/register', payload: { username, password, invite_code: code },
+        })
+        expect(res.statusCode).toBe(400)
+        expect(res.json()).toEqual(error)
+        // 服务直接调用也不能绕过字节边界。
+        expect(() => register({ username, password, invite_code: code })).toThrow(/72字节/)
+        expect(getDb().prepare('SELECT id FROM users WHERE username = ?').get(username)).toBeUndefined()
+      }
+      expect(getDb().prepare('SELECT used_count FROM invite_codes WHERE code = ?').get(code)).toEqual({ used_count: 0 })
+    })
+
+    it.each([prefix, 'é'.repeat(36)])('合法72字节 Unicode 新密码可注册并登录（%#）', async (password) => {
+      const username = password === prefix ? 'byte_boundary_cjk' : 'byte_boundary_utf8'
+      expect(Buffer.byteLength(password, 'utf8')).toBe(72)
+      const token = await createUser(app, username, password)
+      expect(token).toBeTruthy()
+      expect((await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username, password } })).statusCode).toBe(200)
+    })
+
+    it('改密与管理员重置拒绝超长新密码，失败不改哈希/token_version；合法 Unicode 可写', async () => {
+      const username = 'byte_password_write'
+      const token = await createUser(app, username)
+      const adminToken = await loginAdmin(app)
+      const db = getDb()
+      const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as { id: number; password_hash: string; token_version: number }
+      const row = () => db.prepare('SELECT * FROM users WHERE id = ?').get(user.id)
+      const before = row()
+      for (const new_password of overlong) {
+        for (const url of ['/api/auth/password', `/api/admin/users/${user.id}/reset-password`]) {
+          const res = await app.inject({
+            method: 'PUT', url, headers: authHeaders(url.startsWith('/api/admin') ? adminToken : token),
+            payload: { old_password: 'test123456', new_password },
+          })
+          expect(res.statusCode).toBe(400)
+          expect(res.json()).toEqual(error)
+          expect(row()).toEqual(before)
+        }
+        expect(() => changePassword(user.id, 'test123456', new_password)).toThrow(/72字节/)
+        expect(() => adminResetPassword(user.id, new_password)).toThrow(/72字节/)
+        expect(row()).toEqual(before)
+      }
+      expect((await app.inject({ method: 'GET', url: '/api/auth/me', headers: authHeaders(token) })).statusCode).toBe(200)
+      const changed = await app.inject({
+        method: 'PUT', url: '/api/auth/password', headers: authHeaders(token),
+        payload: { old_password: 'test123456', new_password: prefix },
+      })
+      expect(changed.statusCode).toBe(200)
+      expect((await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username, password: prefix } })).statusCode).toBe(200)
+      const resetPassword = '界'.repeat(23) + 'abc'
+      expect((await app.inject({
+        method: 'PUT', url: `/api/admin/users/${user.id}/reset-password`, headers: authHeaders(adminToken),
+        payload: { new_password: resetPassword },
+      })).statusCode).toBe(200)
+      expect((await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username, password: resetPassword } })).statusCode).toBe(200)
+      expect((await app.inject({ method: 'GET', url: '/api/auth/me', headers: authHeaders(changed.json().data.token) })).statusCode).toBe(401)
+    })
+
+    it('历史超长密码仍可登录、比对旧密码后更换为合法密码', async () => {
+      // 模拟修复前的存量哈希；不可通过新写入口创建。
+      getDb().prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)')
+        .run('legacy_long_password', bcrypt.hashSync(overlong[0], 4))
+      const login = await app.inject({
+        method: 'POST', url: '/api/auth/login', payload: { username: 'legacy_long_password', password: overlong[0] },
+      })
+      expect(login.statusCode).toBe(200)
+      const changed = await app.inject({
+        method: 'PUT', url: '/api/auth/password', headers: authHeaders(login.json().data.token),
+        payload: { old_password: overlong[0], new_password: '新的合法密码123' },
+      })
+      expect(changed.statusCode).toBe(200)
+      expect((await app.inject({
+        method: 'POST', url: '/api/auth/login', payload: { username: 'legacy_long_password', password: '新的合法密码123' },
+      })).statusCode).toBe(200)
+    })
+
+    it('首次管理员写密码也校验字节边界，但已有管理员不受环境中旧密码影响', () => {
+      const db = getDb()
+      const original = { username: config.adminUsername, password: config.adminPassword }
+      const rollback = new Error('rollback seed test')
+      try {
+        config.adminPassword = overlong[0]
+        expect(() => ensureAdminUser()).not.toThrow() // 已有管理员：不重置、不校验旧配置
+        expect(() => db.transaction(() => {
+          db.prepare("UPDATE users SET role = 'user' WHERE role = 'admin'").run()
+          config.adminUsername = 'unicode_seed'
+          for (const password of overlong) {
+            config.adminPassword = password
+            expect(() => ensureAdminUser()).toThrow(/72字节/)
+            expect(db.prepare('SELECT id FROM users WHERE username = ?').get(config.adminUsername)).toBeUndefined()
+          }
+          config.adminPassword = prefix
+          ensureAdminUser()
+          const admin = db.prepare('SELECT password_hash FROM users WHERE username = ?').get(config.adminUsername) as { password_hash: string }
+          expect(bcrypt.compareSync(prefix, admin.password_hash)).toBe(true)
+          throw rollback
+        })()).toThrow(rollback)
+      } finally {
+        config.adminUsername = original.username
+        config.adminPassword = original.password
+      }
     })
   })
 

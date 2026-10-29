@@ -1,10 +1,9 @@
 /**
  * 定时任务模块
- * - 订阅自动记账：到期的 auto_record 订阅自动生成交易
- * - 回收站自动清理：软删除超过 30 天的记录永久删除
- * - 行情抓取：盘中每 15 分钟 + 收盘后，写入 investment_quotes
+ * - 主循环（每 15 分钟，`QUOTE_REFRESH_MINUTES` 可调）：订阅自动记账、汇率（内部节流）、行情抓取
+ * - 清理循环（每小时）：回收站（30 天）、日志（30/90 天）、拦截样本（30 天）
  *
- * 在 app 启动时注册，每 15 分钟执行一次检查（URL 门禁决定是否真抓）
+ * 在 app 启动时注册，启动后各延迟 5 秒执行一次。
  */
 import { getDb } from '../db/index.js'
 import { appLog as log } from './logger.js'
@@ -180,7 +179,7 @@ function processTrashCleanup(): void {
 /**
  * 应用日志清理
  * - app_logs: 保留 30 天
- * - ai_parse_logs: 保留 90 天
+ * - ai_parse_logs: 无裁决保留 90 天，有裁决的日志保留
  * - ai_conversations: 保留 90 天
  * - ai_parse_filters: 保留 90 天（写入量最大，53% 的解析请求会落一条）
  * - client_capture_samples: 保留 30 天（契约 docs/API.md 附录 C §11.4）
@@ -197,10 +196,11 @@ function processLogCleanup(): void {
     log('info', 'scheduler', `应用日志清理: 删除 ${appLogResult.changes} 条（>30天）`)
   }
 
-  // ai_parse_logs 保留 90 天
+  // 无裁决日志保留 90 天；有裁决的机器事实与人工历史一起保留。
   const parseCutoff = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 19).replace('T', ' ')
   const parseResult = db
-    .prepare('DELETE FROM ai_parse_logs WHERE created_at < ?')
+    .prepare(`DELETE FROM ai_parse_logs WHERE created_at < ?
+      AND NOT EXISTS (SELECT 1 FROM admin_unparsed_triage t WHERE t.parse_log_id = ai_parse_logs.id)`)
     .run(parseCutoff)
   if (parseResult.changes > 0) {
     log('info', 'scheduler', `AI解析日志清理: 删除 ${parseResult.changes} 条（>90天）`)
@@ -234,22 +234,35 @@ function processLogCleanup(): void {
   }
 }
 
+/** 汇率刷新间隔：个人记账不需要 15 分钟级别的汇率更新。 */
+const FX_REFRESH_MS = (() => {
+  const minutes = Number(process.env.FX_REFRESH_MINUTES)
+  return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 6 * 60 * 60_000
+})()
+let lastFxFetchAt = 0
+
+/** 仅供测试：清掉汇率节流状态（模块级状态会跨用例残留）。 */
+export function resetFxThrottle(): void {
+  lastFxFetchAt = 0
+}
+
 /**
- * 执行所有定时任务。
+ * 主循环：每 15 分钟执行。
  *
- * ⚠️ 行情抓取必须在这里调用。曾经 processQuoteFetch / shouldFetchQuotes 写好了
- * 但**没有任何调用者** —— 结果是 investment_quotes 永远是 0 行、持仓永远
- * 「未取到价」、账户总价值永远算不出（持仓的市值部分缺失）。
- * 单测抓不到，因为测试夹具手工往表里插价，绕开了调度器。
- * 以后加任务同理：**函数定义在下面不等于它会跑**。
+ * 只跑「时效性强、成本低」的任务：到期订阅、汇率（内部节流）、行情抓取。
+ * 清理任务在 [runHousekeepingTasks] 中按小时执行，避免每 15 分钟扫一遍日志/回收站。
+ *
+ * ⚠️ 行情抓取必须在这里调用：函数定义在下面不等于它会跑。
  */
 export async function runScheduledTasks(): Promise<void> {
   log('info', 'scheduler', '定时任务开始执行')
-  processSubscriptionAutoRecord()
-  processTrashCleanup()
-  processLogCleanup()
+  try {
+    processSubscriptionAutoRecord()
+  } catch (err) {
+    log('error', 'scheduler', `订阅自动记账异常: ${err instanceof Error ? err.message : String(err)}`)
+  }
 
-  // 汇率无条件抓（不认交易时段）；股价才受门禁
+  // 汇率无条件抓（不认交易时段）；内部按 FX_REFRESH_MS 节流
   await processFxRateFetch().catch((err) => {
     log('warn', 'scheduler', `汇率任务异常: ${err instanceof Error ? err.message : String(err)}`)
   })
@@ -261,6 +274,24 @@ export async function runScheduledTasks(): Promise<void> {
   })
 
   log('info', 'scheduler', '定时任务执行完毕')
+}
+
+/**
+ * 清理循环：每小时执行。
+ *
+ * 回收站/日志清理是低频、全表扫描型任务；放主循环会让每 15 分钟都扫一遍。
+ */
+export async function runHousekeepingTasks(): Promise<void> {
+  for (const [name, task] of [
+    ['回收站清理', processTrashCleanup],
+    ['日志清理', processLogCleanup],
+  ] as const) {
+    try {
+      task()
+    } catch (err) {
+      log('error', 'scheduler', `${name}异常: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
 }
 
 
@@ -389,10 +420,13 @@ export async function processFxRateFetch(): Promise<void> {
 
   const currencies = [...new Set(rows.map((r) => currencyOf(r.code)))]
   if (currencies.every((c) => c === 'CNY')) return
+  if (lastFxFetchAt > 0 && Date.now() - lastFxFetchAt < FX_REFRESH_MS) return
 
   // 取（主源 + ECB 兜底）与落库都在 quote-acquisition module 内；
   // 这里只决定**记什么**。汇率失败不抛错也不阻塞股价抓取。
   const acq = await acquireAndStoreFxRates(db, currencies)
+  // 无论是否全部拿到，成功进入过上游就进入下一个节流周期，避免每 15 分钟重试。
+  lastFxFetchAt = Date.now()
   if (acq.stored > 0) {
     log('info', 'fx', `汇率已更新 ${acq.stored} 个（来源 ${acq.source}）`, {
       currencies: [...acq.rates.keys()].join(','),
@@ -427,11 +461,14 @@ export function resetMarketClosedCache(): void {
   for (const k of Object.keys(marketClosedOn) as Market[]) marketClosedOn[k] = null
 }
 
-/** 判断「休市」要等够久：开盘头几分钟拿到的可能还是上一交易日的日期 */
-function deepEnoughBeijng(now: Date, market: Market): boolean {
-  const { mins } = beijingNow(now)
-  if (market === 'us') return mins >= 22 * 60 || mins <= 5 * 60  // 美股跨夜
-  return mins >= 10 * 60
+const newYorkHour = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23',
+})
+
+/** 开盘半小时后才判断休市；美股按纽约时间，随冬夏令时切换。 */
+function deepEnoughAfterOpen(now: Date, market: Market): boolean {
+  if (market === 'us') return Number(newYorkHour.format(now)) >= 10
+  return beijingNow(now).mins >= 10 * 60
 }
 
 export async function processQuoteFetch(now = new Date()): Promise<void> {
@@ -480,7 +517,7 @@ export async function processQuoteFetch(now = new Date()): Promise<void> {
   for (const m of targets) {
     const mine = acq.quotes.filter((q) => marketOfCode(q.code) === m)
     const tradingDate = tradingDateFor(m, now)
-    if (mine.length > 0 && !mine.some((q) => q.quoteDate === tradingDate) && deepEnoughBeijng(now, m)) {
+    if (mine.length > 0 && !mine.some((q) => q.quoteDate === tradingDate) && deepEnoughAfterOpen(now, m)) {
       marketClosedOn[m] = tradingDate
       log('info', 'quotes', `${MARKET_LABEL[m]} ${tradingDate} 非交易日（行情停在 ${mine[0]!.quoteDate}），不再抓`)
     }
@@ -488,6 +525,8 @@ export async function processQuoteFetch(now = new Date()): Promise<void> {
 }
 
 let intervalId: NodeJS.Timeout | null = null
+let housekeepingIntervalId: NodeJS.Timeout | null = null
+const HOUSEKEEPING_INTERVAL_MINUTES = 60
 
 /**
  * 调度间隔（分钟）。
@@ -512,17 +551,25 @@ export function intervalMinutes(): number {
  * 每 15 分钟执行一次（`QUOTE_REFRESH_MINUTES` 可调），启动时也立即执行一次
  */
 export function startScheduler(): void {
+  const run = () => {
+    void runScheduledTasks().catch((err) => {
+      log('error', 'scheduler', `定时任务异常: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
+  const runHousekeeping = () => {
+    void runHousekeepingTasks().catch((err) => {
+      log('error', 'scheduler', `清理任务异常: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
   // 启动后延迟 5 秒执行第一次（等 DB 初始化完毕）
-  setTimeout(() => {
-    void runScheduledTasks()
-  }, 5000)
+  setTimeout(run, 5000)
+  setTimeout(runHousekeeping, 5000)
 
   const minutes = intervalMinutes()
-  intervalId = setInterval(() => {
-    void runScheduledTasks()
-  }, minutes * 60 * 1000)
+  intervalId = setInterval(run, minutes * 60 * 1000)
+  housekeepingIntervalId = setInterval(runHousekeeping, HOUSEKEEPING_INTERVAL_MINUTES * 60 * 1000)
 
-  log('info', 'scheduler', `定时任务调度器已启动（每 ${minutes} 分钟检查一次）`)
+  log('info', 'scheduler', `定时任务调度器已启动（主循环每 ${minutes} 分钟；清理每 ${HOUSEKEEPING_INTERVAL_MINUTES} 分钟）`)
 }
 
 /**
@@ -532,5 +579,9 @@ export function stopScheduler(): void {
   if (intervalId) {
     clearInterval(intervalId)
     intervalId = null
+  }
+  if (housekeepingIntervalId) {
+    clearInterval(housekeepingIntervalId)
+    housekeepingIntervalId = null
   }
 }

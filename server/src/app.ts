@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
-import { config, PLACEHOLDER_JWT_SECRETS, PLACEHOLDER_ADMIN_PASSWORDS } from './config.js'
+import { config, validateStartupConfig, PLACEHOLDER_ADMIN_PASSWORDS } from './config.js'
 import { registerRoutes } from './routes/index.js'
 import { initDb, closeDb } from './db/index.js'
 import { ensureAdminUser } from './services/auth.service.js'
@@ -12,6 +12,9 @@ import fs from 'node:fs'
 const app = Fastify({ logger: true })
 
 async function start(): Promise<void> {
+  // 生产环境拒绝不安全的 JWT 密钥，必须早于 initDb 内部的目录创建 / migration / seed。
+  validateStartupConfig()
+
   // 初始化数据库（建表 + migration）
   initDb()
   console.log('[App] Database initialized')
@@ -21,10 +24,7 @@ async function start(): Promise<void> {
     fs.mkdirSync(config.updatesDir, { recursive: true })
   }
 
-  // 安全警告（占位值清单位于 config.ts，compose 的兜底值也在列）
-  if (PLACEHOLDER_JWT_SECRETS.includes(config.jwtSecret)) {
-    console.warn('[⚠️  Security] JWT_SECRET 使用默认/占位值，生产环境请务必设置自定义密钥！')
-  }
+  // 其他安全警告（JWT_SECRET 已在启动副作用之前校验）
   if (PLACEHOLDER_ADMIN_PASSWORDS.includes(config.adminPassword)) {
     console.warn('[⚠️  Security] ADMIN_PASSWORD 使用默认值，请尽快修改！')
   }

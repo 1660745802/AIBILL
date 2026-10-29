@@ -181,6 +181,43 @@ describe('Admin Routes - 删除用户', () => {
     expect(db.prepare('SELECT id FROM ai_parse_filters WHERE user_id = ?').get(u.id)).toBeUndefined()
   })
 
+  it('上报拦截计数后可删除用户，两张非级联表清空且其他用户完整保留', async () => {
+    const gone = await makeUser('del_report')
+    const keep = await makeUser('keep_report')
+    const db = getDb()
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1)
+    for (const user of [gone, keep]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/ai/filter-report',
+        headers: authHeaders(user.token),
+        payload: {
+          window_start: '2026-10-12 00:00:00', window_end: '2026-10-12 23:59:59',
+          client_version: '1.4.0', channel: 'nls',
+          counts: [{ rule_id: 'precheck.no_signal', count: 3 }],
+          totals: { notifications: 100, blocked: 3 },
+        },
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json().data.accepted).toBe(1)
+    }
+    const tables = ['users', 'categories', 'accounts', 'client_filter_stats', 'client_filter_totals']
+    const rows = (table: string, userId: number) => db.prepare(
+      `SELECT * FROM ${table} WHERE ${table === 'users' ? 'id' : 'user_id'} = ? ORDER BY id`,
+    ).all(userId)
+    const kept = tables.map((table) => rows(table, keep.id))
+    for (const table of tables) expect(rows(table, gone.id).length).toBeGreaterThan(0)
+
+    const res = await deleteUser(gone.id)
+    expect(res.status).toBe(200)
+    expect(res.body.code).toBe(0)
+    for (const [i, table] of tables.entries()) {
+      expect(rows(table, gone.id), table).toEqual([])
+      expect(rows(table, keep.id), table).toEqual(kept[i])
+    }
+    expect(db.pragma('foreign_key_check')).toEqual([])
+  })
+
   it('应保留其他用户的数据', async () => {
     const keep = await makeUser('keep_me')
     const gone = await makeUser('delete_me')
@@ -195,6 +232,59 @@ describe('Admin Routes - 删除用户', () => {
 
     const rows = getDb().prepare('SELECT id FROM transactions WHERE user_id = ?').all(keep.id)
     expect(rows.length).toBe(1)
+  })
+
+  it('分类创建仅接受本人活跃同类型父分类；更新不支持改挂父分类', async () => {
+    const owner = await makeUser('parent_owner')
+    const other = await makeUser('parent_other')
+    const db = getDb()
+    const inactiveId = Number(db.prepare(
+      "INSERT INTO categories (user_id, name, type, is_active) VALUES (?, '停用父分类', 'expense', 0)",
+    ).run(owner.id).lastInsertRowid)
+    const incomeId = Number(db.prepare(
+      "INSERT INTO categories (user_id, name, type) VALUES (?, '收入父分类', 'income')",
+    ).run(owner.id).lastInsertRowid)
+    const snapshot = db.prepare('SELECT * FROM categories ORDER BY id').all()
+    const create = (parent_id?: number) => app.inject({
+      method: 'POST', url: '/api/categories', headers: authHeaders(owner.token),
+      payload: { name: '测试子分类', type: 'expense', parent_id },
+    })
+    for (const parent_id of [other.categoryId, 999999, inactiveId, incomeId]) {
+      const res = await create(parent_id)
+      expect(res.statusCode).toBe(400)
+      expect(res.json()).toEqual({ code: 2003, data: null, message: '父分类不存在或不可用' })
+      expect(db.prepare('SELECT * FROM categories ORDER BY id').all()).toEqual(snapshot)
+    }
+    const child = await create(owner.categoryId)
+    expect(child.statusCode).toBe(200)
+    expect(child.json().data.parent_id).toBe(owner.categoryId)
+    const childId = child.json().data.id
+    for (const parent_id of [other.categoryId, 999999, inactiveId, incomeId, null]) {
+      const res = await app.inject({
+        method: 'PUT', url: `/api/categories/${childId}`, headers: authHeaders(owner.token),
+        payload: { parent_id, name: '不应写入' },
+      })
+      expect(res.statusCode).toBe(400)
+      expect(res.json()).toEqual({ code: 2003, data: null, message: '不支持修改父分类' })
+    }
+    // 整对象回传原 parent_id 不算修改，允许保存其它字段。
+    expect((await app.inject({
+      method: 'PUT', url: `/api/categories/${childId}`, headers: authHeaders(owner.token),
+      payload: { parent_id: owner.categoryId, name: '合法改名' },
+    })).statusCode).toBe(200)
+    expect(db.prepare('SELECT parent_id, name FROM categories WHERE id = ?').get(childId))
+      .toEqual({ parent_id: owner.categoryId, name: '合法改名' })
+    expect((await app.inject({
+      method: 'PUT', url: `/api/categories/${childId}`, headers: authHeaders(owner.token), payload: { name: '子分类改名' },
+    })).statusCode).toBe(200)
+    const root = await create()
+    expect(root.statusCode).toBe(200)
+    expect(root.json().data.parent_id).toBeNull()
+    expect(db.prepare('SELECT * FROM categories WHERE user_id = ? ORDER BY id').all(other.id)).toEqual(
+      snapshot.filter((row: any) => row.user_id === other.id),
+    )
+    expect((await deleteUser(other.id)).status).toBe(200)
+    expect((await deleteUser(owner.id)).status).toBe(200)
   })
 
   it('应拒绝删除自己', async () => {

@@ -131,6 +131,29 @@ describe('ai/parse 服务端重试（lib/ai-failure 策略）', () => {
     expect(lastLog()).toMatchObject({ status: 'error', failure_code: 'parse_invalid', attempts: 2 })
   })
 
+  it.each([
+    [null],
+    [{ type: 'expense', amount: 45, description: 123 }],
+    [{ type: 'expense', amount: 45, category: [] }],
+    [{ type: 'expense', amount: 45, account: {} }],
+  ])('畸形 JSON 条目 %j 重试后失败也必须留痕', async (item) => {
+    mock.steps = [{ reply: JSON.stringify([item]) }]
+    const before = getDb().prepare('SELECT count(*) AS n FROM ai_parse_logs').get() as { n: number }
+    const res = await post()
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ code: 5002, outcome: 'unavailable' })
+    expect(mock.calls).toBe(2)
+    expect(lastLog()).toMatchObject({ status: 'error', failure_code: 'parse_invalid', attempts: 2 })
+    expect(getDb().prepare('SELECT count(*) AS n FROM ai_parse_logs').get()).toEqual({ n: before.n + 1 })
+  })
+
+  it('畸形 JSON 后重试成功仍返回有效交易', async () => {
+    mock.steps = [{ reply: '[null]' }, { reply: KFC }]
+    expect((await post()).json().data.items[0].amount).toBe(4500)
+    expect(mock.calls).toBe(2)
+    expect(lastLog()).toMatchObject({ status: 'success', attempts: 2 })
+  })
+
   it('AI 判非账（回 []）不是失败 → 不重试 / outcome=not_a_bill / failure_code 为 NULL', async () => {
     mock.steps = [{ reply: '[]' }]
     const body = JSON.parse((await post()).payload)

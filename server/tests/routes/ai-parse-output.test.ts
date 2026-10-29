@@ -91,17 +91,27 @@ describe('ai/parse 出参扩展（§6）', () => {
     expect(JSON.parse(row.parsed_items)[0].confidence).toBe('high')
   })
 
-  it('quick(#2)：抽取 balance/card_tail/time/merchant，balance_text 与余额同元素', async () => {
+  it('含多组数字的文本交给 AI，仍抽取 balance/card_tail/time/merchant', async () => {
+    mockState.reply = JSON.stringify([
+      { type: 'expense', amount: 32, category: '餐饮', description: '午饭', date: '', account: '' },
+    ])
     const res = await post({
       input: '午饭32元 尾号1234 14:32 余额100.50元',
       source: { package_name: 'com.sankuai.meituan' },
     })
+    expect(res.json().data.source).toBe('ai')
     const item = JSON.parse(res.payload).data.items[0]
     expect(item.merchant).toBe('美团')
     expect(item.card_tail).toBe('1234')
     expect(item.balance_after_cents).toBe(10050)
     expect(item.balance_text).toBe('余额100.50元')
     expect(item.time).toBe('14:32')
+  })
+
+  it('手动输入万元金额既不缩小金额，也不被预筛丢弃', async () => {
+    const res = await post({ input: '工资2万元', channel: 'manual' })
+    expect(res.json().data.items).toHaveLength(1)
+    expect(res.json().data.items[0]).toMatchObject({ amount: 2000000, type: 'income' })
   })
 
   it('quick(#2)：无单位金额 → confidence=low，但 needs_review=false', async () => {
@@ -159,6 +169,25 @@ describe('ai/parse 出参扩展（§6）', () => {
     // 若误把 body 并入佐证，则 verify 会 pass、needs_review 会变 false
     expect(item.needs_review).toBe(true)
     expect(item.confidence_reasons).toContain('verify_review')
+  })
+
+  it('逐项拒绝的卡号金额不能参与主笔选择，剩余候选仍需复核', async () => {
+    mockState.reply = JSON.stringify([
+      { type: 'expense', amount: 1234, category: '餐饮', description: '餐饮', date: '', account: '' },
+      { type: 'expense', amount: 45, category: '餐饮', description: '餐饮', date: '', account: '' },
+    ])
+    const res = await post({ input: '尾号1234账户消费45', channel: 'sms' })
+    expect(res.json().data.items).toHaveLength(1)
+    expect(res.json().data.items[0]).toMatchObject({ amount: 4500, needs_review: true })
+    expect(res.json().data.extra_items_dropped).toBe(1)
+  })
+
+  it('全部候选被拒绝时不返回可入账条目', async () => {
+    mockState.reply = JSON.stringify([
+      { type: 'expense', amount: 1234, category: '餐饮', description: '餐饮', date: '', account: '' },
+    ])
+    const res = await post({ input: '尾号1234账户消费', channel: 'sms' })
+    expect(res.json()).toMatchObject({ outcome: 'not_a_bill', data: { items: [], source: 'postfilter' } })
   })
 
   it('ai(#4)：input 抽不到时可退回 title/body 抽取（仅抽取，不影响判据）', async () => {

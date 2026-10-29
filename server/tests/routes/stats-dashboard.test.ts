@@ -6,6 +6,16 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApp, teardownApp, createUser, authHeaders } from '../helpers.js'
 
+function beijingToday() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date())
+  const get = (type: string) => parts.find((p) => p.type === type)!.value
+  const year = Number(get('year'))
+  const month = Number(get('month'))
+  return { year, month, date: `${get('year')}-${get('month')}-${get('day')}` }
+}
+
 describe('Dashboard Route - GET /api/stats/dashboard', () => {
   let app: FastifyInstance
   let userToken: string
@@ -24,11 +34,9 @@ describe('Dashboard Route - GET /api/stats/dashboard', () => {
     const categories = JSON.parse(catRes.payload).data.items
     userCategoryId = categories.find((c: any) => c.type === 'expense').id
 
-    // Create transactions for current month
-    const now = new Date()
-    const year = now.getFullYear()
-    const month = String(now.getMonth() + 1).padStart(2, '0')
-    const today = `${year}-${month}-${String(now.getDate()).padStart(2, '0')}`
+    // Create transactions for current month（服务端“今天”按北京时间）
+    const bj = beijingToday()
+    const today = bj.date
 
     await app.inject({
       method: 'POST',
@@ -48,7 +56,7 @@ describe('Dashboard Route - GET /api/stats/dashboard', () => {
       method: 'POST',
       url: '/api/budgets',
       headers: authHeaders(userToken),
-      payload: { category_id: 0, amount: 500000, year: now.getFullYear(), month: now.getMonth() + 1 },
+      payload: { category_id: 0, amount: 500000, year: bj.year, month: bj.month },
     })
   })
 
@@ -229,12 +237,12 @@ describe('Dashboard Route - GET /api/stats/dashboard', () => {
 
   it('should trigger budget_warning alert when spending is high', async () => {
     // Create a tight budget that will be exceeded
-    const now = new Date()
+    const bj = beijingToday()
     await app.inject({
       method: 'POST',
       url: '/api/budgets',
       headers: authHeaders(userToken),
-      payload: { category_id: userCategoryId, amount: 5000, year: now.getFullYear(), month: now.getMonth() + 1 },
+      payload: { category_id: userCategoryId, amount: 5000, year: bj.year, month: bj.month },
     })
 
     const res = await app.inject({

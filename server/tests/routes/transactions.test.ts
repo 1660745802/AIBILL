@@ -119,6 +119,24 @@ describe('Transaction Routes', () => {
   })
 
   describe('GET /api/transactions', () => {
+    it('未分类排行的虚拟分类可以下钻，且只返回当前用户未分类交易', async () => {
+      const userToken = await createUser(app, 'txnocat1')
+      const user2Token = await createUser(app, 'txnocat2')
+      const categories = (await app.inject({ url: '/api/categories', headers: authHeaders(userToken) })).json().data.items
+      const categoryId = categories.find((category: { type: string }) => category.type === 'expense').id
+      const day = '2026-06-01'
+      for (const [token, items] of [
+        [userToken, [{ type: 'expense', amount: 9000, date: day }, { type: 'expense', amount: 1000, date: day, category_id: categoryId }]],
+        [user2Token, [{ type: 'expense', amount: 7000, date: day }]],
+      ] as const) {
+        const result = await app.inject({ method: 'POST', url: '/api/transactions', headers: authHeaders(token), payload: { items } })
+        expect(result.json().code).toBe(0)
+      }
+      const res = await app.inject({ url: `/api/transactions?category_id=0&start_date=${day}&end_date=${day}`, headers: authHeaders(userToken) })
+      expect(res.json().data.total).toBe(1)
+      expect(res.json().data.items[0]).toMatchObject({ amount: 9000, category_id: null })
+    })
+
     it('should list user transactions with pagination', async () => {
       const res = await app.inject({
         method: 'GET',

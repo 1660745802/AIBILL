@@ -31,6 +31,22 @@ export const PLACEHOLDER_JWT_SECRETS: readonly string[] = [
 ];
 export const PLACEHOLDER_ADMIN_PASSWORDS: readonly string[] = ['changeme123'];
 
+/** 必须在数据库、目录和 seed 等启动副作用之前调用；不打印密钥值。 */
+export function validateStartupConfig(
+  appConfig: Pick<AppConfig, 'jwtSecret'> = config,
+  nodeEnv = process.env.NODE_ENV,
+): void {
+  const secret = appConfig.jwtSecret.trim();
+  const isPlaceholder = PLACEHOLDER_JWT_SECRETS.includes(secret);
+  if (nodeEnv === 'production' && (secret.length < 32 || isPlaceholder)) {
+    throw new Error('[Config] 生产环境 JWT_SECRET 必须显式配置为非占位且至少32个字符的密钥');
+  }
+  // 开发/测试仍可使用占位值，但不能静默放过公开的默认密钥。
+  if (isPlaceholder) {
+    console.warn('[Security] JWT_SECRET 使用默认/占位值，生产环境请务必设置自定义密钥！');
+  }
+}
+
 // PORT 兜底：非整数 / 越界一律回落 3000，否则 NaN 会一路传到 app.listen。
 const rawPort = (process.env.PORT ?? '').trim();
 const parsedPort = Number.parseInt(rawPort, 10);

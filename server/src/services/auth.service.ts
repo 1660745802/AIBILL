@@ -3,6 +3,7 @@
  */
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
+import { z } from 'zod'
 import { getDb } from '../db/index.js'
 import { config } from '../config.js'
 import {
@@ -12,6 +13,19 @@ import {
 } from '../db/schema.js'
 import type { JwtPayload } from '../middleware/auth.js'
 import { today } from '../lib/date.js'
+
+// bcrypt 只使用前72个 UTF-8 字节：只约束新密码，登录/旧密码比对保留历史兼容。
+export const newPasswordSchema = z.string()
+  .min(6, '密码至少6个字符')
+  .max(50, '密码最多50个字符')
+  .refine((password) => Buffer.byteLength(password, 'utf8') <= 72, '密码的 UTF-8 编码不能超过72字节')
+
+function hashNewPassword(password: string): string {
+  // 初始管理员允许超过 HTTP 的50字符上限，但仍不能被 bcrypt 截断。
+  const input = z.string().refine((value) => Buffer.byteLength(value, 'utf8') <= 72,
+    '密码的 UTF-8 编码不能超过72字节').parse(password)
+  return bcrypt.hashSync(input, 12)
+}
 
 export interface RegisterInput {
   username: string
@@ -115,7 +129,7 @@ export function register(input: RegisterInput): { token: string; user: UserInfo 
   }
 
   // 3. 在事务内完成：创建用户 + 默认分类 + 默认账户 + 邀请码计数+1
-  const passwordHash = bcrypt.hashSync(input.password, 12)
+  const passwordHash = hashNewPassword(input.password)
 
   let result: UserInfo
   try {
@@ -229,7 +243,7 @@ export function ensureAdminUser(): void {
   const admin = db.prepare('SELECT id FROM users WHERE role = ?').get('admin')
   if (admin) return
 
-  const passwordHash = bcrypt.hashSync(config.adminPassword, 12)
+  const passwordHash = hashNewPassword(config.adminPassword)
   const result = db
     .prepare(
       `INSERT INTO users (username, password_hash, nickname, role) VALUES (?, ?, '管理员', 'admin')`,
@@ -265,7 +279,7 @@ export function changePassword(userId: number, oldPassword: string, newPassword:
     return { success: false, message: '当前密码错误' }
   }
 
-  const newHash = bcrypt.hashSync(newPassword, 12)
+  const newHash = hashNewPassword(newPassword)
   db.prepare(
     `UPDATE users SET password_hash = ?, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?`,
   ).run(newHash, userId)
@@ -282,7 +296,7 @@ export function adminResetPassword(userId: number, newPassword: string): { succe
   if (!user) {
     return { success: false, message: '用户不存在' }
   }
-  const newHash = bcrypt.hashSync(newPassword, 12)
+  const newHash = hashNewPassword(newPassword)
   db.prepare(
     `UPDATE users SET password_hash = ?, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?`,
   ).run(newHash, userId)

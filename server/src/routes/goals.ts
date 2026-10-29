@@ -17,7 +17,7 @@ const createGoalSchema = z.object({
   current_amount: z.number().int().min(0).safe().default(0),
   deadline: z.string().optional(),
   priority: z.number().int().min(1).max(10).default(5),
-  linked_account_id: z.number().int().optional(),
+  linked_account_id: z.number().int().positive().safe().optional(),
   monthly_contribution: z.number().int().min(0).safe().default(0),
   icon: z.string().max(10).default('🎯'),
   note: z.string().max(500).optional(),
@@ -30,7 +30,7 @@ const updateGoalSchema = z.object({
   current_amount: z.number().int().min(0).safe().optional(),
   deadline: z.string().nullable().optional(),
   priority: z.number().int().min(1).max(10).optional(),
-  linked_account_id: z.number().int().nullable().optional(),
+  linked_account_id: z.number().int().positive().safe().nullable().optional(),
   monthly_contribution: z.number().int().min(0).safe().optional(),
   status: z.enum(['active', 'completed', 'paused', 'abandoned']).optional(),
   icon: z.string().max(10).optional(),
@@ -89,10 +89,10 @@ export async function goalsRoutes(app: FastifyInstance): Promise<void> {
       const db = getDb()
       const userId = request.user!.userId
 
-      // 验证关联账户
-      if (body.linked_account_id) {
+      // 新关联只允许当前用户的活跃账户；不存在和他人账户返回相同错误。
+      if (body.linked_account_id !== undefined) {
         const acc = db.prepare(
-          'SELECT id FROM accounts WHERE id = ? AND user_id = ?'
+          'SELECT id FROM accounts WHERE id = ? AND user_id = ? AND is_active = 1'
         ).get(body.linked_account_id, userId)
         if (!acc) {
           reply.code(400)
@@ -131,6 +131,16 @@ export async function goalsRoutes(app: FastifyInstance): Promise<void> {
       const body = updateGoalSchema.parse(request.body)
       const db = getDb()
       const userId = request.user!.userId
+
+      if (body.linked_account_id !== undefined && body.linked_account_id !== null) {
+        const acc = db.prepare(
+          'SELECT id FROM accounts WHERE id = ? AND user_id = ? AND is_active = 1'
+        ).get(body.linked_account_id, userId)
+        if (!acc) {
+          reply.code(400)
+          return { code: 2003, data: null, message: '关联账户不存在' }
+        }
+      }
 
       const updates: string[] = []
       const values: any[] = []

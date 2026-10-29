@@ -254,7 +254,9 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       whereClauses.push('t.type = ?')
       params.push(query.type)
     }
-    if (query.category_id) {
+    if (query.category_id === '0') {
+      whereClauses.push('t.category_id IS NULL')
+    } else if (query.category_id) {
       whereClauses.push('t.category_id = ?')
       params.push(Number(query.category_id))
     }

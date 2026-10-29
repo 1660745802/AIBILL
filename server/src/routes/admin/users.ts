@@ -5,7 +5,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { getDb } from '../../db/index.js'
-import { adminResetPassword } from '../../services/auth.service.js'
+import { adminResetPassword, newPasswordSchema } from '../../services/auth.service.js'
 import { appLog } from '../../services/logger.js'
 import { pageParam } from '../../lib/pagination.js'
 import { purgeUserData } from '../../lib/admin-purge.js'
@@ -152,7 +152,7 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
   // PUT /api/admin/users/:id/reset-password - 重置用户密码
   app.put('/api/admin/users/:id/reset-password', async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string }
-    const resetSchema = z.object({ new_password: z.string().min(6, '新密码至少6个字符').max(50) })
+    const resetSchema = z.object({ new_password: newPasswordSchema })
 
     try {
       const body = resetSchema.parse(request.body)

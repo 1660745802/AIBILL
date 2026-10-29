@@ -40,6 +40,61 @@ describe('Goal Routes', () => {
     return found.id
   }
 
+  describe('关联账户的创建/更新隔离', () => {
+    it('他人/不存在/停用账户均拒绝且不泄露存在性；失败不能改动目标', async () => {
+      const db = getDb()
+      const owner = db.prepare('SELECT id FROM users WHERE username = ?').get('goaluser') as { id: number }
+      const otherId = Number(db.prepare("INSERT INTO users (username, password_hash) VALUES ('goal_other', 'x')").run().lastInsertRowid)
+      const account = (userId: number, name: string, active = 1) => Number(db.prepare(
+        'INSERT INTO accounts (user_id, name, is_active) VALUES (?, ?, ?)',
+      ).run(userId, name, active).lastInsertRowid)
+      const ownId = account(owner.id, '目标账户')
+      const otherAccount = account(otherId, '他人账户')
+      const inactiveId = account(owner.id, '停用账户', 0)
+      const created = await createGoal({ name: '账户归属', linked_account_id: ownId })
+      expect(created.statusCode).toBe(200)
+      const id = created.json().data.id
+      const before = db.prepare('SELECT * FROM financial_goals WHERE id = ?').get(id)
+      const beforeAll = db.prepare('SELECT * FROM financial_goals ORDER BY id').all()
+      const otherBefore = db.prepare('SELECT * FROM accounts WHERE user_id = ?').all(otherId)
+      for (const linked_account_id of [otherAccount, 999999, inactiveId]) {
+        const create = await createGoal({ linked_account_id })
+        const update = await app.inject({
+          method: 'PUT', url: `/api/goals/${id}`, headers: authHeaders(token),
+          payload: { linked_account_id, name: '不应写入' },
+        })
+        for (const res of [create, update]) {
+          expect(res.statusCode).toBe(400)
+          expect(res.json()).toEqual({ code: 2003, data: null, message: '关联账户不存在' })
+        }
+        expect(db.prepare('SELECT * FROM financial_goals WHERE id = ?').get(id)).toEqual(before)
+        expect(db.prepare('SELECT * FROM financial_goals ORDER BY id').all()).toEqual(beforeAll)
+      }
+      for (const linked_account_id of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+        expect((await createGoal({ linked_account_id })).statusCode).toBe(400)
+        expect((await app.inject({
+          method: 'PUT', url: `/api/goals/${id}`, headers: authHeaders(token), payload: { linked_account_id },
+        })).statusCode).toBe(400)
+      }
+      expect(db.prepare('SELECT * FROM accounts WHERE user_id = ?').all(otherId)).toEqual(otherBefore)
+
+      // 合法关联可更新；null 解除关联；不带该字段可继续编辑（即使原账户后来停用）。
+      const nextId = account(owner.id, '新的目标账户')
+      for (const linked_account_id of [nextId, null, ownId]) {
+        const res = await app.inject({
+          method: 'PUT', url: `/api/goals/${id}`, headers: authHeaders(token), payload: { linked_account_id },
+        })
+        expect(res.statusCode).toBe(200)
+        expect(db.prepare('SELECT linked_account_id FROM financial_goals WHERE id = ?').get(id)).toEqual({ linked_account_id })
+      }
+      db.prepare('UPDATE accounts SET is_active = 0 WHERE id = ?').run(ownId)
+      expect((await app.inject({
+        method: 'PUT', url: `/api/goals/${id}`, headers: authHeaders(token), payload: { name: '仍可编辑' },
+      })).statusCode).toBe(200)
+      expect((await createGoal()).statusCode).toBe(200)
+    })
+  })
+
   describe('金额字段', () => {
     it('非安全整数应被拒（target_amount / current_amount / monthly_contribution）', async () => {
       for (const payload of [

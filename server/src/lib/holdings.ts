@@ -12,8 +12,7 @@
  * 这同时消掉一个真实出现过的矛盾：页面上「头条浮盈 +14,170」和
  * 「同一只持仓行 −13,830」正负号打架，根因就是单只也算了成本。
  *
- * 行情缺失时市值给 **null 而不是 0**：0 会被读成「这只持仓归零了」，
- * 那是错误信息；null 才是「我暂时不知道它值多少」。
+ * 非零持仓行情缺失时市值给 **null 而不是 0**；清仓（数量为零）价值确定为零。
  */
 
 import { currencyOf } from './quotes.js'
@@ -72,11 +71,15 @@ export function valueHolding(
 ): HoldingValuation {
   const quote = quotes.get(h.code) ?? null
   const currency = currencyOf(h.code)
-  const native = quote ? Math.round(h.quantity * quote.price * 100) : null
+  // hf_XAU 报美元/金衡盎司；只有 gold_gram 的克数需要换算，证券份额不变。
+  const quantity = h.kind === 'gold_gram' && h.code.toLowerCase() === 'hf_xau'
+    ? h.quantity / 31.1034768
+    : h.quantity
+  const native = h.quantity === 0 ? 0 : (quote ? Math.round(quantity * quote.price * 100) : null)
   const rate = currency === 'CNY' ? 1 : (fx.get(currency) ?? null)
-  // 汇率缺失时 marketValue 给 null 而不是原币值——宁可显示「待补汇率」，
-  // 也不能把港元直接当人民币加进净资产。
-  const marketValue = native == null ? null : (rate != null ? Math.round(native * rate) : null)
+  // 清仓价值确定为零；非零持仓缺汇率时不能把原币当人民币。
+  const marketValue = h.quantity === 0 ? 0
+    : (native != null && rate != null ? Math.round(native * rate) : null)
   return {
     ...h,
     marketValue,

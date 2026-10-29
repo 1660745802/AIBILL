@@ -184,7 +184,7 @@ function parseAlipay(content: string): RawParseResult {
   // 找到表头行
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim()
-    if (line.startsWith('交易号') || line.startsWith('账务流水号')) {
+    if (line.startsWith('交易号') || line.startsWith('账务流水号') || line.startsWith('交易时间,')) {
       headerIndex = i
       headerFields = parseCsvLine(line)
       break
@@ -201,6 +201,8 @@ function parseAlipay(content: string): RawParseResult {
   const colAmount = headerFields.findIndex((h) => h.includes('金额'))
   const colDirection = headerFields.findIndex((h) => h === '收/支' || h.includes('收/支'))
   const colCounterparty = headerFields.findIndex((h) => h.includes('交易对方'))
+  const colStatus = headerFields.findIndex((h) => h === '交易状态' || h === '当前状态')
+  const unpaidStatuses = new Set(['未付款', '等待付款', '等待买家付款', '交易关闭', '交易取消', '支付失败'])
 
   const dataLines = lines.slice(headerIndex + 1).filter((l) => l.trim().length > 0)
   const total = dataLines.length
@@ -222,6 +224,12 @@ function parseAlipay(content: string): RawParseResult {
       const amountRaw = colAmount >= 0 ? fields[colAmount] : ''
       const direction = colDirection >= 0 ? fields[colDirection] : ''
       const counterparty = colCounterparty >= 0 ? fields[colCounterparty] : ''
+      const status = colStatus >= 0 ? fields[colStatus]?.trim() : undefined
+      // 只排除明确未成交状态；退款按收/支保留，旧 CSV 无状态列仍兼容。
+      if (status && unpaidStatuses.has(status)) {
+        skipped++
+        continue
+      }
 
       // type 映射
       let type: 'expense' | 'income' | 'transfer'

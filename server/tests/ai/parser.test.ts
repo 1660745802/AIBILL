@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { extractJsonArray, validateParsedItems, ParseError } from '../../src/ai/parser.js'
+import { quickParse } from '../../src/ai/quick-parser.js'
 
 describe('AI Parser', () => {
   const today = '2026-07-30'
@@ -65,6 +66,26 @@ describe('AI Parser', () => {
       const result = validateParsedItems(items, today)
       expect(result).toHaveLength(1)
       expect(result[0].amount).toBe(32)
+    })
+
+    it('畸形 JSON 元素和非字符串字段不能逃过类型校验', () => {
+      const valid = { type: 'expense', amount: 32, description: '午饭' }
+      const malformed: unknown[] = [null, true, 3, 'x', [],
+        { ...valid, amount: true }, { ...valid, amount: [] },
+        ...['category', 'description', 'account', 'target_account', 'date'].map((key) => ({ ...valid, [key]: {} })),
+      ]
+      expect(validateParsedItems([...malformed, valid], today)).toEqual([
+        { ...valid, category: '', account: '', date: today, target_account: undefined },
+      ])
+    })
+
+    it.each(['¥32.00', '32元', '1,000.00元'])('完整金额字符串 %s 不截断数值', (amount) => {
+      const result = validateParsedItems([{ type: 'expense', amount }], today)
+      expect(result[0].amount).toBe(amount.includes(',') ? 1000 : 32)
+    })
+
+    it.each(['2万元', '32元未支付', 'abc32', '1,23元'])('不完整金额字符串 %s 不取局部数字', (amount) => {
+      expect(validateParsedItems([{ type: 'expense', amount }], today)).toEqual([])
     })
 
     it('should filter out items with invalid type', () => {
@@ -137,5 +158,21 @@ describe('AI Parser', () => {
       expect(result[0].type).toBe('transfer')
       expect(result[0].target_account).toBe('支付宝')
     })
+  })
+})
+
+describe('quickParse 完整消费输入', () => {
+  const context = { today: '2026-10-28', expenseCategories: ['餐饮'], incomeCategories: ['工资'], accounts: ['微信', '现金'] }
+
+  it.each(['午饭32元未支付', '午饭32元已取消', '午饭3块5', '午饭32美元'])('%s 不走快捷解析', (input) => {
+    expect(quickParse(input, context)).toBeNull()
+  })
+
+  it.each([['工资2万元', 20000], ['工资1.5万', 15000], ['工资2千元', 2000], ['工资2亿元', 200000000]] as const)('%s 完整解析金额单位', (input, amount) => {
+    expect(quickParse(input, context)?.[0]).toMatchObject({ amount, type: 'income' })
+  })
+
+  it.each(['午饭32', '午饭32元', '午饭32微信', '32元午饭', '午饭微信32'])('%s 保持快捷解析', (input) => {
+    expect(quickParse(input, context)?.[0]).toMatchObject({ amount: 32, type: 'expense', category: '餐饮' })
   })
 })

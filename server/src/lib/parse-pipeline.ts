@@ -660,9 +660,9 @@ export async function runParse(db: Db, args: RunParseArgs): Promise<ParseOutcome
       ...logMeta,
     })
 
-    /* 一次解析只回一笔（同上）：指纹只记**客户端真正会入账的那一笔**，
-       否则被裁掉的笔会留在指纹里，之后误关联到别的账单。 */
-    const picked = pickMainItem(items, body.input)
+    // 保持原下标完成复核标记后再过滤，否则逐项判据会错配到另一条账目。
+    const eligible = items.filter((_, i) => verified.perItem[i]?.verdict !== 'drop')
+    const picked = pickMainItem(eligible, body.input)
 
     rememberParse(userId, logId, (picked.main ? [picked.main] : []) as any, body.input)
 
@@ -670,7 +670,7 @@ export async function runParse(db: Db, args: RunParseArgs): Promise<ParseOutcome
       kind: 'parsed',
       source: 'ai',
       items: picked.main ? [picked.main] : [],
-      droppedCount: picked.droppedCount,
+      droppedCount: items.length - (picked.main ? 1 : 0),
       rawInput: body.input,
       logId,
       hintsConflict,

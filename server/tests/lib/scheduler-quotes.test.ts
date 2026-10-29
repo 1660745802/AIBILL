@@ -7,7 +7,7 @@
  *
  * 这个文件专门盯住「定义 ≠ 会跑」这一类。
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 /**
  * 上游目录（离线）：按请求的代码过滤，认得的给、不认的给不出——
@@ -19,17 +19,18 @@ const CATALOG = [
   { code: 'hk00700', name: '腾讯控股', price: 424.8, prevClose: 411.4, changeRate: 3.26, quoteDate: '2026-10-10', quoteAt: '2026-10-10 16:00:00' },
   { code: 'whHKDCNY', name: 'HKD人民币', price: 0.8525, prevClose: null, changeRate: null, quoteDate: '2026-10-10', quoteAt: '2026-10-10 16:00:00' },
 ]
-const fetchQuotes = vi.fn(async (codes: string[]) => {
+const catalogQuotes = async (codes: string[]) => {
   const out = CATALOG.filter((q) => codes.includes(q.code))
   if (out.length === 0) throw new Error('行情接口返回空（可能改格式了或被限流）')
   return out
-})
+}
+const fetchQuotes = vi.fn(catalogQuotes)
 vi.mock('../../src/lib/quotes.js', async (orig) => ({
   ...(await orig<typeof import('../../src/lib/quotes.js')>()),
   fetchQuotes,
 }))
 
-const { shouldFetchQuotes, runScheduledTasks, intervalMinutes, processQuoteFetch } = await import('../../src/services/scheduler.js')
+const { shouldFetchQuotes, runScheduledTasks, runHousekeepingTasks, resetFxThrottle, intervalMinutes, processQuoteFetch } = await import('../../src/services/scheduler.js')
 const { initDb, getDb } = await import('../../src/db/index.js')
 
 describe('shouldFetchQuotes —— 只在盘中与收盘后抓', () => {
@@ -189,7 +190,7 @@ describe('同一时刻重复抓取不写重复行（调密的前提）', () => {
 })
 
 describe('runScheduledTasks 真的会调用行情抓取', () => {
-  beforeEach(() => { fetchQuotes.mockClear() })
+  beforeEach(() => { fetchQuotes.mockClear(); resetFxThrottle() })
 
   it('有持仓且处于抓取时段 → 调用 fetchQuotes 并落库', async () => {
     const db = initDb()
@@ -362,6 +363,7 @@ describe('汇率任务走 FX 链路，来源不许硬编码', () => {
   beforeEach(async () => {
     const { resetMarketClosedCache } = await import('../../src/services/scheduler.js')
     resetMarketClosedCache()
+    resetFxThrottle()
     fetchQuotes.mockClear()
   })
 
@@ -412,5 +414,161 @@ describe('汇率任务走 FX 链路，来源不许硬编码', () => {
 
     expect(db.prepare("SELECT count(*) c FROM investment_quotes WHERE code = 'hk00700'").get()).toEqual({ c: 1 })
     expect(db.prepare("SELECT count(*) c FROM investment_quotes WHERE code = 'hk0100'").get()).toEqual({ c: 0 })
+  })
+
+  it('汇率按 FX_REFRESH_MINUTES 节流，行情不受影响', async () => {
+    const db = seedHk()
+    // 北京 09:50：开盘但未到 10:00，不会把夹具里的行情日期误判成「今天休市」
+    vi.setSystemTime(new Date('2026-10-09T01:50:00Z'))
+    await runScheduledTasks()
+    fetchQuotes.mockClear()
+    await runScheduledTasks()
+
+    expect(fetchQuotes).not.toHaveBeenCalledWith(['whHKDCNY'])
+    expect(fetchQuotes).toHaveBeenCalledWith(['hk00700'])
+    vi.useRealTimers()
+  })
+})
+
+describe('审查回归：调度失败隔离、日志留存与冬夏令时', () => {
+  const scheduler = () => import('../../src/services/scheduler.js')
+  let db: ReturnType<typeof getDb>
+  let userId: number
+
+  beforeEach(async () => {
+    vi.useFakeTimers()
+    // 北京 09:50：开盘但未到 10:00，避免夹具里的行情日期被误判成「今天休市」
+    vi.setSystemTime(new Date('2026-10-09T01:50:00Z'))
+    db = initDb()
+    userId = Number(db.prepare("INSERT INTO users (username, password_hash) VALUES ('scheduler_regression', 'x')").run().lastInsertRowid)
+    const accountId = Number(db.prepare("INSERT INTO accounts (user_id, name) VALUES (?, '证券')").run(userId).lastInsertRowid)
+    db.prepare("INSERT INTO investments (user_id, account_id, code, market, kind, quantity) VALUES (?, ?, 'hk00700', 'hk', 'stock', 1)").run(userId, accountId)
+    fetchQuotes.mockReset().mockImplementation(catalogQuotes)
+    ;(await scheduler()).resetMarketClosedCache()
+    ;(await scheduler()).resetFxThrottle()
+  })
+
+  afterEach(async () => {
+    ;(await scheduler()).stopScheduler()
+    vi.clearAllTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    fetchQuotes.mockReset().mockImplementation(catalogQuotes)
+    db.close()
+  })
+
+  const count = (db: ReturnType<typeof getDb>, table: string) =>
+    (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n
+
+  it('90天清理保留有裁决日志及全部改判历史，删除无裁决旧日志，后续任务仍运行', async () => {
+    const insertLog = db.prepare("INSERT INTO ai_parse_logs (user_id, raw_input, status, created_at) VALUES (?, '测试', 'empty', ?)")
+    const retained = Number(insertLog.run(userId, '2026-01-01 00:00:00').lastInsertRowid)
+    insertLog.run(userId, '2026-01-01 00:00:00')
+    const recent = Number(insertLog.run(userId, '2026-10-08 00:00:00').lastInsertRowid)
+    const boundary = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 19).replace('T', ' ')
+    const atCutoff = Number(insertLog.run(userId, boundary).lastInsertRowid)
+    const triage = db.prepare('INSERT INTO admin_unparsed_triage (parse_log_id, admin_id, action, reason) VALUES (?, ?, ?, ?)')
+    triage.run(retained, userId, 'mark_bill', '首次裁决')
+    triage.run(retained, userId, 'mark_not_bill', '改判')
+    const history = db.prepare('SELECT * FROM admin_unparsed_triage').all()
+    db.prepare("INSERT INTO ai_conversations (user_id, session_id, role, content, created_at) VALUES (?, 'old', 'user', '旧对话', '2026-01-01')").run(userId)
+    db.prepare("INSERT INTO ai_parse_filters (user_id, raw_input, stage, tier, created_at) VALUES (?, '旧预筛', 'inbound', 0, '2026-01-01')").run(userId)
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1)
+
+    await expect(runHousekeepingTasks()).resolves.toBeUndefined()
+    await expect(runScheduledTasks()).resolves.toBeUndefined()
+
+    expect(db.prepare('SELECT id FROM ai_parse_logs ORDER BY id').all()).toEqual([{ id: retained }, { id: recent }, { id: atCutoff }])
+    expect(db.prepare('SELECT * FROM admin_unparsed_triage').all()).toEqual(history)
+    expect(count(db, 'ai_conversations')).toBe(0)
+    expect(count(db, 'ai_parse_filters')).toBe(0)
+    expect(fetchQuotes).toHaveBeenCalledWith(['whHKDCNY'])
+    expect(fetchQuotes).toHaveBeenCalledWith(['hk00700'])
+  })
+
+  it.each(['订阅', '回收站', '日志'])('%s子任务抛错仍执行后续清理、汇率与行情', async (task) => {
+    if (task === '订阅') db.exec('DROP TABLE subscriptions')
+    if (task === '回收站') {
+      db.prepare("INSERT INTO transactions (user_id, type, amount, date, deleted_at) VALUES (?, 'expense', 100, '2026-01-01', '2026-01-02')").run(userId)
+      db.exec("CREATE TRIGGER reject_trash BEFORE DELETE ON transactions BEGIN SELECT RAISE(ABORT, 'cleanup fault'); END")
+    }
+    if (task === '日志') {
+      db.exec("INSERT INTO app_logs (level, module, message, created_at) VALUES ('info', 'test', 'old', '2026-01-01')")
+      db.exec("CREATE TRIGGER reject_log BEFORE DELETE ON app_logs BEGIN SELECT RAISE(ABORT, 'cleanup fault'); END")
+    }
+    db.prepare("INSERT INTO ai_conversations (user_id, session_id, role, content, created_at) VALUES (?, 'old', 'user', '旧对话', '2026-01-01')").run(userId)
+
+    await expect(runHousekeepingTasks()).resolves.toBeUndefined()
+    await expect(runScheduledTasks()).resolves.toBeUndefined()
+
+    if (task !== '日志') expect(count(db, 'ai_conversations')).toBe(0)
+    expect(fetchQuotes).toHaveBeenCalledWith(['whHKDCNY'])
+    expect(fetchQuotes).toHaveBeenCalledWith(['hk00700'])
+    const errors = db.prepare("SELECT message FROM app_logs WHERE module = 'scheduler' AND level IN ('warn', 'error')").all() as Array<{ message: string }>
+    expect(errors.some((r) => r.message.includes(task))).toBe(true)
+  })
+
+  it.each(['acquireAndStoreFxRates', 'acquireAndStorePrices'] as const)('%s拒绝不影响其它子任务，下一跳可恢复', async (method) => {
+    const acquisition = await import('../../src/lib/quote-acquisition.js')
+    vi.spyOn(acquisition, method).mockRejectedValueOnce(new Error('acquisition fault'))
+    const log = vi.spyOn(await import('../../src/services/logger.js'), 'appLog')
+    db.prepare("INSERT INTO ai_conversations (user_id, session_id, role, content, created_at) VALUES (?, 'old', 'user', '旧对话', '2026-01-01')").run(userId)
+    await expect(runHousekeepingTasks()).resolves.toBeUndefined()
+    await expect(runScheduledTasks()).resolves.toBeUndefined()
+    expect(count(db, 'ai_conversations')).toBe(0)
+    expect(fetchQuotes).toHaveBeenCalledWith(method === 'acquireAndStoreFxRates' ? ['hk00700'] : ['whHKDCNY'])
+    expect(log).toHaveBeenCalledWith('warn', 'scheduler', expect.stringContaining('acquisition fault'))
+    resetFxThrottle()
+    await expect(runScheduledTasks()).resolves.toBeUndefined()
+    expect(fetchQuotes).toHaveBeenCalledWith(['whHKDCNY'])
+    expect(fetchQuotes).toHaveBeenCalledWith(['hk00700'])
+  })
+
+  it('启动与周期timer都捕获顶层拒绝并记录，不留下未处理Promise', async () => {
+    const { startScheduler } = await scheduler()
+    const logger = await import('../../src/services/logger.js')
+    const realLog = logger.appLog
+    const log = vi.spyOn(logger, 'appLog').mockImplementation((level, module, message, data) => {
+      if (message === '定时任务开始执行') throw new Error('timer fault')
+      realLog(level, module, message, data)
+    })
+    startScheduler()
+    await vi.advanceTimersByTimeAsync(5000)
+    await vi.advanceTimersByTimeAsync(intervalMinutes() * 60000 - 5000)
+    const failures = log.mock.calls.filter(([level, module, message]) => level === 'error' && module === 'scheduler' && message.includes('timer fault'))
+    expect(failures).toHaveLength(2)
+  })
+
+  it('冬令时北京22点旧价不能封住23点的当日行情', async () => {
+    db.exec("UPDATE investments SET code = 'usAAPL', market = 'us'")
+    fetchQuotes.mockImplementation(async () => [{
+      code: 'usAAPL', name: '苹果', price: 200, prevClose: 199, changeRate: 0.5,
+      quoteDate: fetchQuotes.mock.calls.length === 1 ? '2026-12-07' : '2026-12-08',
+      quoteAt: fetchQuotes.mock.calls.length === 1 ? '2026-12-07 16:00:00' : '2026-12-08 10:00:00',
+    }])
+    const { marketClosedDate } = await scheduler()
+    await processQuoteFetch(new Date('2026-12-08T14:00:00Z')) // 北京22点 = 纽约09点
+    const closedBeforeOpen = marketClosedDate('us')
+    await processQuoteFetch(new Date('2026-12-08T15:00:00Z')) // 北京23点 = 纽约10点
+    expect(fetchQuotes).toHaveBeenCalledTimes(2)
+    expect(closedBeforeOpen).toBeNull()
+    expect(marketClosedDate('us')).toBeNull()
+    expect(db.prepare("SELECT quote_date FROM investment_quotes WHERE code = 'usAAPL' ORDER BY quote_date").all())
+      .toEqual([{ quote_date: '2026-12-07' }, { quote_date: '2026-12-08' }])
+  })
+
+  it.each([
+    ['2026-10-13T14:00:00Z', '2026-10-13', '2026-10-12'],
+    ['2026-12-08T15:00:00Z', '2026-12-08', '2026-12-07'],
+  ])('纽约10点可确认休市（%s），冬夏令时一致', async (now, tradingDate, oldDate) => {
+    db.exec("UPDATE investments SET code = 'usAAPL', market = 'us'")
+    fetchQuotes.mockResolvedValue([{
+      code: 'usAAPL', name: '苹果', price: 200, prevClose: 199, changeRate: 0.5,
+      quoteDate: oldDate, quoteAt: `${oldDate} 16:00:00`,
+    }])
+    await processQuoteFetch(new Date(now))
+    expect((await scheduler()).marketClosedDate('us')).toBe(tradingDate)
+    await processQuoteFetch(new Date(now))
+    expect(fetchQuotes).toHaveBeenCalledTimes(1)
   })
 })

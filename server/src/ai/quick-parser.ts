@@ -120,11 +120,13 @@ export function quickParse(input: string, ctx: QuickParseContext): QuickParsedIt
  */
 function parseSingle(input: string, ctx: QuickParseContext): QuickParsedItem | null {
   // 提取金额（必须有数字）
-  const amountMatch = input.match(/(\d+\.?\d*)/)
+  const amountMatch = input.match(/(\d+\.?\d*)([千万亿]?)/)
   if (!amountMatch) return null
 
-  const amount = parseFloat(amountMatch[1]!)
-  if (!amount || amount <= 0 || amount > 500000) return null
+  const multipliers: Record<string, number> = { '': 1, 千: 1000, 万: 10000, 亿: 100000000 }
+  const amount = Number(amountMatch[1]) * multipliers[amountMatch[2]!]!
+  const cents = Math.round(amount * 100)
+  if (!Number.isSafeInteger(cents) || cents <= 0) return null
 
   // 去掉金额部分，剩下的是描述 + 可能的账户
   const amountIndex = input.indexOf(amountMatch[0]!)
@@ -160,7 +162,7 @@ function parseSingle(input: string, ctx: QuickParseContext): QuickParsedItem | n
     }
   }
 
-  if (!description) return null
+  if (!description || (trailing && trailing !== account)) return null
 
   // 核心判断：描述必须在高置信映射表或用户分类名中
   const allCategories = [...ctx.expenseCategories, ...ctx.incomeCategories]

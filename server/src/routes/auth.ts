@@ -10,6 +10,7 @@ import {
   changePassword,
   issueToken,
   AppError,
+  newPasswordSchema,
 } from '../services/auth.service.js'
 import { authMiddleware } from '../middleware/auth.js'
 import { appLog } from '../services/logger.js'
@@ -20,7 +21,7 @@ const registerSchema = z.object({
     .min(3, '用户名至少3个字符')
     .max(20, '用户名最多20个字符')
     .regex(/^[a-zA-Z0-9_]+$/, '用户名只能包含字母、数字和下划线'),
-  password: z.string().min(6, '密码至少6个字符').max(50, '密码最多50个字符'),
+  password: newPasswordSchema,
   invite_code: z.string().min(1, '邀请码不能为空'),
   nickname: z.string().max(20).optional(),
 })
@@ -99,7 +100,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   // 若不换发则当前设备会被立即踢下线（且用户刚看到“成功”提示）。
   const changePasswordSchema = z.object({
     old_password: z.string().min(1, '请输入当前密码'),
-    new_password: z.string().min(6, '新密码至少6个字符').max(50),
+    new_password: newPasswordSchema,
   })
 
   app.put(

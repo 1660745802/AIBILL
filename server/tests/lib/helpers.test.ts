@@ -1,7 +1,8 @@
 /**
  * 公共 lib 单元测试：日期区间 + 预算进度
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { PLACEHOLDER_JWT_SECRETS } from '../../src/config.js'
 import { monthRange, prevMonthRange, toDateStr, dateOffset, today, beijingNow, monthOffset, monthOffsetFrom, addDaysTo } from '../../src/lib/date.js'
 import { budgetProgress, budgetStatus, spentPercent, WARN_PERCENT, OVER_PERCENT } from '../../src/lib/budget.js'
 
@@ -103,5 +104,106 @@ describe('lib/budget', () => {
     expect(budgetProgress(8000, 10000)).toEqual({ percent: 80, status: 'warning', remaining: 2000 })
     expect(budgetProgress(12000, 10000)).toEqual({ percent: 120, status: 'exceeded', remaining: 0 })
     expect(budgetProgress(0, 10000)).toEqual({ percent: 0, status: 'normal', remaining: 10000 })
+  })
+})
+
+describe('启动配置：生产 JWT fail-fast', () => {
+  const initDb = vi.fn()
+  const closeDb = vi.fn()
+  const mkdirSync = vi.fn()
+  const ensureAdminUser = vi.fn()
+  const seedRules = vi.fn()
+  const startScheduler = vi.fn()
+  const registerRoutes = vi.fn()
+  const app = {
+    register: vi.fn(), addHook: vi.fn(), setErrorHandler: vi.fn(), get: vi.fn(),
+    setNotFoundHandler: vi.fn(), listen: vi.fn(), log: { error: vi.fn() },
+  }
+  const mockedModules = [
+    'fastify', 'node:fs', '@fastify/cors', '@fastify/multipart', '@fastify/rate-limit', '@fastify/static',
+    '../../src/db/index.js', '../../src/routes/index.js', '../../src/services/auth.service.js',
+    '../../src/services/scheduler.js', '../../src/services/logger.js', '../../src/db/seed-notification-rules.js',
+  ]
+  let listeners: Map<'SIGINT' | 'SIGTERM', Set<(...args: any[]) => void>>
+
+  beforeEach(() => {
+    vi.resetModules()
+    vi.clearAllMocks()
+    vi.stubEnv('NODE_ENV', 'production')
+    // dotenv 已在 setup mock；所有副作用也 mock，不读 .env、不打开 DB、不建目录或监听端口。
+    vi.doMock('fastify', () => ({ default: () => app }))
+    vi.doMock('node:fs', () => ({ default: { existsSync: vi.fn(() => false), mkdirSync } }))
+    for (const plugin of ['@fastify/cors', '@fastify/multipart', '@fastify/rate-limit', '@fastify/static']) {
+      vi.doMock(plugin, () => ({ default: vi.fn() }))
+    }
+    vi.doMock('../../src/db/index.js', () => ({ initDb, closeDb }))
+    vi.doMock('../../src/routes/index.js', () => ({ registerRoutes }))
+    vi.doMock('../../src/services/auth.service.js', () => ({ ensureAdminUser }))
+    vi.doMock('../../src/services/scheduler.js', () => ({ startScheduler, stopScheduler: vi.fn() }))
+    vi.doMock('../../src/services/logger.js', () => ({ appLog: vi.fn() }))
+    vi.doMock('../../src/db/seed-notification-rules.js', () => ({ ensureDefaultNotificationRules: seedRules }))
+    vi.spyOn(process, 'exit').mockImplementation(() => undefined as never)
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    listeners = new Map(['SIGINT', 'SIGTERM'].map((signal) => [
+      signal as 'SIGINT' | 'SIGTERM', new Set(process.listeners(signal)),
+    ]))
+  })
+
+  afterEach(() => {
+    for (const [signal, original] of listeners) {
+      for (const listener of process.listeners(signal)) {
+        if (!original.has(listener)) process.removeListener(signal, listener)
+      }
+    }
+    for (const module of mockedModules) vi.doUnmock(module)
+    vi.restoreAllMocks()
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
+
+  it.each([
+    ['缺失', undefined], ['空值', ''], ['空白', ' '.repeat(40)], ['31字符', 'x'.repeat(31)],
+    ...PLACEHOLDER_JWT_SECRETS.map((secret, i) => [`公开占位${i}`, secret]),
+    ['带空白占位', ` ${PLACEHOLDER_JWT_SECRETS[0]} `],
+  ])('生产拒绝%s，先于 DB / 目录 / seed / 路由 / listen', async (_label, secret) => {
+    vi.stubEnv('JWT_SECRET', secret)
+    await import('../../src/app.js')
+    await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1))
+    expect(console.error).toHaveBeenCalledWith('[App] 启动失败', expect.objectContaining({ message: expect.stringMatching(/JWT_SECRET.*32/) }))
+    for (const sideEffect of [initDb, mkdirSync, ensureAdminUser, seedRules, registerRoutes, app.listen, startScheduler]) {
+      expect(sideEffect).not.toHaveBeenCalled()
+    }
+    // 错误不得带出传入的密钥值。
+    if (secret?.trim()) expect(String(vi.mocked(console.error).mock.calls[0][1])).not.toContain(secret)
+  })
+
+  it.each([32, 64])('生产显式合法%d字符密钥正常启动', async (length) => {
+    vi.stubEnv('JWT_SECRET', 'test-fixture-'.padEnd(length, 'x'))
+    await import('../../src/app.js')
+    await vi.waitFor(() => expect(startScheduler).toHaveBeenCalledTimes(1))
+    for (const sideEffect of [initDb, mkdirSync, ensureAdminUser, seedRules, registerRoutes, app.listen]) {
+      expect(sideEffect).toHaveBeenCalledTimes(1)
+    }
+    expect(process.exit).not.toHaveBeenCalled()
+    expect(console.warn).not.toHaveBeenCalledWith(expect.stringContaining('JWT_SECRET'))
+  })
+
+  it.each(['development', 'test'])('%s 保留默认占位告警且允许启动', async (nodeEnv) => {
+    vi.stubEnv('NODE_ENV', nodeEnv)
+    for (const secret of [undefined, ...PLACEHOLDER_JWT_SECRETS]) {
+      vi.stubEnv('JWT_SECRET', secret)
+      const { validateStartupConfig } = await import('../../src/config.js')
+      // 使用实际配置装载（含缺失时的默认值），不是伪造配置通过断言。
+      expect(() => validateStartupConfig()).not.toThrow()
+      expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/JWT_SECRET.*默认\/占位/))
+      vi.resetModules()
+      vi.mocked(console.warn).mockClear()
+    }
+    await import('../../src/app.js')
+    await vi.waitFor(() => expect(startScheduler).toHaveBeenCalledTimes(1))
+    expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/JWT_SECRET.*默认\/占位/))
+    expect(process.exit).not.toHaveBeenCalled()
   })
 })

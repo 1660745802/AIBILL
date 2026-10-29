@@ -24,7 +24,7 @@ const holding = (o: Partial<Holding> & { id: number; code: string }): Holding =>
 })
 
 const quote = (code: string, price: number): QuoteLite => ({
-  code, price, quoteDate: '2026-10-09', quotedAt: '20261009161456', changeRate: 1.69,
+  code, name: null, price, quoteDate: '2026-10-09', quotedAt: '20261009161456', changeRate: 1.69,
 })
 
 describe('valueHolding', () => {
@@ -33,6 +33,55 @@ describe('valueHolding', () => {
     expect(v.marketValue).toBe(8617000)   // 10,000 × 8.617 元 = ¥86,170
     expect(v.valued).toBe(true)
     expect(v.quote?.price).toBe(8.617)
+  })
+
+  it.each(['hf_XAU', 'hf_xau'])('克数持仓 %s 按金衡盎司报价换算', (code) => {
+    const v = valueHolding(
+      holding({ id: 1, code, kind: 'gold_gram', quantity: 31.1034768 }),
+      new Map([[code, quote(code, 4000)]]), new Map([['USD', 7]]),
+    )
+    expect(v.marketValueNative).toBe(400000)
+    expect(v.marketValue).toBe(2800000)
+    expect(v.valued).toBe(true)
+    expect(v.quote?.price).toBe(4000)
+  })
+
+  it.each(['etf', 'stock'])('%s 仍按份额/股数估值，不按黄金克数换算', (kind) => {
+    const v = valueHolding(
+      holding({ id: 1, code: 'hf_XAU', kind, quantity: 2 }),
+      new Map([['hf_XAU', quote('hf_XAU', 4000)]]), new Map([['USD', 7]]),
+    )
+    expect(v.marketValueNative).toBe(800000)
+    expect(v.marketValue).toBe(5600000)
+  })
+
+  it('人民币每克报价不作盎司换算', () => {
+    const v = valueHolding(
+      holding({ id: 1, code: 'gold_cny', kind: 'gold_gram', quantity: 10 }),
+      new Map([['gold_cny', quote('gold_cny', 900)]]),
+    )
+    expect(v.marketValue).toBe(900000)
+  })
+
+  it.each([
+    ['sh518880', false], ['usAAPL', false], ['usAAPL', true], ['hf_XAU', false],
+  ] as const)('零数量 %s（有行情=%s）即使无汇率也确定为零', (code, withQuote) => {
+    const v = valueHolding(
+      holding({ id: 1, code, quantity: 0 }),
+      withQuote ? new Map([[code, quote(code, 200)]]) : new Map(),
+    )
+    expect(v.marketValueNative).toBe(0)
+    expect(v.marketValue).toBe(0)
+    expect(v.valued).toBe(false)
+  })
+
+  it('非零外币持仓缺汇率仍不可估值', () => {
+    const v = valueHolding(
+      holding({ id: 1, code: 'usAAPL', quantity: 1 }),
+      new Map([['usAAPL', quote('usAAPL', 200)]]),
+    )
+    expect(v.marketValueNative).toBe(20000)
+    expect(v.marketValue).toBeNull()
   })
 
   it('不再有成本价 / 单只浮盈（这是本轮的删除项）', () => {
@@ -82,6 +131,17 @@ describe('groupByAccount', () => {
     ], quotes)
     expect(m.get(2)!.marketValue).toBeNull()
     expect(m.get(2)!.unpricedCount).toBe(1)
+  })
+
+  it('零数量缺价/缺汇率不抹去同账户其它持仓市值', () => {
+    const m = groupByAccount([
+      holding({ id: 1, accountId: 2, code: 'sh518880', quantity: 10000 }),
+      holding({ id: 2, accountId: 2, code: 'sh999999', quantity: 0 }),
+      holding({ id: 3, accountId: 2, code: 'usAAPL', quantity: 0 }),
+      holding({ id: 4, accountId: 9, code: 'hf_XAU', quantity: 0 }),
+    ], quotes)
+    expect(m.get(2)).toEqual({ marketValue: 8617000, unpricedCount: 0 })
+    expect(m.get(9)).toEqual({ marketValue: 0, unpricedCount: 0 })
   })
 
   it('只包含确实有持仓的账户（调用方据此判断"挂了持仓"）', () => {

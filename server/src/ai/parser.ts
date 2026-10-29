@@ -2,6 +2,7 @@
  * AI 响应解析器
  * 从 LLM 返回文本中提取 JSON 并校验格式
  */
+import { z } from 'zod'
 
 export interface ParsedTransaction {
   type: 'expense' | 'income' | 'transfer'
@@ -79,27 +80,28 @@ export function extractJsonArray(text: string): ParsedTransaction[] {
 /**
  * 校验并规范化解析结果
  */
-export function validateParsedItems(items: ParsedTransaction[], today: string): ParsedTransaction[] {
+const rawItemSchema = z.object({
+  type: z.enum(['expense', 'income', 'transfer']),
+  amount: z.union([z.number().finite(), z.string()]),
+  category: z.string().nullish(),
+  description: z.string().nullish(),
+  date: z.string().nullish(),
+  account: z.string().nullish(),
+  target_account: z.string().nullish(),
+})
+
+export function validateParsedItems(items: unknown[], today: string): ParsedTransaction[] {
   const validated: ParsedTransaction[] = []
 
-  for (const item of items) {
-    // type 必须合法
-    if (!['expense', 'income', 'transfer'].includes(item.type)) {
-      continue
-    }
-
-    // amount 必须有且大于 0
-    let amount = Number(item.amount)
-    if (!amount || isNaN(amount)) {
-      // 尝试从字符串中提取数字（如 "¥32.00" 或 "32元"）
-      if (typeof item.amount === 'string') {
-        const numMatch = (item.amount as string).match(/[\d.]+/)
-        amount = numMatch ? Number(numMatch[0]) : 0
-      }
-    }
-    if (!amount || amount <= 0) {
-      continue
-    }
+  for (const raw of items) {
+    const parsed = rawItemSchema.safeParse(raw)
+    if (!parsed.success) continue
+    const item = parsed.data
+    const match = typeof item.amount === 'string'
+      ? item.amount.trim().match(/^(?:[¥￥]\s*)?((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)(?:\s*(?:元|圆|块钱|块|人民币|RMB|CNY))?$/i)
+      : null
+    const amount = typeof item.amount === 'number' ? item.amount : Number(match?.[1].replace(/,/g, ''))
+    if (!Number.isFinite(amount) || amount <= 0) continue
 
     /* 上限只用来挡**不可表示**的值，不再是一道「金额太大就不信」的静默闸门。
 
@@ -153,8 +155,8 @@ function isNoiseDescription(desc: string): boolean {
 /**
  * 简单日期格式校验
  */
-function isValidDate(date: string): boolean {
-  if (!date) return false
+function isValidDate(date: unknown): date is string {
+  if (typeof date !== 'string' || !date) return false
   return /^\d{4}-\d{2}-\d{2}$/.test(date) && !isNaN(Date.parse(date))
 }
 

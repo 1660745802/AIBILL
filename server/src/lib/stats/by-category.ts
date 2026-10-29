@@ -34,11 +34,13 @@ export function buildByCategory(
 
   const { start: startDate, end: endDate } = monthRange(year, month)
 
+  // id=0 仅标识虚拟未分类，维持客户端非空 DTO；不创建真实分类。
   const rows = db
     .prepare(
-      `SELECT c.id, c.name, c.icon, SUM(t.amount) as total, COUNT(*) as count
+      `SELECT COALESCE(c.id, 0) AS id, COALESCE(c.name, '未分类') AS name,
+              COALESCE(c.icon, '') AS icon, SUM(t.amount) as total, COUNT(*) as count
          FROM transactions t
-         JOIN categories c ON t.category_id = c.id
+         LEFT JOIN categories c ON t.category_id = c.id
         WHERE t.user_id = ? AND t.status = 'confirmed' AND t.deleted_at IS NULL
           AND t.type = ?
           AND t.date BETWEEN ? AND ?

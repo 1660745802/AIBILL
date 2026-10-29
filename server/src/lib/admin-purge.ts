@@ -2,7 +2,7 @@
  * 删除用户时的数据清除（C1 拆出的 module）
  *
  * 三件事被收进**同一个 module 的性质**（而不是散在 `routes/admin.ts` 的 handler 里）：
- *   ① **要清哪些表**：15 张 user 维度表的清单；
+ *   ① **要清哪些表**：17 张 user 维度表的清单；
  *   ② **以什么顺序清**：`admin_unparsed_triage` 先于 `ai_parse_logs` / `users`，且父表
  *      `categories` / `accounts` **最后**；
  *   ③ **哪些只置空不删**：`invite_codes` / `notification_rules` 是全局资源，
@@ -36,6 +36,8 @@ export const USER_SCOPED_TABLES: string[] = [
   'investments',          // → accounts（漏了会 DELETE accounts 抛外键约束 → 有持仓的用户删不掉）
   'transactions',         // → categories / accounts
   'client_capture_samples', // → users（ON DELETE CASCADE）；漏了会因外键删不掉用户
+  'client_filter_stats',  // → users（无级联删除）
+  'client_filter_totals', // → users（无级联删除）
   'ai_conversations',
   'ai_parse_logs',
   'ai_parse_filters',     // 无外键，但同样是 user 维度数据（漏了会留下永久孤儿行）

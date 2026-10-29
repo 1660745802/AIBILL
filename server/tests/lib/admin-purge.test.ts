@@ -2,11 +2,11 @@
  * `lib/admin-purge.ts` —— 删除用户时的数据清除（C1 从 `routes/admin.ts` 深化出的 module）
  *
  * 直接测 module 本身（不走 HTTP），锁三件事，都是「不写在一处就会悄悄错」的：
- *   ① 15 张 user 维度表的行全清（漏一张就是**永久孤儿行**：`ai_parse_filters` 无外键，
+ *   ① 17 张 user 维度表的行全清（漏一张就是**永久孤儿行**：`ai_parse_filters` 无外键，
  *      删完用户后没人再读它）；
  *   ② **删除顺序是 module 自己的性质**：`PRAGMA foreign_keys = ON` 下先删父表
  *      （`categories`/`accounts`）会抛 `SQLITE_CONSTRAINT_FOREIGNKEY` —— 所以本用例
- *      造满 15 张表的数据后直接调 `purgeUserData`，顺序错就会红；
+ *      造满 17 张表的数据后直接调 `purgeUserData`，顺序错就会红；
  *   ③ 只置空不删：`invite_codes` / `notification_rules` 是全局资源，`created_by`
  *      置 NULL；**他人的行一根不动**。
  *
@@ -42,7 +42,7 @@ beforeAll(() => {
     "INSERT INTO transactions (user_id, type, amount, date, description) VALUES (?, 'expense', 1000, '2026-07-02', '别人的')",
   ).run(other)
 
-  // ── 把 15 张表都填上（顺序错 → 外键会当场抛）──
+  // ── 把 17 张表都填上（顺序错 → 外键会当场抛）──
   const acct = Number(
     db.prepare("INSERT INTO accounts (user_id, name) VALUES (?, '微信')").run(target).lastInsertRowid,
   )
@@ -80,6 +80,16 @@ beforeAll(() => {
   db.prepare(
     "INSERT INTO client_capture_samples (user_id, channel, package, kind, stage, blocked_by, content_hash) VALUES (?, 'nls', 'com.x', 'notification', 'capture', 'b', 'h')",
   ).run(target)
+  for (const userId of [target, other]) {
+    db.prepare(
+      `INSERT INTO client_filter_stats (user_id, client_version, channel, window_start, window_end, rule_id, hits)
+       VALUES (?, '1.4.0', 'nls', '2026-10-12 00:00:00', '2026-10-12 23:59:59', 'precheck.no_signal', 3)`,
+    ).run(userId)
+    db.prepare(
+      `INSERT INTO client_filter_totals (user_id, client_version, channel, window_start, window_end, notifications, blocked)
+       VALUES (?, '1.4.0', 'nls', '2026-10-12 00:00:00', '2026-10-12 23:59:59', 100, 3)`,
+    ).run(userId)
+  }
 
   // ── 人工裁决：一条挂在 target 的解析行上、一条是 target 作为 admin 写的（都必须清）──
   const logId = (db.prepare('SELECT id FROM ai_parse_logs WHERE user_id = ?').get(target) as { id: number }).id
@@ -108,19 +118,22 @@ beforeAll(() => {
 afterAll(() => closeDb())
 
 describe('lib/admin-purge · purgeUserData', () => {
-  it('清单形状：15 张表、父表最后、裁决表不在清单内（它有自己的前置清法）', () => {
-    expect(USER_SCOPED_TABLES.length).toBe(15)
+  it('清单形状：17 张表、父表最后、裁决表不在清单内（它有自己的前置清法）', () => {
+    expect(USER_SCOPED_TABLES.length).toBe(17)
     expect(USER_SCOPED_TABLES.slice(-2)).toEqual(['categories', 'accounts'])
     expect(USER_SCOPED_TABLES).toContain('client_capture_samples')
+    expect(USER_SCOPED_TABLES).toContain('client_filter_stats')
+    expect(USER_SCOPED_TABLES).toContain('client_filter_totals')
     expect(USER_SCOPED_TABLES).not.toContain('admin_unparsed_triage')
   })
 
-  it('15 张表的行全清；users 行本身保留；不因外键抛错（顺序即约束）', () => {
+  it('17 张表的行全清；users 行本身保留；不因外键抛错（顺序即约束）', () => {
     expect(() => purgeUserData(db, target)).not.toThrow()
 
     const TABLES = [
       'asset_snapshots', 'recurring_patterns', 'subscriptions', 'financial_goals', 'investments',
-      'transactions', 'client_capture_samples', 'ai_conversations', 'ai_parse_logs', 'ai_parse_filters',
+      'transactions', 'client_capture_samples', 'client_filter_stats', 'client_filter_totals',
+      'ai_conversations', 'ai_parse_logs', 'ai_parse_filters',
       'ai_memories', 'budgets', 'user_settings', 'categories', 'accounts',
     ]
     for (const t of TABLES) {
@@ -162,6 +175,9 @@ describe('lib/admin-purge · purgeUserData', () => {
     expect(count('SELECT COUNT(*) AS c FROM transactions WHERE user_id = ?', other)).toBe(1)
     expect(count('SELECT COUNT(*) AS c FROM ai_parse_logs WHERE user_id = ?', other)).toBe(1)
     expect(count('SELECT COUNT(*) AS c FROM ai_parse_filters WHERE user_id = ?', other)).toBe(0)
+    expect(db.prepare('SELECT hits FROM client_filter_stats WHERE user_id = ?').all(other)).toEqual([{ hits: 3 }])
+    expect(db.prepare('SELECT notifications, blocked FROM client_filter_totals WHERE user_id = ?').all(other))
+      .toEqual([{ notifications: 100, blocked: 3 }])
   })
 
   it('幂等：对同一用户再跑一次不抛错、不改变结果', () => {
