@@ -60,13 +60,20 @@ function parseRoutesFromFile(filePath: string): Route[] {
   return routes
 }
 
+function collectRouteFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) return collectRouteFiles(full)
+    return entry.isFile() && entry.name.endsWith('.ts') && entry.name !== 'index.ts' ? [full] : []
+  })
+}
+
 function main() {
-  const files = readdirSync(ROUTES_DIR).filter((f) => f.endsWith('.ts') && f !== 'index.ts')
+  const files = collectRouteFiles(ROUTES_DIR).sort()
 
   const allRoutes: Route[] = []
   for (const file of files) {
-    const routes = parseRoutesFromFile(join(ROUTES_DIR, file))
-    allRoutes.push(...routes)
+    allRoutes.push(...parseRoutesFromFile(file))
   }
 
   // 按路径前缀分组

@@ -3,11 +3,11 @@
 > **Base URL**: `http(s)://<host>:3000/api`
 > **认证**: 除 `/health`、`/api/auth/*`、`/api/config/notification-rules`、`/api/app/update` 外均需 `Authorization: Bearer <jwt>`
 > **响应格式**: 统一 `{ code: 0, data: <T>, message: "" }`
-> **路由**: 见 `server/src/routes/*.ts`。本文档逐条枚举全部 94 个端点；
-> 若与 `scripts/gen-api-docs.ts` 输出不一致，**以脚本为准**（它直接读 `routes/*.ts`）。
+> **路由**: 见 `server/src/routes/*.ts`。本文档逐条枚举全部 95 个端点；
+> 若与 `scripts/gen-api-docs.ts` 输出不一致，**以脚本为准**（它递归读取 `routes/`）。
 
 > ⚠️ **已废弃接口（deprecated，2026-10）**：`/api/budgets/*`、`/api/goals/*`、
-> `/api/subscriptions/*`、`/api/memories/*`（`/api/assets/snapshot`、`/api/assets/trend` 路由已删）。
+> `/api/subscriptions/*`、`/api/memories/*`。
 > **权威说明、判定依据与「表可否删」见 README.md「功能现状」**（唯一真源，此处不再重复）。
 > 注意：`ai_memories` / `asset_snapshots` **两张表不可删**（被主流程活跃读写，删了是故障）；
 > `GET /api/stats/dashboard` 响应结构保持不变（`budget_progress` / `goals_top` /
@@ -94,7 +94,7 @@
 ## 1. 认证 `/api/auth/*` & `/api/settings`
 
 ### POST `/api/auth/register`
-无需认证。**限流：5/分钟**。
+无需认证。**限流：5/分钟**。密码为 6–50 个字符，且 UTF-8 编码不超过 72 字节。
 ```json
 // Request
 { "username": "zhangsan", "password": "12345678", "invite_code": "ABC12345", "nickname": "张三" }
@@ -118,7 +118,7 @@
 // Response
 { "code": 0, "data": { "token": "<新 token>" }, "message": "密码修改成功" }
 ```
-改密成功后**自动撤销该用户所有现存 token**（`users.token_version` 自增），并**为当前设备换发新 token**（客户端应立即写入 localStorage）；其他设备需重新登录。
+新密码为 6–50 个字符，且 UTF-8 编码不超过 72 字节。改密成功后**自动撤销该用户所有现存 token**（`users.token_version` 自增），并**为当前设备换发新 token**（客户端应立即写入 localStorage）；其他设备需重新登录。
 
 ### GET `/api/settings`
 返回合并后的设置（用户覆盖 > 全局）。普通用户**看不到 AI Key**。
@@ -146,6 +146,7 @@
 
 ### GET `/api/transactions`
 支持 `page` / `page_size` / `start_date` / `end_date` / `type` / `category_id` / `account_id` / `keyword` / `tag`。
+`category_id=0` 表示筛选未分类交易（`category_id IS NULL`）。
 
 ### GET `/api/transactions/:id`
 单条详情。
@@ -245,7 +246,7 @@
 | PUT | `/api/memories/:id` | 更新内容/启用状态 |
 | DELETE | `/api/memories/:id` | 删除 |
 
-**注入约束**：LLM prompt 只取 `source='manual'`，排除 `ai_suggested`（历史行）。⚠️ `ai_suggested` 的**写入**已随 `POST /api/ai/parse-feedback` 下线移除——现在没有任何写入方。
+**注入约束**：LLM prompt 只取 `source='manual'`，排除 `ai_suggested`；后者没有任何写入方。
 
 ---
 
@@ -256,15 +257,15 @@
 |--------|------|
 | GET | 列出当前用户分类，可 `?type=expense&include_inactive=1` |
 | POST | 创建 `{ name, type, icon, sort_order }` |
-| PUT | 更新（部分字段） |
+| PUT | 更新（部分字段；改 `parent_id` 返回 400 `2003`，原值回传则忽略） |
 | DELETE | 停用（`is_active=0`，不真删） |
 
 ### `/api/accounts`
 | Method | 说明 |
 |--------|------|
-| GET | 列出账户，含 `current_balance`（= `accounts.balance`，017 起的权威余额）。`?include_inactive=1` 连已删除的一起返回 |
+| GET | 列出账户，含 `current_balance`（= `accounts.balance`，权威余额）。`?include_inactive=1` 连已删除的一起返回 |
 | POST | 创建账户。支持 `asset_type`（**直接建对类型**，不必建完再去资产页改一次）；`initial_balance` 可负 |
-| PUT | 更新；**支持 `current_balance`**（推荐）—— 017 起为**覆盖**余额并刷新基准线 |
+| PUT | 更新；**支持 `current_balance`**（推荐）—— 语义为**覆盖**余额并刷新基准线 |
 | DELETE | **删除账户**（软删，可还原）。连带清掉该账户的余额快照与持仓 |
 | POST `/api/accounts/:id/restore` | 还原误删的账户 |
 
@@ -281,15 +282,14 @@
 | 没有任何可更新字段 | 400 | 2000 | `没有需要更新的字段` |
 | `name` 与该用户已有账户重名 | 400 | 3001 | `账户名称已存在` |
 
-> **停用账户不可写余额（D3）**：`current_balance` / `initial_balance` 会被拒，
+> **停用账户不可写余额**：`current_balance` / `initial_balance` 会被拒，
 > 但**仍可改它的其它字段**（改名、排序等）。停用账户要写余额，须先
 > `POST /api/accounts/:id/restore` 还原；也允许在**同一个请求**里
 > `{ is_active: 1, current_balance: X }` 一次完成（判据是「请求结束后是否活跃」，
 > 而不是库里旧值）。理由：停用账户不在任何读模型里（`is_active=1` 才进），
 > 写余额等于写进一个不被读的地方。
 
-> 曾经重名会抛成 `SQLITE_CONSTRAINT_UNIQUE` → **HTTP 500 且把 SQLite 原文透给客户端**，
-> 而余额已经被覆盖、快照行也已经写进去了。两处都已修。
+> 账户重名返回 `400 / code 3001`，不会发生半写。
 
 `account.type`（付款渠道，历史字段）：`cash | wechat | alipay | bank | credit | other`
 `account.asset_type`（**账户种类**，UI 按它分组、决定要不要出现「投资」页）：
@@ -312,6 +312,8 @@
 ### GET `/api/stats/by-category?year=2026&month=7&type=expense`
 `{ items: [{ id, name, icon, total, count, percent }], total, year, month, type }`
 
+未分类交易归入虚拟分类 `{ id: 0, name: "未分类" }`，`percent` 分母是该月该类型的全部交易。
+
 ### GET `/api/stats/trend?year=2026&month=7&period=daily&type=expense`
 - `period=daily`：补全当月所有日期（无数据 total=0）
 - `period=monthly`：最近 12 个月
@@ -327,10 +329,8 @@
   - `cash` = 现金；`value` = 总价值（现金 + 持仓市值），行情缺失为 `null`
   - **净资产用的是 `value`，不是 `cash`**——挂了持仓的账户两者差一整块持仓市值
 
-> ✅ **已删除 `total_assets` / `total_liabilities` / `asset_breakdown`**（D1）。
-> 它们是 `Σ accounts.balance` 的**现金口径**第二套算法，Web / Android 均零消费者
-> （Android 根本不调本接口）。要资产/负债拆分与构成，请用
-> `GET /api/assets/portfolio` 的 `liability` / `assetComposition`。
+> 本响应不含 `total_assets` / `total_liabilities` / `asset_breakdown`。
+> 资产/负债拆分与构成请用 `GET /api/assets/portfolio` 的 `liability` / `assetComposition`。
 
 ### POST `/api/stats/analysis`
 ```json
@@ -353,9 +353,7 @@
 服务端**单条 `GROUP BY substr(date,1,7)`** 取多个月数据。
 
 **`net_worth` 是总价值**（现金 + 持仓市值），与 `GET /api/assets/portfolio`
-逐分相同。曾经这里是裸的 `SUM(accounts.balance)`，是同一个数字在服务端的
-**第三套**算法 —— 差着一整块持仓市值，而这个数被**写进 AI 提示词**，
-于是 AI 会把漏算的净资产当成事实写进分析报告。
+逐分相同，并作为事实写入 AI 分析提示词。
 
 行情缺失的账户只计入现金 → `net_worth` 可能是**下界**，必须配
 `net_worth_complete` / `unpriced_accounts` 读。提示词里也带这个约束：
@@ -393,6 +391,7 @@
 ```
 **只解析不直接入库**，前端预览确认后组装 items 调 `POST /api/transactions`（建议 100 条/批）。
 - 分类按商户关键词预填（如「美团→餐饮」「滴滴→交通」），命中不了则归入「其他」；用户删除对应分类时自动回退到「其他」。
+- 支付宝 CSV 的未付款、等待付款、交易关闭、交易取消、支付失败等状态不计入预览；无状态列的旧格式照常解析。
 - 重复检测同时对比**已有记录**与**同一批次内部**；回收站（已软删除）中的记录不计入重复。
 
 ### GET `/api/export/json`
@@ -411,9 +410,8 @@
 **只提供账户元数据 + 每账户现金余额**（`balance` = `accounts.balance`），
 不含任何净资产口径的字段。
 
-> ✅ **已删除 `total_assets` / `total_liabilities` / `net_worth` / `by_type`**（D1）。
-> 它们是 `Σ accounts.balance` 的现金口径第二套算法，Web 对它们零使用
-> （`Assets.vue` 只取 `accounts[]` 的 id/name/asset_type/icon），Android 不调本接口。
+> 本响应不含 `total_assets` / `total_liabilities` / `net_worth` / `by_type`。
+> 净资产、负债与构成以 `GET /api/assets/portfolio` 为准。
 >
 > **净资产 / 负债 / 构成只有一个真源：`GET /api/assets/portfolio`。**
 > 前端仪表读数一律以 `/api/assets/portfolio` 为准。
@@ -437,7 +435,7 @@ liability, investment, curve, accounts, empty, lastUpdated, change, previousNetW
 余额与快照凭证由同一个事务写入；整个请求也包在事务里，
 所以“改余额的同时改其它字段而后者失败”时不会留下半改的数据。
 
-停用账户（`is_active=0`）同样被拒（D3，与 `PUT /api/accounts/:id` 口径一致）：
+停用账户（`is_active=0`）同样被拒（与 `PUT /api/accounts/:id` 口径一致）：
 400 / `code 2001` / `账户 N 已停用，不能修改余额`。
 
 ### PUT `/api/assets/accounts/:id`
@@ -615,7 +613,7 @@ If-None-Match: "ab12…"
 
 ## 附录 A：模块-端点索引
 
-与 `scripts/gen-api-docs.ts` 的输出**逐条对齐**（17 个模块 / 94 个端点）。
+与 `scripts/gen-api-docs.ts` 的输出**逐条对齐**（17 个模块 / 95 个端点）。
 
 | 模块 | 端点数 | 关键端点 |
 |------|--------|---------|
@@ -623,7 +621,7 @@ If-None-Match: "ab12…"
 | transaction | 9 | CRUD + trash + tags + permanent |
 | account | 5 | CRUD + restore |
 | category | 4 | CRUD |
-| assets | 4 | overview, **portfolio**, snapshots, accounts（trend / snapshot 已删） |
+| assets | 4 | overview, **portfolio**, snapshots, accounts |
 | investments | 5 | 持仓 CRUD + quotes/refresh |
 | stats | 5 | summary, by-category, trend, dashboard, analysis |
 | ai | 6 | parse, chat, sessions, **filter-report**, **capture-report** |
@@ -633,11 +631,11 @@ If-None-Match: "ab12…"
 | subscription | 6 | CRUD + cancel, renew |
 | import | 1 | CSV 预览 |
 | export | 2 | JSON, CSV |
-| admin | 21 | invites / users / settings / ai-stats / logs / **filter-stats** / **unparsed** / **unparsed-triage** / **capture-samples** / **filter-samples** |
+| admin | 23 | invites / users / settings / ai-stats / logs / **filter-stats** / **unparsed** / **unparsed-triage** / **capture-samples** / **filter-samples** |
 | app-update | 3 | update, updates |
 | notification-rules | 4 | config + admin |
 
-> `/health` 直接注册在 `routes/index.ts`（不在某个路由模块文件里），故不计入上表的 94 个端点。
+> `/health` 直接注册在 `routes/index.ts`，不在 95 个端点内。
 > 上表若与 `gen-api-docs.ts` 输出不一致，**以脚本为准**（它直接读 `routes/*.ts`）。
 
 ## 附录 B：自动生成脚本
@@ -698,7 +696,7 @@ If-None-Match: "ab12…"
 | `precheck.verb_only` | 3 | 只有交易动词 |
 | `precheck.no_signal` | 4 | 无任何信号 → 不调模型（兜底，排最后） |
 - **已实现**（本地）：payload = `precheck{schema:1, derived_from, channel_agnostic:**false**, signals{money{pattern,flags},verb{pattern,flags},bare_amount{pattern,flags,**channels:["manual"]**},bare_amount_max_len:30}, rules[15 条], should_call_ai:"tier in (1,2,3)", corroboration_required:"tier in (2,3)"}`；`schema` 不认识 → 整体忽略并降级用本地词表。**`rule_id = 'precheck.' + 服务端 reason`（逐字拼接，`+` 也不改名）**→ ⑤ 对账是机械前缀剥离，不是映射表。
-- **拦不拦怎么判（客户端勿猜）**：按 `rules[]` **顺序取第一条命中**，只看它的 `tier`：`tier ∈ {1,2,3}` = 放行去调模型（即 `should_call_ai`），`tier ∈ {0,4}` = 拦。⚠️ **没有 `tier:null` 的条目**（早期草案里的 `precheck.payment_verb` 已删除）；`type:'predicate'` 用 `expr` 引用 `signals`，`type:'fallback'` 是兜底（排最后）。`pattern` 是**不含分隔符的正则源码**，必须与同条 `flags` 一起编译（仅允许 `g`/`i`/`m`；**`money` 是 `gi`**——丢了会让 `rmb 100` 两端不一致）。
+- **拦不拦怎么判（客户端勿猜）**：按 `rules[]` **顺序取第一条命中**，只看它的 `tier`：`tier ∈ {1,2,3}` = 放行去调模型（即 `should_call_ai`），`tier ∈ {0,4}` = 拦。**没有 `tier:null` 的条目**；`type:'predicate'` 用 `expr` 引用 `signals`，`type:'fallback'` 是兜底（排最后）。`pattern` 是**不含分隔符的正则源码**，必须与同条 `flags` 一起编译（仅允许 `g`/`i`/`m`；**`money` 是 `gi`**——丢了会让 `rmb 100` 两端不一致）。
 - ⚠️ **`channel_agnostic` 已从 `true` 翻成 `false`（2026-10-16）**：`bare_amount` 这条信号带入口约束 —— `signals.bare_amount.channels = ["manual"]`。事故依据：它 104 条线上记录里 89 条通知侧全是噪声（群编号 `209[嗨]` / 手机号 / `预计12:33` 的时间 / `90%的用户`），15 条真账全是手打短句（`工资50`/`午饭22`/`饭卡充值500`）。
   - **客户端必须做的事**：读到 `channel_agnostic === false` 时，逐条看 `signals.*.channels`，求值某条 `predicate` 规则前先确认当前 `channel` 在该信号的 `channels` 内，不在就当这条信号为 **false** 继续往下走（不是直接 tier 0 —— 还要看后面有没有别的信号命中）。
   - **不读这个字段的老客户端行为不变**（忽略未知字段、继续在通知侧用 bare_amount 放行）——那是**安全方向**（多调模型，不会误杀）。所以该字段可以随服务端先发、客户端后跟。
@@ -709,13 +707,12 @@ If-None-Match: "ab12…"
   ⚠️ **不做「逐条丢弃」**：半链混合会制造更坏的结果——正向规则被丢掉、`no_signal` 兜底幸存时，真交易会被判成噪声（**误杀**）；而降级放行最多多调一次模型。
   ⚠️ 漂移期间客户端的 `precheck.*` 计数**不可比**（那时它根本不跑 precheck）——排障时先对 `content_hash`，再看 `client_only.precheck_unknown_expr`。
 
-<details><summary>待实现 / 待决策（两侧对齐用，勿当成已生效契约）</summary>
+<details><summary>跨端实现现状（勿当成已生效契约）</summary>
 
-- **`hints`：只有服务端已实现**——收+校验+落 `ai_parse_logs.hints`+机械算 `hints_conflict` 并在成功响应返回；**客户端未实现**（DTO 无该字段）→ 客户端落地前别依赖，落地后删本条。
+- **`hints`：仅服务端实现**——收+校验+落 `ai_parse_logs.hints`+机械算 `hints_conflict` 并在成功响应返回；客户端 DTO 无该字段。
 - **客户端未消费**：`data.source`（`quick`/`ai`/`prefilter`/`postfilter`）与失败形态的 `fallback` 字段 Android DTO 未声明 → 目前分支只能按 `code` + `items` 判。
-- **待产品决策 R-24**：`received_at` 的锚定日期在**自动入账**那步被丢掉（入账 `date` 取设备时钟）→ 跨午夜迟发仍可能差一天。
-- **R-03 已闭环（客户端侧）**：Android 已在 `7aac3e1` 把该入口的 `source` 改成 `app_notification`，区分语义由 `source_detail='tasker_quick_record'` 承载。**服务端残留**：其他调用方/老 APK 送 `external_intent` 仍 400，且**只改 zod 会变 500**（`transactions.source` 有 DB `CHECK` 约束）→ 真要在 `source` 上支持新取值必须配一次**重建表** migration；已评估**不做**（代价：逐字重建 9 个索引/22 列，漏一项就静默错账，收益仅语义纯度）。
-- **待决策 S-07（风险面已收窄）**：`POST /api/admin/notification-rules` **走同一套校验链**（`validateRules` + `selfTestTestcases` + `precheck` 注入 + `content_hash` 去重），它缺的是**与仓库文件绑定**——可发布与 `config/rules.json` 不同的内容；建议要求携带 `expected content_hash`。**⚠️ 2026-10 起 Web 管理面板已不再提供在线编辑**（只做查看历史/激活/回滚），故该接口在仓库内**已无调用方**——风险只剩外部脚本/旧前端。
+- **`transactions.source` 取值受 DB `CHECK` 约束**：`external_intent` 等枚举外取值会被拒（zod 400 / 直写 500）；新增取值必须配一次重建表 migration。
+- `POST /api/admin/notification-rules` 可发布与 `config/rules.json` 不同的内容；仓库内无调用方，外部脚本仍可调用。
 
 </details>
 - **只覆盖入站**：`precheck` 是「调模型之前」的判据；出站佐证（`verifyParsed` 的 drop 理由）在模型调用后才产生，客户端算不出来，故不在清单、也不参与 ⑤ 对比。
@@ -919,7 +916,7 @@ P2 = `viewId` 锚点 + `list_page_head_chars`；P3（冷，发版）= canvas/Web
 > 原则（不变）：**AI 是唯一裁判**；正则是「排除 100% 不是账」的筛子，冲突以 **AI 为准**。
 >
 > **现状缺口**：客户端在本地丢掉的 A11Y 页面/通知内容，服务端**只收到聚合计数**（§4 `filter-report`），**看不到内容**。
-> 于是「哪些通知/页面可以安全排除」没有证据，规则只能盲维护。（§2 反馈闭环已随 `parse-feedback` 下线删除。）
+> 于是「哪些通知/页面可以安全排除」没有证据，规则只能盲维护。
 
 ### 11.1 两条通道（判定归属）
 
@@ -1030,6 +1027,5 @@ P2 = `viewId` 锚点 + `list_page_head_chars`；P3（冷，发版）= canvas/Web
 | **隐私** | P1 不设开关、默认采原文（§11.5）；P2 硬化 |
 | **与 `filter-report`** | 并存（聚合计数 vs 样本），不合并 |
 | **老客户端 404** | 已确认安全（客户端 `catch` 404，不崩）；**不加 no-op 桩** |
-| **文档编号** | 附录 C §2（反馈闭环）已删 → 编号留空档；本 §11 暂不回填为 §2，避免与既有 §号引用冲突 |
 | **web review 面板** | 已实现：`AdminSamplesPanel`（days/channel/blocked_by/package 筛选 + Top 汇总 + 列表 + 标注 `is_bill\|not_bill`），入口在管理面板「自动化」组 |
 | **forward 通道内容可见** | admin `GET /api/admin/filter-samples`（读 `ai_parse_filters.raw_input`）：F 类改 forward 后只有计数拦不住盲改，原文必须可 review（同一 tab 的第二侧） |

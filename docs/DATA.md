@@ -25,15 +25,9 @@
 - **用户之间完全隔离**；管理员默认不跨用户查询，排障时可经管理面板查看他人明细/
   解析原文，且**必写审计日志**（见 [ARCHITECTURE.md §5.3](ARCHITECTURE.md)）
 
-### 1.2 「今天」= 北京时间（D2 决策）
+### 1.2 「今天」= 北京时间
 
-「今天」以前在服务端有**三套**定义并存：`lib/date.ts`（服务器本地时区）、
-`account-balance.ts` 的 SQLite `date('now')`（UTC）、以及散落多处的
-`toISOString().slice(0,10)`（UTC）。北京每天 **00:00–08:00** 这 8 小时里三者指向
-不同的日期：深夜记账会把 `asset_snapshots.snapshot_date` 记到**前一天**，
-而月度统计算的是「今天」，曲线翻页时刻也跟着漂 8 小时。
-
-现统一为北京时间（用户决策），**唯一定义在 `server/src/lib/date.ts`**：
+「今天」统一为北京时间，**唯一定义在 `server/src/lib/date.ts`**：
 `today()` / `toDateStr()` / `dateOffset()` / `monthOffset()` / `monthOffsetFrom()` /
 `daysUntil()` / `beijingYearMonth()`。
 行情门禁（§11）也改用同一份 `beijingNow()`，不再自己算一遍时区。
@@ -119,7 +113,7 @@ note:       自由备注
 ### 3.2 ai_memories
 ```
 category: preference | habit | rule | context
-source:   manual（用户添加；唯一会被注入 prompt 的值） | ai_suggested（AI 自动；写入路径已随 parse-feedback 下线移除，历史行保留）
+source:   manual（用户添加；唯一会被注入 prompt 的值） | ai_suggested（AI 自动；无写入方，历史行保留）
 ```
 **安全约束**（P0 安全加固）：注入 LLM 时只取 `source='manual'`，防止 AI 自我污染。
 
@@ -134,8 +128,7 @@ source:   manual（用户添加；唯一会被注入 prompt 的值） | ai_sugge
   - `GET /api/assets/portfolio` —— 曲线、每日覆盖率、上一次完整读数
   - `GET /api/stats/dashboard` 与 `POST /api/stats/analysis` —— 净资产（经同一个读模型）
   - `PUT /api/assets/snapshots` / `setManualBalance()` —— 手填时落的凭证行（写）
-- 说明：曾经的「净资产趋势」端点（`GET /api/assets/trend`）已删，
-  现在曲线由 `lib/portfolio.ts` 的 `curve` 提供（含覆盖率与持仓/现金拆分）
+- 曲线由 `lib/portfolio.ts` 的 `curve` 提供（含覆盖率与持仓/现金拆分）
 
 ### 3.5 recurring_patterns
 - AI 检测或手动标记的固定收支
@@ -322,6 +315,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES (...);
 | **021** | **client_filter_stats** | 新建 `client_filter_stats` / `client_filter_totals`（客户端拦截计数上报，见 §13.3） |
 | **022** | **ai_failure_observability** | `ai_parse_logs` 加 `failure_code` / `attempts`（AI 失败可观测 + 服务端重试计数，见 §13.4） |
 | **023** | **admin_unparsed_triage** | 新建 `admin_unparsed_triage`（「不确定」人工裁决记录 / 规则候选池，见 §13.5） |
+| **024** | **client_capture_samples** | 新建 `client_capture_samples`（客户端拦截内容采样，30 天保留，见 [API.md 附录 C §11.4](API.md)） |
 
 > ⚠️ migration 012 曾被原地改写：早期版本重建过 `ai_parse_logs`（放宽 `status` CHECK 加 `filtered`），
 > 并被误应用到**生产库**（记录名 `parse_landing_tracking`）。当前代码里 012 是「新建 `ai_parse_filters`」版，
@@ -376,11 +370,7 @@ asset_snapshots (account_id, snapshot_date, balance, source)
 不变式：`rows.length > 0 ⟺ state === 'ok'`（挂账已估值持仓时不得报 `no_readings`，
 否则「还没记过余额」与一条 ¥86,170 的构成条同时出现，自相矛盾）。
 
-> 前端曾经自己重算这三条，漏过 percent（组件 `toFixed` 抛错、构成整块不渲染）、
-> 漏过空态（纯负债用户被说成「还没有记过余额」）。构成与占比是口径，不再由客户端算。
-> 负债块也不能依附于资产行：纯负债用户没有任何正资产行，欠款金额恰恰最该显示。
-
-> **migration 013 加过 `quantity` / `total_invested`，016 又删了。**
+> 构成与占比只在服务端计算，客户端不重算。负债块独立于资产行：纯负债用户也必须显示欠款金额。
 > 原因：份额按标的记在 `investments.quantity`；总投入是**账户属性**（只在存/取钱时变，
 > 不是每日读数），搬到 `accounts.invested_total`。留在快照里会导致
 > 「改一次总投入得伪造一条带日期的快照」，而且同一份数据有两个写入口。
@@ -398,11 +388,9 @@ UNIQUE(user_id, account_id, code)
 ```
 
 - **单只不记成本、不算盈亏**（用户要求「投入不要针对单只持仓股，计算总投入就可以」）：
-  只有 代码 / 名称 / 股数，市值 = 股数 × 现价。盈亏只在账户级出一个数。
-  migration 016 删掉了 `cost_basis`——留着它就会有人去算单只盈亏，
-  而单只浮盈与账户级浮盈天然不同（后者含现金），同屏显示就会符号打架。
-- **成本价是派生的、不存**：`costPrice = cost_basis ÷ quantity`。所以收盘后改股数，成本价自动重算，
-  不存在「改了股数忘了更新成本」的脏状态（`lib/holdings.ts`，有测试锁住）。
+  只有 代码 / 名称 / 数量，盈亏只在账户级出一个数。
+- **市值口径**：证券为 `数量 × 现价`；`gold_gram` 的数量单位是克，行情 `hf_XAU` 是美元/金衡盎司，
+  估值时先按 1 金衡盎司 = 31.1034768 克换算，再乘汇率与现价（`lib/holdings.ts`）。
 
 ### 10.3 investment_quotes（migration 014，行情，高频系统抓）
 
@@ -457,8 +445,7 @@ asset_snapshots.total_invested   总投入搬到 accounts
 - **为什么总投入是账户属性**：它只在存/取钱时变，不是每日读数。放快照里会导致
   「改一次总投入得伪造一条带日期的快照」；而且同一份数据出现两个写入口。
 - **为什么单只成本必须删**：留着它就会有人算单只盈亏。单只浮盈（市值 − 单只成本）
-  与账户级浮盈（总价值 − 总投入，含现金）天然不同，同屏显示必然符号打架 ——
-  这个问题真实出现过：头条「浮动盈亏 +14,170」vs 同一只持仓行「−13,830」。
+  与账户级浮盈（总价值 − 总投入，含现金）天然不同，同屏显示会符号打架。
 - **安全前提**：三列在应用时都没有真实数据（`investments` 的 `is_active=1` 为 0 行、
   `asset_snapshots` 为 0 行）；无索引/视图/触发器依赖；`DROP COLUMN` 在事务里，
   中途失败整体回滚（已在生产库副本上实测）。写入路径见 §10.6。
@@ -471,39 +458,23 @@ asset_snapshots.total_invested   总投入搬到 accounts
 | 份额 | 用户手填（低频，加/减仓） | `POST/PATCH /api/investments` |
 | 总投入 | 用户手填（只在存/取钱时） | `PUT /api/assets/accounts/:id` |
 | 行情 | **三个写者**，实现统一在 `lib/quote-acquisition.ts`：① 定时任务每 15 分钟检查一次（`QUOTE_REFRESH_MINUTES` 可调）、**按市场分别判断时段**；② 手动刷新（绕过门禁）；③ 新增持仓后自动取价（绕过门禁） | `scheduler.ts` + `POST /api/investments/quotes/refresh` |
-| 汇率 | 同一 module，**走主源腾讯 → ECB 兜底**，落库时带**真实来源**（`investment_quotes.source`）；另有一个后台自愈补齐（**先同步盖 60s cooldown 时间戳**，窗口覆盖最坏超时，因此无需 single-flight） | 同上 + `GET /api/investments` |
+| 汇率 | 同一 module，**走主源腾讯 → ECB 兜底**，落库时带**真实来源**（`investment_quotes.source`）；主循环内按 `FX_REFRESH_MINUTES`（默认 6 小时）节流；另有一个后台自愈补齐（**先同步盖 60s cooldown 时间戳**，窗口覆盖最坏超时，因此无需 single-flight） | 同上 + `GET /api/investments` |
 
 > ⚠️ 行情的**失败事实**只在 quote-acquisition 里判定（`reachable` / `unknown` / `degraded`），
 > **不要写进路由或调度器**：那里只决定「怎么处置」——手动刷新回逐码明细、
-> 定时任务记日志、自动取价吞掉不阻塞写入。三个入口必须共享同一套事实，
-> 否则同一种故障会得到四种解释（这正是以前的问题）。
->
-> ⚠️ 行情抓取**必须挂在 `runScheduledTasks` 里**。曾经 `processQuoteFetch` 写好了却没有调用者，
-> 结果是 `investment_quotes` 永远 0 行、持仓永远「未取到价」、账户总价值永远算不出。
+> 定时任务记日志、自动取价吞掉不阻塞写入。三个入口必须共享同一套事实。
+
+> ⚠️ 行情抓取**必须挂在 `runScheduledTasks` 里**：否则 `investment_quotes` 不会更新、
+> 持仓永远「未取到价」、账户总价值算不出。
 > 回归测试见 `tests/lib/scheduler-quotes.test.ts`。
 >
-> ✅ 余额的写入语义已经从三条收敛为**两条**（增量 / 覆盖）。
-> 第三条「采样」（legacy `POST /api/assets/snapshot`：不写 `balance`、只落历史行、
-> 仅首次推进基线）已随该 deprecated 路由于 2026-10 一并删除。
->
-> 删它的理由不是「接口废弃」而是**它已经是第三条歧路**：它与手填写同一张表、
-> 却用相反的冲突策略和基线策略（覆盖+无条件推进 vs 跳过+仅首次推进）。
-> 两条语义要靠长注释才区分得开，本身就是余额口径会漂移的信号。
-> 核查确认无消费者：web 零引用，Android `billapp` 全 git history 零引用。
->
-> 采样路径留下的那条要害教训写在这里存档（它不适用于手填，但删掉了就更难找回）：
-> 若采样也无条件推进基线，「今天第二次点快照」会把两次之间新建的账单烤进余额，
-> 此后 `applyTxn` 对它们的修正会被基线挡掉（`txnId <= balance_as_of_txn_id`）——
-> 改一笔旧账余额纹丝不动且无任何提示。
->
-> 现在余额的两个写入实现都在 `lib/account-balance.ts`（`applyTxn` / `setManualBalance`），
+> 余额只有两个写入实现，都在 `lib/account-balance.ts`（`applyTxn` / `setManualBalance`），
 > **路由里没有直接推进基线的 SQL**。该模块自己包事务：独立调用时自成事务，
 > 被路由的 `db.transaction` 包住时退化成 SAVEPOINT 随外层一起回滚
 > （better-sqlite3 的嵌套语义）。
 >
 > ⚠️ `asset_snapshots` 表**保留不动**：它是历史曲线的唯一数据源，
 > 被 `GET /api/assets/portfolio` 与 `PUT /api/assets/snapshots` 活跃读写。
-> 删掉的只是「写快照行」的那条旧路，不是快照这个事实。
 >
 
 ## 11. 行情抓取时段（按市场）
@@ -560,7 +531,7 @@ A股 / 港股 / 美股 的开市时间**完全不同**，所以门禁必须按�
 > 曾存在的第三条（采样，旧客户端 `POST /assets/snapshot`）已于 2026-10 删除，
 > 理由与它留下的教训见 §10.6。删除后本表就是全部。
 
-**停用账户不写（D3）**：`setManualBalance` 校验 `is_active`，停用则抛
+**停用账户不写**：`setManualBalance` 校验 `is_active`，停用则抛
 `BalanceWriteRejected('inactive')`，路由转 `400 / 2001`。
 两条写入口同生共死（此前 `PUT /assets/snapshots` 拒、`PUT /api/accounts/:id` 却照写）。
 理由：停用账户不在任何读模型（`is_active=1` 才进），写余额 = 写进一个不被读的地方，
@@ -580,7 +551,7 @@ A股 / 港股 / 美股 的开市时间**完全不同**，所以门禁必须按�
 > `scheduler.ts` 挑到期订阅那一步（正向），且跳过时打 `warn` 并**不推进**
 > `next_payment_date`，还原账户后下个周期会补记恰好一期。
 
-**日期口径（D2）**：余额快照的 `snapshot_date` 与上面两条路径的「今天」都用
+**日期口径**：余额快照的 `snapshot_date` 与上面两条路径的「今天」都用
 **北京时间**（`lib/date.ts` 的 `today()`），不是 UTC。见 §1.2。
 
 **不变量**
@@ -655,7 +626,7 @@ DB 只是发布载体：`notification_rules.content_hash` = 发布载荷（**剔
 ### 13.4 AI 失败可观测与重试计数（022）
 
 客户端把「解析失败 → 落用户待审列表」收紧为「失败即不打扰用户」后，**用户视野里再无失败**，
-「AI 挂了」只剩服务端指标能发现。`ai_parse_logs` 追加两列（**可空**；老行 NULL = 「未归类/未重试」的历史事实，
+「AI 挂了」只剩服务端指标能发现。`ai_parse_logs` 追加两列（**可空**；NULL = 未归类/未重试，
 不设 DEFAULT 伪造）：
 
 | 列 | 用途 |
@@ -692,6 +663,7 @@ admin_unparsed_triage (id, parse_log_id → ai_parse_logs(id), action, reason, a
   **规则/语料候选池**（只落库待人工整理，最终改动仍走 `rules.json` 发布流程）。
 - **幂等**：同 (parse_log_id, admin_id, action) 重复提交 = 成功且不新增行；
   同 log 不同 action **允许**（改判留历史），**当前态取最新一行**（`id` 最大），历史不删。
+- **保留**：被本表引用的 `ai_parse_logs` 行不参与 90 天日志清理。
 - **窗口/渠道的定义在 `ai_parse_logs`**：本表只补「人工意见」，不冗余存 `channel`/`failure_code`。
 - ⚠️ **FK 与删用户**：`purgeUserData` 必须先清本表（挂在该用户解析行上的 + 该用户作为 admin 留下的），
   否则外键约束会让「有裁决记录的用户」删不掉（见 `routes/admin.ts`）。
