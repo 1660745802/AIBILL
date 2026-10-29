@@ -7,7 +7,7 @@ import TagInput from '@/components/TagInput.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import Money from '@/components/ui/Money.vue'
 
-const props = defineProps<{ initialDescription?: string }>()
+const props = defineProps<{ initialDescription?: string; loading?: boolean }>()
 const emit = defineEmits<{ submit: [item: any]; cancel: [] }>()
 
 const type = ref<'expense' | 'income' | 'transfer'>('expense')
@@ -43,6 +43,7 @@ const TYPES = [
 watch(type, () => { categoryId.value = null })
 
 function handleSubmit() {
+  if (props.loading) return
   error.value = ''
   if (amountCents.value <= 0) { error.value = '填一个大于 0 的金额'; return }
   if (type.value !== 'transfer' && !categoryId.value) { error.value = '选一个分类'; return }
@@ -67,12 +68,12 @@ function handleSubmit() {
   <form class="surface" @submit.prevent="handleSubmit">
     <header class="form-head">
       <span class="text-[0.8125rem] font-semibold" style="color: var(--color-ink-1)">手动记账</span>
-      <button type="button" class="act flex items-center gap-1" @click="emit('cancel')">
+      <button type="button" :disabled="loading" class="act flex items-center gap-1" @click="emit('cancel')">
         <AppIcon name="close" :size="12" />关闭
       </button>
     </header>
 
-    <div class="p-4 space-y-3">
+    <fieldset :disabled="loading" class="p-4 space-y-3">
       <!-- 类型 -->
       <div class="flex gap-1.5" role="group" aria-label="交易类型">
         <button
@@ -162,9 +163,9 @@ function handleSubmit() {
           />
         </span>
         <span v-else />
-        <button type="submit" class="btn btn-primary">保存这一笔</button>
+        <button type="submit" :disabled="loading" class="btn btn-primary">{{ loading ? '保存中…' : '保存这一笔' }}</button>
       </div>
-    </div>
+    </fieldset>
   </form>
 </template>
 

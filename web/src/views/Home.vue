@@ -32,6 +32,25 @@ const showManual = ref(false)
 const todayTransactions = ref<any[]>([])
 const editing = ref<any | null>(null)
 
+type Submission = { signature: string; clientId: string }
+let aiSubmissions: Submission[] = []
+let manualSubmissions: Submission[] = []
+
+// 同一内容重试复用 ID；逐行消耗避免两笔相同内容误用同一个 ID。
+function identifyItems(items: Record<string, unknown>[], previous: Submission[]) {
+  const available = [...previous]
+  previous.length = 0
+  return items.map((item) => {
+    const signature = JSON.stringify(item)
+    const index = available.findIndex((entry) => entry.signature === signature)
+    const entry = index < 0
+      ? { signature, clientId: generateUUID() }
+      : available.splice(index, 1)[0]!
+    previous.push(entry)
+    return { ...item, client_id: entry.clientId }
+  })
+}
+
 const QUICK_PHRASES = ['午饭', '早饭', '咖啡', '打车', '地铁', '买菜', '晚饭', '零食']
 
 const todayTotal = computed(() =>
@@ -85,9 +104,10 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 async function handleAiParse() {
-  if (!input.value.trim() || loading.value) return
+  if (!input.value.trim() || loading.value || confirming.value) return
   error.value = ''
   loading.value = true
+  aiSubmissions = []
   parsedItems.value = []
 
   try {
@@ -112,6 +132,7 @@ function failToManual(msg: string) {
 }
 
 function resetComposer() {
+  aiSubmissions = []
   parsedItems.value = []
   input.value = ''
   error.value = ''
@@ -119,11 +140,11 @@ function resetComposer() {
 }
 
 async function handleConfirm(items: any[]) {
-  if (confirming.value) return
+  if (confirming.value || !items.length) return
   confirming.value = true
+  error.value = ''
   try {
-    const payload = items.map((item) => ({
-      client_id: generateUUID(),
+    const payload = identifyItems(items.map((item) => ({
       client_type: 'web',
       source: 'ai',
       source_detail: input.value,
@@ -135,9 +156,10 @@ async function handleConfirm(items: any[]) {
       description: item.description,
       date: item.date,
       ai_raw_input: input.value,
-    }))
+    })), aiSubmissions)
 
-    await api.post('/transactions', { items: payload })
+    const { data } = await api.post('/transactions', { items: payload })
+    if (data.code !== 0) { error.value = data.message || '保存失败'; return }
 
     resetComposer()
     toast.success(`已记 ${items.length} 笔`)
@@ -145,42 +167,56 @@ async function handleConfirm(items: any[]) {
     useClusterStore().load(true)
     await fetchToday()
   } catch (e: any) {
-    error.value = e.response?.data?.message || '保存失败'
+    error.value = e.response?.data?.message || '未能确认保存结果，请保持内容不变重试；修改前请先核对流水'
   } finally {
     confirming.value = false
   }
 }
 
 async function handleManualSubmit(item: any) {
+  // 同步上锁：DOM disabled 尚未更新时的重复事件也不能再发请求。
+  if (confirming.value) return
+  confirming.value = true
+  error.value = ''
   try {
-    await api.post('/transactions', {
-      items: [{
-        client_id: generateUUID(),
-        client_type: 'web',
-        source: 'manual',
-        type: item.type,
-        amount: item.amount,
-        category_id: item.category_id,
-        account_id: item.account_id || undefined,
-        target_account_id: item.target_account_id || undefined,
-        description: item.description,
-        date: item.date,
-        tags: item.tags || undefined,
-      }],
-    })
+    const items = identifyItems([{
+      client_type: 'web',
+      source: 'manual',
+      type: item.type,
+      amount: item.amount,
+      category_id: item.category_id,
+      account_id: item.account_id || undefined,
+      target_account_id: item.target_account_id || undefined,
+      description: item.description,
+      date: item.date,
+      tags: item.tags || undefined,
+    }], manualSubmissions)
+    const { data } = await api.post('/transactions', { items })
+    if (data.code !== 0) { error.value = data.message || '保存失败'; return }
+    manualSubmissions = []
     showManual.value = false
     resetComposer()
     toast.success('记账成功')
     useClusterStore().load(true)
     await fetchToday()
   } catch (e: any) {
-    error.value = e.response?.data?.message || '保存失败'
+    error.value = e.response?.data?.message || '未能确认保存结果，请保持内容不变重试；修改前请先核对流水'
+  } finally {
+    confirming.value = false
   }
 }
 
 function openManual() {
+  if (confirming.value) return
+  if (!showManual.value) manualSubmissions = []
   showManual.value = true
   error.value = ''
+}
+
+function cancelManual() {
+  if (confirming.value) return
+  showManual.value = false
+  manualSubmissions = []
 }
 </script>
 
@@ -202,7 +238,7 @@ function openManual() {
           rows="3"
           class="composer mt-3"
           placeholder="午饭 32，打车 15"
-          :disabled="loading"
+          :disabled="loading || confirming"
           @input="autoGrow"
           @keydown="onKeydown"
         />
@@ -211,7 +247,7 @@ function openManual() {
           <div class="flex items-center gap-2 min-w-0">
             <button
               class="btn btn-primary"
-              :disabled="loading || !input.trim()"
+              :disabled="loading || confirming || !input.trim()"
               @click="handleAiParse"
             >
               <span
@@ -221,7 +257,7 @@ function openManual() {
               <AppIcon v-else name="spark" :size="14" />
               {{ loading ? 'AI 正在拆解…' : '解析' }}
             </button>
-            <button class="btn btn-outline" @click="openManual">手动</button>
+            <button class="btn btn-outline" :disabled="confirming" @click="openManual">手动</button>
           </div>
           <span v-if="!loading" class="text-[0.625rem] shrink-0" style="color: var(--color-ink-4)">
             <span class="amt">{{ input.length }}</span> 字 · Enter 提交
@@ -235,6 +271,7 @@ function openManual() {
             :key="p"
             type="button"
             class="chip shrink-0"
+            :disabled="loading || confirming"
             @click="appendPhrase(p)"
           >{{ p }}</button>
         </div>
@@ -243,20 +280,22 @@ function openManual() {
 
     <Notice v-if="error" tone="danger" @close="error = ''">{{ error }}</Notice>
 
-    <!-- 解析结果 -->
-    <ConfirmCards
-      v-if="parsedItems.length"
-      :items="parsedItems"
-      @confirm="handleConfirm"
-      @cancel="resetComposer"
-    />
+    <!-- 解析结果：请求期间冻结编辑/取消，避免回包清掉另一个草稿。 -->
+    <fieldset v-if="parsedItems.length" :disabled="confirming" :aria-busy="confirming" class="min-w-0">
+      <ConfirmCards
+        :items="parsedItems"
+        @confirm="handleConfirm"
+        @cancel="!confirming && resetComposer()"
+      />
+    </fieldset>
 
     <!-- 手动表单 -->
     <ManualForm
       v-if="showManual"
       :initial-description="input"
+      :loading="confirming"
       @submit="handleManualSubmit"
-      @cancel="showManual = false"
+      @cancel="cancelManual"
     />
 
     <!-- 今日流水 -->

@@ -8,10 +8,9 @@
  * 步骤、`previewItems` 决定可提交集合、`pendingItems` 决定分片数量），拆模板只是把
  * 耦合换成 props 传递；抽成 composable 才让「导入这件事」有独立的 interface。
  *
- * ⚠️ **零行为变更**：下面每段逻辑都是从 view 逐行搬过来的，只做了两处命名调整——
- * `setCategory`/`bulkCategory` 收 DOM 事件改成收 `categoryId` 字符串（DOM 取值留在 view），
- * `parseCsv`/`confirmImport` 改名 `parse`/`submit`。分片大小、失败收集、进度节律、
- * toast 时机全部不变。
+ * `setItemCategory`/`bulkSetCategory` 收 `categoryId` 字符串（DOM 取值留在 view），
+ * `parse`/`submit` 管理解析与提交。提交 ID 在同一预览行的未改内容重试间保持稳定，
+ * 批量归类只填补未分类行，不覆盖已有分类。
  */
 import { ref, computed } from 'vue'
 import api from '@/api/index'
@@ -75,6 +74,8 @@ export function useBillImport() {
   /** 导入结果统计 */
   const importResult = ref<{ success: number; failed: number; failedItems: number[] } | null>(null)
   const progress = ref<{ done: number; total: number } | null>(null)
+  // 同一预览行的同一内容复用幂等 ID；响应丢失不等于服务端没入库。
+  const submissions = new WeakMap<PreviewItem, { signature: string; clientId: string }>()
 
   const duplicateCount = computed(() => previewItems.value.filter((i) => i.duplicate).length)
   /** 实际会提交的条目（按“包含重复”开关过滤） */
@@ -175,8 +176,8 @@ export function useBillImport() {
     const cat = categories.value.find((c) => String(c.id) === categoryId)
     if (!cat) return
     for (const item of previewItems.value) {
-      if (item.type === 'transfer') continue
-      if (categoriesFor(item.type).some((c) => c.id === cat.id)) {
+      if (item.type === 'transfer' || item.category_id != null) continue
+      if (item.type === cat.type) {
         item.category_id = cat.id
         item.category_name = cat.name
         item.category_icon = cat.icon
@@ -187,7 +188,7 @@ export function useBillImport() {
 
   /** 分片提交：单批失败不影响其他批，最终汇总而不是「一错全无」 */
   async function submit() {
-    if (pendingItems.value.length === 0) return
+    if (importLoading.value || pendingItems.value.length === 0) return
     if (missingCategoryCount.value > 0) {
       error.value = `还有 ${missingCategoryCount.value} 条记录未选分类，请先补全或删除`
       return
@@ -198,7 +199,26 @@ export function useBillImport() {
     importResult.value = null
     progress.value = { done: 0, total: pendingItems.value.length }
 
-    const toSubmit = pendingItems.value
+    // 在首个 await 前固定本轮内容，避免中途编辑改变尚未提交的分片。
+    const toSubmit = pendingItems.value.map((item) => {
+      const payload = {
+        client_type: 'web' as const,
+        source: 'import_csv' as const,
+        source_detail: item.source_detail || item.description || '',
+        type: item.type,
+        amount: item.amount,
+        category_id: item.category_id || undefined,
+        description: item.description,
+        date: item.date,
+      }
+      const signature = JSON.stringify(payload)
+      let submission = submissions.get(item)
+      if (!submission || submission.signature !== signature) {
+        submission = { signature, clientId: generateUUID() }
+        submissions.set(item, submission)
+      }
+      return { ...payload, client_id: submission.clientId }
+    })
     let success = 0
     let failed = 0
     const failedIndexes: number[] = []
@@ -206,22 +226,14 @@ export function useBillImport() {
     try {
       for (let i = 0; i < toSubmit.length; i += CHUNK_SIZE) {
         const chunk = toSubmit.slice(i, i + CHUNK_SIZE)
-        const items = chunk.map((item) => ({
-          client_id: generateUUID(),
-          client_type: 'web' as const,
-          source: 'import_csv' as const,
-          source_detail: item.source_detail || item.description || '',
-          type: item.type,
-          amount: item.amount,
-          category_id: item.category_id || undefined,
-          description: item.description,
-          date: item.date,
-        }))
 
         try {
-          const { data } = await api.post('/transactions', { items })
+          const { data } = await api.post('/transactions', { items: chunk })
           if (data.code === 0) {
-            success += data.data?.created?.length ?? chunk.length
+            // 幂等重试返回 duplicates，也代表这笔已被服务端确认入账。
+            success += data.data?.created
+              ? data.data.created.length + (data.data.duplicates?.length ?? 0)
+              : chunk.length
           } else {
             failed += chunk.length
             failedIndexes.push(...chunk.map((_, ci) => i + ci))
@@ -235,11 +247,11 @@ export function useBillImport() {
       }
 
       importResult.value = { success, failed, failedItems: failedIndexes }
-      if (success > 0) {
-        imported.value = true
-      }
+      // 部分失败时仍留在预览供重试；已成功行凭相同 ID 不会重复入账。
+      imported.value = success > 0 && failed === 0
       if (failed > 0) {
-        toast.error(`${failed} 条导入失败，请检查后重试`)
+        error.value = `${failed} 条未能确认导入结果，可保持内容不变重试；修改前请先核对流水`
+        toast.error(error.value)
       } else {
         toast.success(`成功导入 ${success} 条`)
       }

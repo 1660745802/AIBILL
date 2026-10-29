@@ -114,6 +114,7 @@ const editingId = ref<number | null>(null)
 const editName = ref('')
 const editIcon = ref('')
 const editBalance = ref('')
+const originalBalance = ref(0)
 const editType = ref<string>('liquid')
 
 function startEdit(acc: any) {
@@ -121,24 +122,29 @@ function startEdit(acc: any) {
   editingId.value = acc.id
   editName.value = acc.name
   editIcon.value = acc.icon
-  editBalance.value = ((acc.current_balance ?? acc.initial_balance) / 100).toString()
+  originalBalance.value = acc.current_balance ?? acc.initial_balance ?? 0
+  editBalance.value = (originalBalance.value / 100).toString()
   editType.value = acc.asset_type || 'liquid'
 }
 
 async function saveEdit() {
-  if (!editingId.value || !editName.value.trim()) return
+  if (!editingId.value || !editName.value.trim() || loading.value) return
+  loading.value = true
   try {
     const balance = Math.round(parseFloat(editBalance.value || '0') * 100)
+    if (!Number.isSafeInteger(balance)) { toast.error('请输入有效余额'); return }
     const { data } = await api.put(`/accounts/${editingId.value}`, {
       name: editName.value.trim(),
       icon: editIcon.value,
       asset_type: editType.value,
-      current_balance: balance,
+      // 按分比较，改名/图标/类型或余额改回原值都不推进余额基线。
+      ...(balance !== originalBalance.value ? { current_balance: balance } : {}),
     })
     if (data.code !== 0) { toast.error(data.message || '保存失败'); return }
     editingId.value = null
     await fetchAccounts()
   } catch { /* ignore */ }
+  finally { loading.value = false }
 }
 function typeLabel(t?: string): string {
   return ASSET_TYPES.find((x) => x.v === (t || 'liquid'))?.label || '活期'

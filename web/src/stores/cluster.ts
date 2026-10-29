@@ -15,15 +15,19 @@ export const useClusterStore = defineStore('cluster', () => {
   const loading = ref(false)
   const error = ref('')
   const updatedAt = ref<number | null>(null)
+  // reset 是用户会话边界：旧请求的成功、失败及 finally 都不得再写状态。
+  let generation = 0
 
   async function load(force = false) {
     if (loading.value) return
     // 30 秒内不重复打：仪表读数最怕「刷新一下数字就跳」，抖动比慢更烦
     if (!force && data.value && updatedAt.value && Date.now() - updatedAt.value < 30_000) return
+    const requestGeneration = generation
     loading.value = true
     void loadPortfolio()
     try {
       const res = await api.get('/stats/dashboard')
+      if (requestGeneration !== generation) return
       if (res.data.code === 0) {
         data.value = res.data.data
         updatedAt.value = Date.now()
@@ -34,9 +38,9 @@ export const useClusterStore = defineStore('cluster', () => {
         error.value = res.data.message || '读数拉取失败'
       }
     } catch (e: any) {
-      error.value = e.response?.data?.message || '读数拉取失败'
+      if (requestGeneration === generation) error.value = e.response?.data?.message || '读数拉取失败'
     } finally {
-      loading.value = false
+      if (requestGeneration === generation) loading.value = false
     }
   }
 
@@ -56,12 +60,14 @@ export const useClusterStore = defineStore('cluster', () => {
   const portfolioState = ref<'pending' | 'ready' | 'error'>('pending')
 
   async function loadPortfolio() {
+    const requestGeneration = generation
     /** 失败 = 传输报错 **或** HTTP 200 但 `code != 0`。两者同等对待。 */
     const unavailable = () => {
-      if (portfolio.value == null) portfolioState.value = 'error'
+      if (requestGeneration === generation && portfolio.value == null) portfolioState.value = 'error'
     }
     try {
       const res = await api.get('/assets/portfolio')
+      if (requestGeneration !== generation) return
       // 业务码不是 0 时也走失败路径：否则 portfolio 永远停在 pending，
       // 仪表就一直显示中性占位，既不报故障也永远不恢复。
       if (res.data.code !== 0) return unavailable()
@@ -187,6 +193,8 @@ export const useClusterStore = defineStore('cluster', () => {
    * （不像 401 那样整页刷新），不清就会把上一个用户的净资产递给下一个登录的人。
    */
   function reset() {
+    generation += 1
+    loading.value = false
     data.value = null
     portfolio.value = null
     portfolioState.value = 'pending'
