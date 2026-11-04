@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
+import { pushModal, removeModal, isTopModal, modalZIndex } from '@/composables/useModalStack'
 
 /**
  * 浮层。手机 = 底部抽屉（带拖拽条、吸顶标题、吸底操作栏）；桌面 = 居中弹窗。
@@ -9,6 +10,8 @@ import AppIcon from './AppIcon.vue'
 const props = withDefaults(defineProps<{
   show: boolean
   title?: string
+  /** 没有使用 title（例如自定义 header）时，为对话框提供可访问名称 */
+  ariaLabel?: string
   size?: 'sm' | 'md' | 'lg' | 'xl'
   /** 点遮罩关闭（表单类默认关闭，确认类保持 true） */
   dismissible?: boolean
@@ -18,17 +21,112 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{ close: [] }>()
 
+const id = Symbol('modal')
+const isTop = computed(() => isTopModal(id))
+const zIndex = computed(() => modalZIndex(id))
+let previouslyFocused: HTMLElement | null = null
+
+/* ── 手机抽屉：下拉关闭 ──
+   拖拽条以前只是装饰，看起来能拖、实际拖不动——外观在撒谎。
+   现在按住拖拽条往下拉：超过阈值就关，不够就回弹。
+   不可关闭的浮层（dismissible=false）只回弹，不关。 */
+const panel = ref<HTMLElement | null>(null)
+let dragStartY: number | null = null
+let dragDy = 0
+const DISMISS_DISTANCE = 96
+
+function onGrabDown(e: PointerEvent) {
+  dragStartY = e.clientY
+  dragDy = 0
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  if (panel.value) panel.value.style.transition = 'none'
+}
+function onGrabMove(e: PointerEvent) {
+  if (dragStartY == null || !panel.value) return
+  dragDy = Math.max(0, e.clientY - dragStartY) // 只允许往下拉
+  panel.value.style.transform = `translateY(${dragDy}px)`
+}
+function resetGrab() {
+  if (!panel.value) return
+  panel.value.style.transition = 'transform 0.2s cubic-bezier(0.22, 1, 0.36, 1)'
+  panel.value.style.transform = ''
+  dragStartY = null
+  dragDy = 0
+}
+function onGrabUp() {
+  if (dragStartY == null || !panel.value) return
+  const shouldClose = dragDy > DISMISS_DISTANCE && props.dismissible
+  resetGrab()
+  if (shouldClose) emit('close')
+}
+function onGrabCancel() {
+  if (dragStartY == null) return
+  resetGrab()
+}
+
+function focusableElements(): HTMLElement[] {
+  if (!panel.value) return []
+  return Array.from(panel.value.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )).filter((el) => !el.hasAttribute('inert') && el.offsetParent !== null)
+}
+
 function onKey(e: KeyboardEvent) {
-  if (e.key === 'Escape' && props.show && props.dismissible) emit('close')
+  if (!props.show || !isTop.value) return
+  if (e.key === 'Escape' && props.dismissible) {
+    e.preventDefault()
+    emit('close')
+    return
+  }
+  if (e.key !== 'Tab') return
+  const focusable = focusableElements()
+  if (!focusable.length) {
+    e.preventDefault()
+    panel.value?.focus()
+    return
+  }
+  const first = focusable[0]!
+  const last = focusable[focusable.length - 1]!
+  const active = document.activeElement
+  if (!panel.value?.contains(active) || active === panel.value) {
+    e.preventDefault()
+    ;(e.shiftKey ? last : first).focus()
+  } else if (e.shiftKey && active === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault()
+    first.focus()
+  }
+}
+
+function restorePreviousFocus() {
+  if (previouslyFocused?.isConnected) previouslyFocused.focus()
+  previouslyFocused = null
+}
+
+function onAfterLeave() {
+  if (props.show) return
+  removeModal(id)
+  restorePreviousFocus()
 }
 
 onMounted(() => document.addEventListener('keydown', onKey))
-onUnmounted(() => document.removeEventListener('keydown', onKey))
 
-watch(() => props.show, (open) => {
-  document.body.style.overflow = open ? 'hidden' : ''
+watch(() => props.show, async (open) => {
+  if (!open) return // 离场动画结束后再出栈，避免动画期间层级和滚动锁提前失效
+  previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  pushModal(id)
+  await nextTick()
+  const autofocus = panel.value?.querySelector<HTMLElement>('[autofocus]')
+  ;(autofocus ?? panel.value)?.focus()
+}, { immediate: true })
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', onKey)
+  removeModal(id)
+  restorePreviousFocus()
 })
-onUnmounted(() => { document.body.style.overflow = '' })
 </script>
 
 <template>
@@ -38,22 +136,40 @@ onUnmounted(() => { document.body.style.overflow = '' })
       leave-active-class="transition-opacity duration-150 ease-in"
       enter-from-class="opacity-0"
       leave-to-class="opacity-0"
+      @after-leave="onAfterLeave"
     >
-      <div v-if="show" class="modal-root" @click.self="dismissible && emit('close')">
+      <div
+        v-if="show"
+        class="modal-root"
+        :style="{ zIndex }"
+        @click.self="dismissible && emit('close')"
+      >
         <Transition
           appear
           enter-active-class="modal-panel-in"
           leave-active-class="modal-panel-out"
         >
           <div
+            ref="panel"
             class="modal-panel"
             :class="[`modal-${size}`, { 'modal-has-footer': footer }]"
             role="dialog"
-            aria-modal="true"
+            :aria-modal="isTop ? 'true' : undefined"
+            :aria-hidden="isTop ? undefined : 'true'"
+            :aria-label="ariaLabel || title || '对话框'"
+            :inert="!isTop"
+            tabindex="-1"
             @click.stop
           >
-            <!-- 手机抽屉拖拽条 -->
-            <div class="modal-grab" />
+            <!-- 手机抽屉拖拽条：可以按住往下拉关闭 -->
+            <div
+              class="modal-grab"
+              aria-hidden="true"
+              @pointerdown="onGrabDown"
+              @pointermove="onGrabMove"
+              @pointerup="onGrabUp"
+              @pointercancel="onGrabCancel"
+            />
 
             <header v-if="title || $slots.header" class="modal-head">
               <slot name="header">
@@ -63,7 +179,8 @@ onUnmounted(() => { document.body.style.overflow = '' })
                 type="button"
                 class="modal-close"
                 aria-label="关闭"
-                @click="emit('close')"
+                :disabled="!dismissible"
+                @click="dismissible && emit('close')"
               >
                 <AppIcon name="close" :size="16" />
               </button>
@@ -118,13 +235,24 @@ onUnmounted(() => { document.body.style.overflow = '' })
   .modal-grab { display: none; }
 }
 
+/* 视觉上是 2rem × 3px 的细条，但可按压区域是整行 —— 手指够得着才算数 */
 .modal-grab {
+  position: relative;
+  height: 1.5rem;
+  flex-shrink: 0;
+  cursor: grab;
+  touch-action: none;
+}
+.modal-grab::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0.5rem;
   width: 2rem;
   height: 3px;
   border-radius: 999px;
   background: var(--color-rule-strong);
-  margin: 0.5rem auto 0;
-  flex-shrink: 0;
+  transform: translateX(-50%);
 }
 
 .modal-head {
@@ -152,6 +280,7 @@ onUnmounted(() => { document.body.style.overflow = '' })
   transition: background-color 0.13s, color 0.13s;
 }
 .modal-close:hover { background: var(--color-paper-hover); color: var(--color-ink-1); }
+.modal-close:disabled { opacity: 0.42; cursor: not-allowed; }
 
 .modal-body {
   flex: 1;

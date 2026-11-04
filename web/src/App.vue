@@ -425,7 +425,7 @@ const TABS = computed(() => mobileTabs())
   color: var(--color-ink-1);
   line-height: 1.25;
 }
-.topbar-sub { font-size: 0.625rem; color: var(--color-ink-3); line-height: 1.3; }
+.topbar-sub { font-size: 0.6875rem; color: var(--color-ink-3); line-height: 1.3; }
 .topbar-avatar {
   width: 1.75rem;
   height: 1.75rem;
@@ -458,6 +458,7 @@ const TABS = computed(() => mobileTabs())
 @media (max-width: 1023px) { .tabbar { display: flex; } }
 
 .tab {
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -466,10 +467,23 @@ const TABS = computed(() => mobileTabs())
   padding: 0.25rem 0.5rem;
   border-radius: var(--radius-sm);
   color: var(--color-ink-4);
-  transition: color 0.13s;
+  transition: color 0.13s, background-color 0.13s;
 }
+.tab:active { background: var(--color-action-soft); }
 .tab-on { color: var(--color-ink-1); }
-.tab-label { font-size: 0.625rem; font-weight: 500; line-height: 1.2; }
+/* 选中不能只靠颜色深一点点：顶上加一根指针条，和桌面侧栏的左侧指针条同一语言 */
+.tab-on::before {
+  content: '';
+  position: absolute;
+  top: -0.3125rem;
+  left: 50%;
+  width: 1.25rem;
+  height: 2px;
+  transform: translateX(-50%);
+  background: var(--color-action);
+}
+/* 11px：中文在 10px 下笔画会糊在一起 */
+.tab-label { font-size: 0.6875rem; font-weight: 500; line-height: 1.2; }
 
 /* 内容底部给导航让位 */
 @media (max-width: 1023px) {

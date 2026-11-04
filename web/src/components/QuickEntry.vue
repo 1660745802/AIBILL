@@ -182,6 +182,7 @@ defineExpose({ restoreDraft })
 <template>
   <BaseModal
     :show="true"
+    aria-label="记一笔"
     size="lg"
     :dismissible="true"
     @close="emit('close')"

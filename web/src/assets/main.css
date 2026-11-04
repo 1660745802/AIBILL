@@ -208,6 +208,10 @@
 /* ═══════════════ 基础 ═══════════════ */
 * { -webkit-tap-highlight-color: transparent; }
 
+/* 声明页面支持明暗两套：日期选择器、下拉弹层、滚动条、数字框等原生控件
+   才会跟着系统变暗。不写这行，深色模式下它们仍是一片刺眼的白。 */
+:root { color-scheme: light dark; }
+
 /* 预留滚动条槽：`.app-content` 是 `max-width + margin-inline:auto` 居中的，页面高度随路由变化时
    （管理员切 tab 尤其明显）竖向滚动条会**出现/消失**，可用宽度变 ~15px → 居中内容整体平移 ~7px
    （「切 tab 列表位置不固定」）。`stable` 让滚动条空间恒定占用，内容不再随滚动条跳。 */
@@ -923,3 +927,24 @@ input[type='number'] {
 
 /* ═══════════════ 安全区 ═══════════════ */
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+/* ═══════════════ 触屏适配 ═══════════════
+   只在粗指针（手指）设备上生效，桌面的密排布局不动。
+   · 输入框 16px：iOS Safari 对 <16px 的输入框会在聚焦时自动放大整页。
+   · 小控件最小 44px：直接扩大盒子，不用会与相邻按钮重叠的透明伪元素。
+   · 全局关闭了系统点按高亮，因此在这里补明确的按压反馈。 */
+@media (pointer: coarse) {
+  .field { font-size: 1rem; }
+  .chip, .btn-sm, .modal-close { min-height: 2.75rem; }
+  .act { min-height: 2.75rem; display: inline-flex; align-items: center; }
+  .modal-close { width: 2.75rem; height: 2.75rem; }
+
+  .btn-outline:active:not(:disabled),
+  .btn-danger:active:not(:disabled),
+  .btn-quiet:active:not(:disabled),
+  .act:active,
+  .sheet-row-click:active { background: var(--color-action-soft); }
+  .chip:active { background: var(--color-action-soft); }
+  .chip-active:active { background: var(--color-action-hover); }
+  .segmented-item:active { color: var(--color-ink-1); }
+}

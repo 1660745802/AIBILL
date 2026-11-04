@@ -215,6 +215,13 @@ function handleEditSaved() {
   showEditModal.value = false
   editingTransaction.value = null
   txPage.value = 1
+  // 流水变化会让三个统计口径都失效；置空后用户切回统计页会重新获取。
+  summary.value = null
+  categoryData.value = []
+  trendData.value = []
+  aiGenerated.value = false
+  aiSummary.value = ''
+  aiFullText.value = ''
   fetchTransactions()
 }
 

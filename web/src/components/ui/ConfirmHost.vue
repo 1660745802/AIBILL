@@ -11,8 +11,9 @@ const danger = computed(() => !!confirmState.value?.danger)
 <template>
   <BaseModal
     :show="open"
+    :aria-label="confirmState?.title || '确认操作'"
     size="sm"
-    :dismissible="false"
+    :dismissible="true"
     @close="resolveConfirm(false)"
   >
     <div class="flex gap-3">
@@ -35,7 +36,7 @@ const danger = computed(() => !!confirmState.value?.danger)
     </div>
 
     <div class="flex gap-2 mt-5">
-      <button class="btn btn-outline flex-1" @click="resolveConfirm(false)">
+      <button autofocus class="btn btn-outline flex-1" @click="resolveConfirm(false)">
         {{ confirmState?.cancelText }}
       </button>
       <button

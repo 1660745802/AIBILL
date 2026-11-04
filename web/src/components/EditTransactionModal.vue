@@ -4,11 +4,19 @@ import api from '@/api/index'
 import TagInput from '@/components/TagInput.vue'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import Money from '@/components/ui/Money.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
+import { useClusterStore } from '@/stores/cluster'
 
 import type { Transaction } from '@/api/types'
 
 const props = defineProps<{ show: boolean; transaction: Transaction | null }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
+
+const confirm = useConfirm()
+const toast = useToast()
+const cluster = useClusterStore()
 
 const type = ref<'expense' | 'income' | 'transfer'>('expense')
 const amount = ref('')
@@ -19,6 +27,7 @@ const accountId = ref<number | null>(null)
 const targetAccountId = ref<number | null>(null)
 const tags = ref<string[]>([])
 const saving = ref(false)
+const deleting = ref(false)
 const error = ref('')
 
 const categories = ref<any[]>([])
@@ -55,7 +64,8 @@ const TYPES = [
 ] as const
 
 async function handleSave() {
-  if (!props.transaction) return
+  const tx = props.transaction
+  if (!tx || saving.value || deleting.value) return
   error.value = ''
   if (amountCents.value <= 0) { error.value = '金额要大于 0'; return }
   saving.value = true
@@ -76,8 +86,12 @@ async function handleSave() {
     }
     if (accountId.value) payload.account_id = accountId.value
 
-    const { data } = await api.put(`/transactions/${props.transaction.id}`, payload)
-    if (data.code === 0) emit('saved')
+    const { data } = await api.put(`/transactions/${tx.id}`, payload)
+    if (data.code === 0) {
+      toast.success('已保存修改')
+      cluster.load(true) // 改金额/分类会改变读数，和记账、删除保持同一条规矩
+      emit('saved')
+    }
     else error.value = data.message || '保存失败'
   } catch (e: any) {
     error.value = e.response?.data?.message || '保存失败'
@@ -85,10 +99,46 @@ async function handleSave() {
     saving.value = false
   }
 }
+
+/** 删除 = 移入回收站（软删除，30 天内可恢复），所以文案说清去处，而不是只问「确定吗」 */
+async function handleDelete() {
+  const tx = props.transaction
+  if (!tx || saving.value || deleting.value) return
+  const ok = await confirm({
+    title: '删除这笔记录？',
+    body: '会移入回收站，30 天内可以恢复；期间不计入统计和账户余额。',
+    confirmText: '移入回收站',
+    danger: true,
+  })
+  if (!ok) return
+  deleting.value = true
+  error.value = ''
+  try {
+    const { data } = await api.delete(`/transactions/${tx.id}`)
+    if (data.code === 0) {
+      toast.success('已移入回收站')
+      cluster.load(true) // 顶部读数必须跟上，和记账同一条规矩
+      emit('saved')
+    } else {
+      error.value = data.message || '删除失败'
+    }
+  } catch (e: any) {
+    error.value = e.response?.data?.message || '删除失败'
+  } finally {
+    deleting.value = false
+  }
+}
 </script>
 
 <template>
-  <BaseModal :show="show" title="编辑交易" size="md" :footer="true" @close="emit('close')">
+  <BaseModal
+    :show="show"
+    title="编辑交易"
+    size="md"
+    :footer="true"
+    :dismissible="!saving && !deleting"
+    @close="emit('close')"
+  >
     <form class="space-y-3" @submit.prevent="handleSave">
       <div class="flex gap-1.5" role="group" aria-label="交易类型">
         <button
@@ -171,9 +221,20 @@ async function handleSave() {
     </form>
 
     <template #footer>
-      <div class="flex gap-2">
-        <button class="btn btn-outline flex-1" :disabled="saving" @click="emit('close')">取消</button>
-        <button class="btn btn-primary flex-[2]" :disabled="saving" @click="handleSave">
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          class="btn btn-outline shrink-0"
+          style="color: var(--color-expense)"
+          :disabled="saving || deleting"
+          aria-label="删除这笔记录"
+          @click="handleDelete"
+        >
+          <AppIcon name="trash" :size="15" />
+          <span class="hidden sm:inline">{{ deleting ? '删除中…' : '删除' }}</span>
+        </button>
+        <button class="btn btn-outline flex-1" :disabled="saving || deleting" @click="emit('close')">取消</button>
+        <button class="btn btn-primary flex-[2]" :disabled="saving || deleting" @click="handleSave">
           {{ saving ? '保存中…' : '保存修改' }}
         </button>
       </div>
