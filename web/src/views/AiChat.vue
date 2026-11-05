@@ -237,7 +237,7 @@ function onEnter(e: KeyboardEvent) {
 .chat-shell {
   display: flex;
   flex-direction: column;
-  height: 100dvh;
+  height: calc(var(--app-viewport-height, 100dvh) - var(--active-tabbar-height, 0px));
   max-width: 56rem;
   margin-inline: auto;
   width: 100%;
@@ -268,6 +268,9 @@ function onEnter(e: KeyboardEvent) {
   background: var(--color-paper-hover);
   border-color: var(--color-ink-3);
   color: var(--color-ink-1);
+}
+@media (max-width: 1023px) {
+  .chat-head { padding-top: calc(0.75rem + env(safe-area-inset-top, 0px)); }
 }
 
 .chat-history {
@@ -370,7 +373,7 @@ function onEnter(e: KeyboardEvent) {
 
 .chat-input-bar {
   flex-shrink: 0;
-  padding: 0.75rem 1rem;
+  padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
   background: var(--color-paper-raised);
   border-top: 1px solid var(--color-rule);
 }

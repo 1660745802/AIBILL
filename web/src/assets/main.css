@@ -215,7 +215,9 @@
 /* 预留滚动条槽：`.app-content` 是 `max-width + margin-inline:auto` 居中的，页面高度随路由变化时
    （管理员切 tab 尤其明显）竖向滚动条会**出现/消失**，可用宽度变 ~15px → 居中内容整体平移 ~7px
    （「切 tab 列表位置不固定」）。`stable` 让滚动条空间恒定占用，内容不再随滚动条跳。 */
-html { scrollbar-gutter: stable; }
+@media (min-width: 1024px) {
+  html { scrollbar-gutter: stable; }
+}
 
 body {
   background-color: var(--color-paper);
@@ -934,9 +936,10 @@ input[type='number'] {
    · 小控件最小 44px：直接扩大盒子，不用会与相邻按钮重叠的透明伪元素。
    · 全局关闭了系统点按高亮，因此在这里补明确的按压反馈。 */
 @media (pointer: coarse) {
-  .field { font-size: 1rem; }
-  .chip, .btn-sm, .modal-close { min-height: 2.75rem; }
-  .act { min-height: 2.75rem; display: inline-flex; align-items: center; }
+  .field { min-height: 2.75rem; font-size: 1rem; }
+  .btn, .chip, .segmented-item, .sheet-row-click, .tab, .modal-close { min-height: 2.75rem; }
+  .btn-icon, .modal-close { min-width: 2.75rem; }
+  .act { min-width: 2.75rem; min-height: 2.75rem; display: inline-flex; align-items: center; justify-content: center; }
   .modal-close { width: 2.75rem; height: 2.75rem; }
 
   .btn-outline:active:not(:disabled),

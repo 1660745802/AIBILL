@@ -26,8 +26,10 @@ import PageHeader from '@/components/ui/PageHeader.vue'
 import Money from '@/components/ui/Money.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import Skeleton from '@/components/ui/Skeleton.vue'
+import Notice from '@/components/ui/Notice.vue'
 import HoldingsEditor from '@/components/HoldingsEditor.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
+import { listInvestments, type InvestmentItem, type InvestmentQuoteStatus } from '@/api/investments'
 
 const toast = useToast()
 const cluster = useClusterStore()
@@ -35,8 +37,10 @@ const cluster = useClusterStore()
 import type { Account, PortfolioPosition } from '@/api/types'
 
 const loading = ref(true)
+const error = ref(false)
 const accounts = ref<Account[]>([])
 const positions = ref<PortfolioPosition[]>([])
+const holdings = ref<InvestmentItem[]>([])
 /** 每个账户的输入草稿（总投入 / 现金，单位为元） */
 const draft = ref<Record<number, { invested: string; cash: string; busy: boolean }>>({})
 
@@ -55,33 +59,54 @@ function isBare(acc: Account): boolean {
   return !p?.hasHoldings && (p?.cash ?? 0) === 0 && acc.invested_total == null
 }
 
-async function load() {
-  loading.value = true
+let loadGeneration = 0
+
+async function load(options: { initial?: boolean; preserveDraft?: boolean } = {}) {
+  const generation = ++loadGeneration
+  const { initial = false, preserveDraft = false } = options
+  if (initial) loading.value = true
+  if (generation === loadGeneration) error.value = false
   try {
-    const [accRes, portRes] = await Promise.all([
+    // 持仓只在父页取一次，再按 accountId 分给各账户。多账户不再 N+1 下载同一份列表。
+    const [accRes, portRes, listRes] = await Promise.all([
       api.get('/accounts'),
       api.get('/assets/portfolio'),
+      listInvestments(),
     ])
-    if (accRes.data.code === 0) accounts.value = accRes.data.data.items
-    if (portRes.data.code === 0) positions.value = portRes.data.data.accounts
-    const listRes = await api.get('/investments')
-    if (listRes.data.code === 0) quoteStatus.value = listRes.data.data.quote ?? null
+    if (accRes.data.code !== 0 || portRes.data.code !== 0 || listRes.data.code !== 0) {
+      throw new Error('投资数据响应异常')
+    }
+    // 并发刷新时只允许最后发起的一次提交状态，旧快照不能盖回新操作。
+    if (generation !== loadGeneration) return
+
+    accounts.value = accRes.data.data.items
+    positions.value = portRes.data.data.accounts
+    holdings.value = listRes.data.data.items
+    quoteStatus.value = listRes.data.data.quote
 
     const next: typeof draft.value = {}
-    for (const a of investAccounts.value) {
-      const p = positionOf(a.id)
+    for (const a of accounts.value.filter((item: Account) => item.asset_type === 'investment')) {
+      if (preserveDraft && draft.value[a.id]) {
+        next[a.id] = draft.value[a.id]!
+        continue
+      }
+      const p = positions.value.find((item) => item.accountId === a.id)
       next[a.id] = {
         invested: a.invested_total != null ? String(a.invested_total / 100) : '',
-        // 0 时留空：预填一个 0 看起来像「用户填过」，而且和总投入的
-        // placeholder 行为不一致
-        cash: p && p.cash !== 0 ? String(p.cash / 100) : '',
+        // 明确显示 0：这是可保存的真实现金余额，不再用空框同时表示 0 和“没填”。
+        cash: String((p?.cash ?? 0) / 100),
         busy: false,
       }
     }
     draft.value = next
-  } catch { /* 提示见 api 拦截器 */ } finally { loading.value = false }
+  } catch {
+    // 首次加载失败不能伪装成“还没有理财账户”；已有数据刷新失败则保留旧内容。
+    if (generation === loadGeneration && !accounts.value.length) error.value = true
+  } finally {
+    if (initial && generation === loadGeneration) loading.value = false
+  }
 }
-onMounted(load)
+onMounted(() => load({ initial: true }))
 
 /**
  * 保存后必须刷新顶部仪表：本页 `meta.cluster = true`，仪表就在正上方常驻，
@@ -90,14 +115,15 @@ onMounted(load)
  * （/assets 那边一直是对的，两页不一致才是问题。）
  */
 function refreshAll() {
-  void load()
+  // 后台刷新保留当前页面和未保存草稿，不再整页闪回骨架。
+  void load({ preserveDraft: true })
   cluster.loadPortfolio()
 }
 
 /** 总投入：账户属性，只在存/取钱时改 */
 async function saveInvested(acc: Account) {
   const d = draft.value[acc.id]
-  if (!d) return
+  if (!d || d.busy) return
   const yuan = Number(d.invested)
   if (d.invested !== '' && !Number.isFinite(yuan)) { toast.warning('总投入格式不对'); return }
   d.busy = true
@@ -106,13 +132,15 @@ async function saveInvested(acc: Account) {
       invested_total: d.invested === '' ? null : Math.round(yuan * 100),
     })
     if (data.code === 0) { toast.success('总投入已更新'); refreshAll() }
+    else toast.error(data.message || '总投入更新失败')
   } catch { /* 提示见 api 拦截器 */ } finally { d.busy = false }
 }
 
 /** 现金：写今天的快照，和资产页「各账户余额」是同一份数据 */
 async function saveCash(acc: Account) {
   const d = draft.value[acc.id]
-  if (!d || d.cash === '') return
+  if (!d || d.busy) return
+  if (d.cash === '') { toast.warning('现金余额请填数字，可以填 0'); return }
   const yuan = Number(d.cash)
   if (!Number.isFinite(yuan)) { toast.warning('现金格式不对'); return }
   d.busy = true
@@ -121,6 +149,7 @@ async function saveCash(acc: Account) {
       items: [{ account_id: acc.id, balance: Math.round(yuan * 100) }],
     })
     if (data.code === 0) { toast.success('现金已记录'); refreshAll() }
+    else toast.error(data.message || '现金记录失败')
   } catch { /* 提示见 api 拦截器 */ } finally { d.busy = false }
 }
 
@@ -170,13 +199,7 @@ const quoteNote = ref<string | null>(null)      // 刚才这一次的结果（�
  * 之前是一个只在手动刷新时赋值的 ref，于是页面一加载就显示「行情未获取过」——
  * 哪怕库里早有数据。用户根本看不到「上一次刷新时间」。
  */
-const quoteStatus = ref<{
-  lastAt: string | null
-  lastDate: string | null
-  pricedCount: number
-  totalCount: number
-  schedule?: { fetch: boolean; reason: string }
-} | null>(null)
+const quoteStatus = ref<InvestmentQuoteStatus | null>(null)
 
 async function refreshQuotes() {
   refreshing.value = true
@@ -189,7 +212,7 @@ async function refreshQuotes() {
       ? `${d.fetched} 个已更新，${d.missing.length} 个取不到价`
       : `已更新 ${d.fetched} 个标的`
     // 刷新完重新拉一次列表：状态和时间都从数据里来
-    await load()
+    await load({ preserveDraft: true })
 
     if (d.total === 0) { toast.info('没有活跃持仓，无需刷新行情'); return }
 
@@ -227,13 +250,16 @@ async function refreshQuotes() {
     <!-- 行情状态条：把「为什么没更新」摊在脸上，而不是让用户自己猜。
          这块是整个页面最需要的反馈——之前它一片空白，用户不知道是自己配错
          还是系统没跑。 -->
-    <div class="quote-bar">
+    <div v-if="!loading && !error" class="quote-bar">
       <div class="quote-bar-info">
         <!--
           时间来自服务端数据（库里最新一条行情），不是前端记的——
           这样打开页面就能看到「上次更新 X」，不必先点一次刷新。
         -->
-        <span v-if="quoteStatus?.lastAt" class="quote-at">
+        <span v-if="quoteStatus && quoteStatus.totalCount === 0" class="quote-at quote-at-quiet">
+          添加持仓后会自动获取行情
+        </span>
+        <span v-else-if="quoteStatus?.lastAt" class="quote-at">
           行情更新于 {{ fmtQuoteTime(quoteStatus.lastAt) }}
           <span v-if="quoteStatus.pricedCount < quoteStatus.totalCount" class="quote-partial">
             （{{ quoteStatus.pricedCount }}/{{ quoteStatus.totalCount }} 个标的）
@@ -261,6 +287,13 @@ async function refreshQuotes() {
     <div v-if="loading" class="stack">
       <Skeleton variant="block" height="5rem" />
       <Skeleton variant="block" height="9rem" />
+    </div>
+
+    <div v-else-if="error" class="stack">
+      <Notice tone="danger">投资数据加载失败，请检查网络后重试。</Notice>
+      <button type="button" class="btn btn-outline btn-sm self-start" @click="load({ initial: true })">
+        重试
+      </button>
     </div>
 
     <template v-else-if="investAccounts.length">
@@ -368,27 +401,48 @@ async function refreshQuotes() {
               <div class="inv-form-grid">
                 <label>
                   <span>总投入（元）</span>
-                  <input
-                    v-model="draft[acc.id]!.invested" class="inv-input amt" type="number"
-                    inputmode="decimal" step="0.01" placeholder="一共投进去多少"
-                    @change="saveInvested(acc)"
-                  />
+                  <span class="inv-field-row">
+                    <input
+                      v-model="draft[acc.id]!.invested" class="inv-input amt" type="number"
+                      inputmode="decimal" step="0.01" placeholder="一共投进去多少"
+                      :disabled="draft[acc.id]!.busy"
+                      @keydown.enter.prevent="saveInvested(acc)"
+                    />
+                    <button
+                      type="button" class="btn btn-outline btn-sm"
+                      :disabled="draft[acc.id]!.busy"
+                      @click="saveInvested(acc)"
+                    >{{ draft[acc.id]!.busy ? '保存中' : '保存' }}</button>
+                  </span>
                 </label>
                 <label>
                   <span>现金（元）</span>
-                  <input
-                    v-model="draft[acc.id]!.cash" class="inv-input amt" type="number"
-                    inputmode="decimal" step="0.01" placeholder="今天还剩多少活钱"
-                    @change="saveCash(acc)"
-                  />
+                  <span class="inv-field-row">
+                    <input
+                      v-model="draft[acc.id]!.cash" class="inv-input amt" type="number"
+                      inputmode="decimal" step="0.01" placeholder="今天还剩多少活钱"
+                      :disabled="draft[acc.id]!.busy"
+                      @keydown.enter.prevent="saveCash(acc)"
+                    />
+                    <button
+                      type="button" class="btn btn-outline btn-sm"
+                      :disabled="draft[acc.id]!.busy"
+                      @click="saveCash(acc)"
+                    >{{ draft[acc.id]!.busy ? '保存中' : '记录' }}</button>
+                  </span>
                 </label>
               </div>
-              <p class="inv-hint">总投入只在存/取钱时改；加减仓不改它。现金随手改，改完即生效。</p>
+              <p class="inv-hint">总投入只在存入或取出本金时改；加减仓不改它。现金按当前余额记录。</p>
             </div>
           </div>
 
           <div class="inv-holdings">
-            <HoldingsEditor :account-id="acc.id" :account-name="acc.name" @changed="refreshAll" />
+            <HoldingsEditor
+              :account-id="acc.id"
+              :account-name="acc.name"
+              :items="holdings"
+              @changed="refreshAll"
+            />
           </div>
         </section>
       </div>
@@ -585,6 +639,21 @@ async function refreshQuotes() {
   border-color: var(--color-action);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-action) 14%, transparent);
 }
+.inv-input:disabled { opacity: 0.55; cursor: wait; }
+.inv-field-row { display: flex; align-items: center; gap: 0.375rem; }
+.inv-field-row .inv-input { flex: 1; min-width: 0; width: auto; }
 .inv-hint { font-size: 0.625rem; color: var(--color-ink-4); }
 .inv-holdings { padding: 0.75rem 0.875rem 0.875rem; }
+
+@media (max-width: 639px) {
+  .quote-bar { align-items: flex-start; }
+  .quote-bar .btn { flex-shrink: 0; }
+  .inv-head { align-items: flex-start; }
+  .inv-head-main { flex-direction: column; align-items: flex-start; gap: 0.25rem; }
+  .inv-form-grid { display: grid; grid-template-columns: 1fr; max-width: none; }
+  .inv-form label { min-width: 0; }
+  .inv-input { min-height: 2.75rem; font-size: 1rem; }
+  .inv-field-row .btn { min-width: 4.5rem; }
+  .inv-hint { margin-top: 0.5rem; font-size: 0.6875rem; line-height: 1.5; }
+}
 </style>

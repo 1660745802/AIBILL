@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, computed, ref, watch } from 'vue'
+import { onMounted, onUnmounted, computed, nextTick, ref, watch } from 'vue'
 import { RouterView, useRoute, useRouter, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useQuickEntry } from '@/composables/useQuickEntry'
@@ -18,15 +18,53 @@ const quick = useQuickEntry()
 // 「投资」出不出现取决于有没有理财账户，见 useInvestmentNav
 const { hasInvestment, refreshInvestmentNav } = useInvestmentNav()
 
+const keyboardOpen = ref(false)
+
+function syncMobileViewport() {
+  const viewport = window.visualViewport
+  const height = viewport?.height ?? window.innerHeight
+  document.documentElement.style.setProperty('--app-viewport-height', `${height}px`)
+  document.documentElement.style.setProperty('--app-viewport-top', `${viewport?.offsetTop ?? 0}px`)
+  document.documentElement.style.setProperty('--app-viewport-left', `${viewport?.offsetLeft ?? 0}px`)
+  document.documentElement.style.setProperty('--app-viewport-width', `${viewport?.width ?? window.innerWidth}px`)
+  const active = document.activeElement as HTMLElement | null
+  const editingText = !!active && (
+    active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT'
+    || active.isContentEditable
+  )
+  keyboardOpen.value = editingText && !!viewport && window.innerHeight - viewport.height > 120
+  if (keyboardOpen.value && active?.closest('.modal-panel, .chat-shell')) {
+    requestAnimationFrame(() => active.scrollIntoView({ block: 'nearest' }))
+  }
+}
+
 onMounted(async () => {
   if (auth.token && !auth.user) await auth.fetchUser()
   document.addEventListener('keydown', onGlobalKey)
+  window.visualViewport?.addEventListener('resize', syncMobileViewport)
+  window.visualViewport?.addEventListener('scroll', syncMobileViewport)
+  window.addEventListener('resize', syncMobileViewport)
+  document.addEventListener('focusin', syncMobileViewport)
+  document.addEventListener('focusout', syncMobileViewport)
+  syncMobileViewport()
   void refreshInvestmentNav()
 })
 // 每次换页顺手复核一次（有缓存，不会每次都打接口）：
 // 用户在资产页把账户改成理财投资后，侧栏要跟上
 watch(() => route.path, () => { void refreshInvestmentNav() })
-onUnmounted(() => document.removeEventListener('keydown', onGlobalKey))
+onUnmounted(() => {
+  document.removeEventListener('keydown', onGlobalKey)
+  window.visualViewport?.removeEventListener('resize', syncMobileViewport)
+  window.visualViewport?.removeEventListener('scroll', syncMobileViewport)
+  window.removeEventListener('resize', syncMobileViewport)
+  document.removeEventListener('focusin', syncMobileViewport)
+  document.removeEventListener('focusout', syncMobileViewport)
+  clusterObserver?.disconnect()
+  document.documentElement.style.removeProperty('--app-viewport-height')
+  document.documentElement.style.removeProperty('--app-viewport-top')
+  document.documentElement.style.removeProperty('--app-viewport-left')
+  document.documentElement.style.removeProperty('--app-viewport-width')
+})
 
 /* ── 全局快捷键 ─────────────────────────────────────
    记一笔是唯一的高频动作：让它不依赖「我此刻在哪个页面」。
@@ -121,11 +159,27 @@ const flush = computed(() => route.meta.flush === true)
  * 常驻不等于到处常驻：读数是上下文，不是装饰。
  */
 const showCluster = computed(() => route.meta.cluster === true)
+const clusterDock = ref<HTMLElement | null>(null)
+const clusterHeight = ref(0)
+let clusterObserver: ResizeObserver | null = null
+
+watch(showCluster, async (visible) => {
+  clusterObserver?.disconnect()
+  clusterObserver = null
+  clusterHeight.value = 0
+  if (!visible) return
+  await nextTick()
+  if (!clusterDock.value) return
+  clusterObserver = new ResizeObserver(([entry]) => {
+    clusterHeight.value = Math.ceil(entry?.contentRect.height ?? 0)
+  })
+  clusterObserver.observe(clusterDock.value)
+}, { immediate: true })
 
 const railOpen = ref(false)
 watch(() => route.path, () => { railOpen.value = false })
 
-/** 手机底部 3 槽，由 nav.ts 的 mobileSlot 标记派生 */
+/** 手机底部 4 槽，由 nav.ts 的 mobileSlot 标记派生 */
 const TABS = computed(() => mobileTabs())
 </script>
 
@@ -138,7 +192,8 @@ const TABS = computed(() => mobileTabs())
     <div
       v-if="auth.isAuthenticated && !route.meta.guest"
       class="app-frame"
-      :class="{ 'frame-flush': flush }"
+      :class="{ 'frame-flush': flush, 'frame-cluster': showCluster, 'keyboard-open': keyboardOpen }"
+      :style="`--mobile-cluster-height: ${clusterHeight}px`"
     >
       <!-- 桌面侧栏 -->
       <aside class="rail" :class="{ 'rail-open': railOpen }">
@@ -192,7 +247,7 @@ const TABS = computed(() => mobileTabs())
         </header>
 
         <!-- 仪表读数：常驻，但只在讲个人财务的页面。窄屏压成一行吸顶读数条 -->
-        <div v-if="showCluster" class="cluster-dock">
+        <div v-if="showCluster" ref="clusterDock" class="cluster-dock">
           <InstrumentCluster />
         </div>
 
@@ -242,8 +297,21 @@ const TABS = computed(() => mobileTabs())
 </template>
 
 <style scoped>
-.app-shell { min-height: 100dvh; background: var(--color-paper); }
-.app-frame { display: flex; min-height: 100dvh; }
+.app-shell { min-height: var(--app-viewport-height, 100dvh); background: var(--color-paper); }
+.app-frame {
+  --mobile-topbar-height: calc(2.75rem + env(safe-area-inset-top, 0px));
+  --mobile-cluster-height: 0px;
+  --mobile-tabbar-height: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+  --active-tabbar-height: var(--mobile-tabbar-height);
+  --page-sticky-top: var(--mobile-topbar-height);
+  display: flex;
+  min-height: var(--app-viewport-height, 100dvh);
+}
+.frame-cluster { --page-sticky-top: calc(var(--mobile-topbar-height) + var(--mobile-cluster-height)); }
+.keyboard-open { --active-tabbar-height: 0px; }
+@media (min-width: 1024px) {
+  .app-frame { --active-tabbar-height: 0px; --page-sticky-top: 0px; }
+}
 
 /* ── 侧栏 ─────────────────────────────────────── */
 .rail {
@@ -386,7 +454,7 @@ const TABS = computed(() => mobileTabs())
 @media (max-width: 1023px) {
   .cluster-dock {
     position: sticky;
-    top: 0;
+    top: var(--mobile-topbar-height);
     z-index: 25;
     padding: 0;
     background: var(--color-paper);
@@ -412,7 +480,8 @@ const TABS = computed(() => mobileTabs())
     display: flex;
     align-items: center;
     gap: 0.625rem;
-    padding: 0.5rem 1rem;
+    min-height: var(--mobile-topbar-height);
+    padding: env(safe-area-inset-top, 0px) 1rem 0;
     background: var(--color-paper);
     border-bottom: 1px solid var(--color-rule);
   }
@@ -440,7 +509,7 @@ const TABS = computed(() => mobileTabs())
   font-weight: 600;
 }
 
-/* ── 底部 Tab：3 槽 + 右下 FAB ─────────────────── */
+/* ── 底部 Tab：4 槽 ─────────────────────────── */
 .tabbar {
   position: fixed;
   left: 0;
@@ -450,12 +519,16 @@ const TABS = computed(() => mobileTabs())
   display: none;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.3125rem 0.5rem 0.3125rem;
+  min-height: var(--mobile-tabbar-height);
+  padding: 0.3125rem 0.5rem calc(0.3125rem + env(safe-area-inset-bottom, 0px));
   background: color-mix(in srgb, var(--color-paper-raised) 94%, transparent);
   backdrop-filter: blur(12px);
   border-top: 1px solid var(--color-rule);
 }
-@media (max-width: 1023px) { .tabbar { display: flex; } }
+@media (max-width: 1023px) {
+  .tabbar { display: flex; }
+  .keyboard-open .tabbar { display: none; }
+}
 
 .tab {
   position: relative;
@@ -488,7 +561,11 @@ const TABS = computed(() => mobileTabs())
 /* 内容底部给导航让位 */
 @media (max-width: 1023px) {
   .app-content, .app-content-flush {
-    padding-bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(var(--active-tabbar-height) + 0.75rem);
   }
+  .keyboard-open .app-content,
+  .keyboard-open .app-content-flush { padding-bottom: 0.75rem; }
+  .topbar-avatar { width: 2.75rem; height: 2.75rem; }
+  .tab { min-height: 2.75rem; }
 }
 </style>

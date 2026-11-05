@@ -203,7 +203,12 @@ onUnmounted(() => {
 <style scoped>
 .modal-root {
   position: fixed;
-  inset: 0;
+  top: var(--app-viewport-top, 0px);
+  right: auto;
+  bottom: auto;
+  left: var(--app-viewport-left, 0px);
+  width: var(--app-viewport-width, 100vw);
+  height: var(--app-viewport-height, 100dvh);
   z-index: 200;
   display: flex;
   align-items: flex-end;
@@ -218,7 +223,7 @@ onUnmounted(() => {
 .modal-panel {
   position: relative;
   width: 100%;
-  max-height: 88dvh;
+  max-height: min(88dvh, calc(var(--app-viewport-height, 100dvh) - 0.75rem));
   display: flex;
   flex-direction: column;
   background: var(--color-paper-raised);
@@ -228,7 +233,7 @@ onUnmounted(() => {
 }
 @media (min-width: 768px) {
   .modal-panel {
-    max-height: 85dvh;
+    max-height: min(85dvh, calc(var(--app-viewport-height, 100dvh) - 3rem));
     border-radius: var(--radius-md);
     border: 1px solid var(--color-rule);
   }
@@ -253,6 +258,10 @@ onUnmounted(() => {
   border-radius: 999px;
   background: var(--color-rule-strong);
   transform: translateX(-50%);
+}
+@media (pointer: coarse) and (max-width: 767px) {
+  .modal-grab { height: 2.75rem; }
+  .modal-grab::before { top: 1rem; }
 }
 
 .modal-head {
@@ -289,7 +298,7 @@ onUnmounted(() => {
   padding: 1rem;
 }
 .modal-foot {
-  padding: 0.875rem 1rem;
+  padding: 0.875rem 1rem calc(0.875rem + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--color-rule);
   background: var(--color-paper-raised);
   flex-shrink: 0;

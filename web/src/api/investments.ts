@@ -32,8 +32,18 @@ export interface InvestmentItem {
   quote: { name: string | null; price: number; quoteDate: string; changeRate: number | null } | null
 }
 
+export interface InvestmentQuoteStatus {
+  lastAt: string | null
+  lastDate: string | null
+  pricedCount: number
+  totalCount: number
+  markets?: string[]
+  schedule?: { fetch: boolean; reason: string }
+}
+
 export interface InvestmentList {
   items: InvestmentItem[]
+  quote: InvestmentQuoteStatus
 }
 
 export function listInvestments() {

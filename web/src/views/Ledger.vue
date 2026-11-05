@@ -404,14 +404,14 @@ onMounted(async () => {
             id="page-search"
             v-model="keyword"
             type="search"
-            class="field !pl-8 !pr-8"
+            class="field !pl-8 !pr-12"
             placeholder="搜索描述、分类、标签"
             @keyup.enter="handleSearch"
             @keydown.esc="clearSearch"
           />
           <button
             v-if="keyword"
-            class="absolute right-2 top-1/2 -translate-y-1/2 p-1"
+            class="search-clear"
             aria-label="清空搜索"
             @click="clearSearch"
           >
@@ -598,7 +598,7 @@ onMounted(async () => {
 <style scoped>
 .day-head {
   position: sticky;
-  top: 0;
+  top: var(--page-sticky-top, 0px);
   z-index: 10;
   display: flex;
   align-items: center;
@@ -610,6 +610,19 @@ onMounted(async () => {
   background: var(--color-paper);
 }
 @media (min-width: 1024px) { .day-head { top: 0.5rem; } }
+
+.search-clear {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  width: 2.75rem;
+  height: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(-50%);
+}
+.search-clear:active { background: var(--color-action-soft); }
 
 .ai-card {
   position: relative;

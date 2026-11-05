@@ -12,22 +12,25 @@
  * 取不到价显示「—」而不是 0（0 会被读成这只持仓归零了）。
  * 「增 / 减」只改股数，不改总投入——买卖不改变"一共投进去多少"。
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import { useToast } from '@/composables/useToast'
+import { useConfirm } from '@/composables/useConfirm'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import Money from '@/components/ui/Money.vue'
 import {
-  listInvestments, createInvestment, updateInvestment, deleteInvestment,
+  createInvestment, updateInvestment, deleteInvestment,
   type InvestmentItem,
 } from '@/api/investments'
 
 const props = defineProps<{
   accountId: number
   accountName: string
+  items: InvestmentItem[]
 }>()
 const emit = defineEmits<{ changed: [] }>()
 
 const toast = useToast()
+const confirm = useConfirm()
 
 /** 币种符号：不标的话「213.000」会被读成 ¥213 */
 const CURRENCY_SIGN: Record<string, string> = { HKD: 'HK$', USD: 'US$' } as const
@@ -35,9 +38,18 @@ const CURRENCY_SIGN: Record<string, string> = { HKD: 'HK$', USD: 'US$' } as cons
 /** 代码格式提示：默认收起，避免每个账户重复一大段说明 */
 const showCodeHint = ref(false)
 
-const holdings = ref<InvestmentItem[]>([])
-const loading = ref(true)
 const saving = ref(false)
+const pendingIds = ref<Set<number>>(new Set())
+
+function isPending(id: number): boolean {
+  return pendingIds.value.has(id)
+}
+function setPending(id: number, pending: boolean) {
+  const next = new Set(pendingIds.value)
+  if (pending) next.add(id)
+  else next.delete(id)
+  pendingIds.value = next
+}
 
 /** 新增草稿：只有代码和股数两个字段 */
 const addCode = ref('')
@@ -45,20 +57,12 @@ const addQty = ref('')
 /** 正在调仓的那条（点「增/减」时展开） */
 const adjusting = ref<{ id: number; dir: 1 | -1; n: string } | null>(null)
 
-const rows = computed(() => holdings.value.filter((h) => h.accountId === props.accountId))
+const rows = computed(() => props.items.filter((h) => h.accountId === props.accountId))
 
 const unpricedCount = computed(() => rows.value.filter((r) => r.marketValue == null).length)
 
-async function load() {
-  loading.value = true
-  try {
-    const { data } = await listInvestments()
-    if (data.code === 0) holdings.value = data.data.items
-  } catch { /* 读不到不致命，UI 显示空态 */ } finally { loading.value = false }
-}
-onMounted(load)
-
 async function add() {
+  if (saving.value) return
   // ⚠️ Vue 对 `<input type="number">` 会自动套 `.number` 修饰符 → v-model 拿到的是
   // number，直接 .trim() 会抛「is not a function」。一律 String() 后处理。
   const code = String(addCode.value).trim()
@@ -68,7 +72,7 @@ async function add() {
   // 会让该账户在没行情时连现金一起从净资产里消失
   if (rawQty === '') { toast.warning('请填股数'); return }
   const qty = Number(rawQty)
-  if (!Number.isFinite(qty) || qty < 0) { toast.warning('股数要填一个不小于 0 的数字'); return }
+  if (!Number.isFinite(qty) || qty <= 0) { toast.warning('股数要填一个大于 0 的数字'); return }
   saving.value = true
   try {
     const { data } = await createInvestment({ account_id: props.accountId, code, quantity: qty })
@@ -76,7 +80,6 @@ async function add() {
       toast.success('已添加')
       addCode.value = ''
       addQty.value = ''
-      await load()
       emit('changed')
     } else toast.error(data.message || '添加失败')
   } catch { /* 提示见 api 拦截器 */ } finally { saving.value = false }
@@ -89,60 +92,77 @@ async function add() {
  *  - 清空输入框 → `<input type=number>` 的 value 是 ''，`Number('') === 0`
  *    → 会静默把持仓改成 0 股（等于清仓）。空值必须当「没改」而不是 0。
  *  - 负数或非数字 → 原来直接 return，输入框留着被拒的值、与库里不一致。
- *    现在提示 + reload 把输入框拉回真实值。
+ *    现在提示并把输入框拉回真实值。
  */
 async function setQty(h: InvestmentItem, e: Event) {
   const el = e.target as HTMLInputElement
+  if (isPending(h.id)) { el.value = String(h.quantity); return }
   const raw = el.value.trim()
   /**
-   * 回滚 DOM 值要**手动**写，不能只靠 `await load()`。
-   *
-   * 原因：输入框是 `:value="h.quantity"`。清空后再 load，h.quantity 仍是 10000
-   * （没变）→ Vue 的 patch 认为 value 无需更新 → DOM 里留着用户清空的 ""。
-   * 用户看到空框、库里是 10000，正是「输入框与库不一致」那个 bug。
+   * 回滚 DOM 值要**手动**写，不能只靠父页重新拉数据。
+   * backing quantity 没变时 Vue 可能跳过 value patch，留下错误的空框。
    */
   const rollback = () => { el.value = String(h.quantity) }
 
-  if (raw === '') { rollback(); return }            // 空 = 取消输入，不是 0
+  if (raw === '') { rollback(); return }
   const q = Number(raw)
-  if (!Number.isFinite(q) || q < 0) {
-    toast.warning('股数要填一个不小于 0 的数字')
+  if (!Number.isFinite(q) || q <= 0) {
+    toast.warning(q === 0 ? '清仓请使用“移除持仓”' : '股数要填一个大于 0 的数字')
     rollback()
     return
   }
   if (q === h.quantity) return
+  setPending(h.id, true)
   try {
     const { data } = await updateInvestment(h.id, { quantity: q })
-    if (data.code === 0) { emit('changed') }
-    else { toast.error(data.message || '改股数失败'); rollback() }
+    if (data.code === 0) {
+      toast.success('股数已更新')
+      emit('changed')
+    } else {
+      toast.error(data.message || '改股数失败')
+      rollback()
+    }
   } catch { rollback() }
+  finally { setPending(h.id, false) }
 }
 
 /** 加仓 / 减仓 N 股 */
 async function applyAdjust(h: InvestmentItem) {
   const a = adjusting.value
-  if (!a || a.id !== h.id) return
+  if (!a || a.id !== h.id || isPending(h.id)) return
   const n = Number(a.n)
   if (!Number.isFinite(n) || n <= 0) { toast.warning('请填股数'); return }
   const next = h.quantity + a.dir * n
   if (next < 0) { toast.warning('减仓不能超过持有股数'); return }
-  adjusting.value = null
-  const q = next
+  if (next === 0) { toast.warning('清仓请使用“移除持仓”'); return }
+  setPending(h.id, true)
   try {
-    const { data } = await updateInvestment(h.id, { quantity: q })
+    const { data } = await updateInvestment(h.id, { quantity: next })
     if (data.code === 0) {
-      await load()
+      adjusting.value = null
       emit('changed')
       toast.success(a.dir > 0 ? `已加仓 ${n} 股` : `已减仓 ${n} 股`)
     } else toast.error(data.message || '调仓失败')
-  } catch { /* 提示见 api 拦截器 */ }
+  } catch { /* 提示见 api 拦截器；输入保留，方便重试 */ }
+  finally { setPending(h.id, false) }
 }
 
 async function remove(h: InvestmentItem) {
+  if (isPending(h.id)) return
+  const ok = await confirm({
+    title: '移除这项持仓？',
+    body: `「${h.name || h.code}」会从 ${props.accountName} 的持仓中移除，不会改变总投入或现金。`,
+    confirmText: '移除持仓',
+    danger: true,
+  })
+  if (!ok) return
+  setPending(h.id, true)
   try {
     const { data } = await deleteInvestment(h.id)
-    if (data.code === 0) { toast.success('已移除'); await load(); emit('changed') }
+    if (data.code === 0) { toast.success('已移除持仓'); emit('changed') }
+    else toast.error(data.message || '移除失败')
   } catch { /* 提示见 api 拦截器 */ }
+  finally { setPending(h.id, false) }
 }
 </script>
 
@@ -170,6 +190,7 @@ async function remove(h: InvestmentItem) {
             inputmode="decimal"
             step="0.0001"
             :value="h.quantity"
+            :disabled="pendingIds.has(h.id)"
             :aria-label="`${h.name || h.code} 的股数`"
             @change="setQty(h, $event)"
           />
@@ -211,9 +232,21 @@ async function remove(h: InvestmentItem) {
         </div>
 
         <div class="hold-ops">
-          <button class="act" @click="adjusting = adjusting?.id === h.id && adjusting.dir === 1 ? null : { id: h.id, dir: 1, n: '' }">增</button>
-          <button class="act" @click="adjusting = adjusting?.id === h.id && adjusting.dir === -1 ? null : { id: h.id, dir: -1, n: '' }">减</button>
-          <button class="act act-danger" :aria-label="`移除 ${h.name || h.code}`" @click="remove(h)">删</button>
+          <button
+            class="act" :disabled="pendingIds.has(h.id)"
+            :aria-label="`增加 ${h.name || h.code} 的持仓`"
+            @click="adjusting = adjusting?.id === h.id && adjusting.dir === 1 ? null : { id: h.id, dir: 1, n: '' }"
+          >加仓</button>
+          <button
+            class="act" :disabled="pendingIds.has(h.id)"
+            :aria-label="`减少 ${h.name || h.code} 的持仓`"
+            @click="adjusting = adjusting?.id === h.id && adjusting.dir === -1 ? null : { id: h.id, dir: -1, n: '' }"
+          >减仓</button>
+          <button
+            class="act act-danger" :disabled="pendingIds.has(h.id)"
+            :aria-label="`移除 ${h.name || h.code}`"
+            @click="remove(h)"
+          >移除</button>
         </div>
 
         <!-- 加减仓：只填股数，总投入不动 -->
@@ -221,20 +254,25 @@ async function remove(h: InvestmentItem) {
           <span>{{ adjusting.dir > 0 ? '加仓' : '减仓' }}</span>
           <input
             v-model="adjusting.n"
+            autofocus
             class="hold-input amt"
             type="number"
             inputmode="decimal"
-            :placeholder="`股数`"
+            :aria-label="`${adjusting.dir > 0 ? '加仓' : '减仓'}股数`"
+            placeholder="股数"
+            :disabled="pendingIds.has(h.id)"
             @keydown.enter="applyAdjust(h)"
           />
           <span>股</span>
-          <button class="btn btn-primary btn-sm" @click="applyAdjust(h)">确定</button>
-          <button class="btn btn-quiet btn-sm" @click="adjusting = null">取消</button>
+          <button class="btn btn-primary btn-sm" :disabled="pendingIds.has(h.id)" @click="applyAdjust(h)">
+            {{ pendingIds.has(h.id) ? '保存中…' : '确定' }}
+          </button>
+          <button class="btn btn-quiet btn-sm" :disabled="pendingIds.has(h.id)" @click="adjusting = null">取消</button>
         </div>
       </li>
     </ul>
 
-    <p v-else-if="!loading" class="hold-empty">
+    <p v-else class="hold-empty">
       还没有持仓。填代码和股数就行，现价和市值系统算。
     </p>
 
@@ -245,6 +283,7 @@ async function remove(h: InvestmentItem) {
         class="hold-input hold-add-code"
         placeholder="代码，如 518880"
         aria-label="新持仓代码"
+        :disabled="saving"
         @keydown.enter="add"
       />
       <input
@@ -255,10 +294,11 @@ async function remove(h: InvestmentItem) {
         step="0.0001"
         placeholder="股数"
         aria-label="新持仓股数"
+        :disabled="saving"
         @keydown.enter="add"
       />
       <button class="btn btn-primary btn-sm" :disabled="saving" @click="add">
-        <AppIcon name="plus" :size="13" :stroke="2.2" />添加持仓
+        <AppIcon name="plus" :size="13" :stroke="2.2" />{{ saving ? '添加中…' : '添加持仓' }}
       </button>
     </div>
 
@@ -338,6 +378,7 @@ async function remove(h: InvestmentItem) {
   border-color: var(--color-action);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-action) 14%, transparent);
 }
+.hold-input:disabled { opacity: 0.55; cursor: wait; }
 .hold-val { text-align: right; min-width: 5.5rem; }
 .hold-price { font-size: 0.625rem; color: var(--color-ink-3); }
 .hold-qdate { margin-left: 0.25rem; color: var(--color-ink-4); }
@@ -428,4 +469,28 @@ async function remove(h: InvestmentItem) {
   border-radius: var(--radius-xs);
 }
 .hold-add-qty { width: 5.5rem; }
+
+/* 手机不硬挤桌面的四列。第一行回答“是什么、值多少”，第二行才是份额和操作。 */
+@media (max-width: 639px) {
+  .hold-head { align-items: flex-start; flex-wrap: wrap; }
+  .hold-hint { width: 100%; margin-left: 0; }
+  .hold-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.625rem 0.75rem;
+    padding: 0.75rem 0;
+  }
+  .hold-id { grid-column: 1; grid-row: 1; }
+  .hold-val { grid-column: 2; grid-row: 1; }
+  .hold-qty { grid-column: 1; grid-row: 2; }
+  .hold-ops { grid-column: 2; grid-row: 2; justify-self: end; gap: 0.25rem; }
+  .hold-adjust { grid-column: 1 / -1; flex-wrap: wrap; padding-top: 0.25rem; }
+  .hold-adjust .hold-input { flex: 1; min-width: 6rem; }
+  .hold-input { min-height: 2.75rem; font-size: 1rem; }
+  .hold-add {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 6.5rem;
+  }
+  .hold-add-code, .hold-add-qty { width: 100%; }
+  .hold-add .btn { grid-column: 1 / -1; width: 100%; }
+}
 </style>
